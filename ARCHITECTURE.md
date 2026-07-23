@@ -28,11 +28,23 @@ CSVs from Banks
 
 ## Core Components
 
-### 1. **Adapters** (CSV Parsers)
+### 1. **Adapters** (CSV + PDF Parsers)
+
+**CSV Adapters:**
 - `MonzoAdapter` — Monzo export format
-- `NatwelstAdapter` — Natwest export format
+- `NatwestAdapter` — Natwest export format
 - `VanguardAdapter` — Vanguard holdings export
-- `AdapterFactory` — Auto-detect + route to correct adapter
+
+**PDF Adapters (PyMuPDF-based text extraction):**
+- `KrooPdfAdapter` — Kroo current account statements
+- `NatwestPdfAdapter` — Natwest bank statements
+- `FirstDirectPdfAdapter` — First Direct credit card statements
+- `AmexPdfAdapter` — American Express statements
+- `VanguardPdfAdapter` — Vanguard investment statements
+- `PdfAdapter` — Shared base class (text extraction, validation template)
+
+**Factory:**
+- `AdapterFactory` — Auto-detect + route to correct adapter (branches on content type: CSV adapters for `str`, PDF adapters for `bytes`)
 
 **Output:** List of `RawRecord` objects (no schema transformation)
 
@@ -72,7 +84,7 @@ CSVs from Banks
 1. USER UPLOADS CSV
    ↓
 2. ADAPTER DETECTS FORMAT
-   (MonzoAdapter, NatwelstAdapter, or VanguardAdapter)
+   (CSV: Monzo/Natwest/Vanguard; PDF: Kroo/Natwest/First Direct/Amex/Vanguard)
    ↓
 3. PARSE TO RAWRECORDS
    (source_key, source_type, raw_data, filename, file_hash)
@@ -108,9 +120,17 @@ data/
 │   │   ├── export_20240115.parquet
 │   │   └── export_20240116.parquet
 │   ├── natwest/
-│   │   └── export_20240115.parquet
-│   └── vanguard/
-│       └── holdings_20240115.parquet
+│   │   ├── export_20240115.parquet
+│   │   └── statement_20260501.pdf.parquet
+│   ├── vanguard/
+│   │   ├── holdings_20240115.parquet
+│   │   └── statement_20260708.pdf.parquet
+│   ├── kroo/
+│   │   └── statement_20260501.pdf.parquet
+│   ├── firstdirect/
+│   │   └── statement_20260505.pdf.parquet
+│   └── amex/
+│       └── statement_20260401.pdf.parquet
 ├── silver/
 │   ├── transactions.parquet       # Normalized transactions
 │   ├── accounts.parquet           # Account registry
@@ -151,31 +171,34 @@ data/
 
 ---
 
-## V0 Scope (Done ✅)
+## V0 Scope
 
-✅ **Phase 1:** Adapter pattern + factory
-- Monzo, Natwest, Vanguard adapters
-- Auto-detection by confidence scoring
+✅ **Phase 1:** Adapter pattern + factory (DONE)
+- CSV adapters: Monzo, Natwest, Vanguard
+- PDF adapters: Kroo, Natwest, First Direct, AmEx, Vanguard
+- Auto-detection by confidence scoring (95%+ confidence validates adapter match)
 - Error handling for ambiguous formats
+- ⚠️ **Test coverage:** CSV adapters have full unit tests; PDF adapters validated on real statements but lack unit tests (need to be added in Phase 4)
 
 **Phase 2 (Next):** Data transformations
-- Account linking (source-specific rules)
-- Silver transformer (normalization)
-- Subscription/transfer detection
+- Account linking (source-specific account identification rules)
+- Silver transformer (normalize multi-source `RawRecord` fields to common schema — e.g., Kroo's `out`/`in` columns → single signed `amount`, Natwest PDF's `-£` notation → amount with sign)
+- Subscription/transfer detection (Silver→Gold enrichment heuristics)
+- Deduplication via `source_key` (prevent re-import duplicates)
 
 **Phase 3:** Celery orchestration
 - Bronze→Silver transformation job
 - Silver→Gold enrichment job
-- Job chaining + error recovery
+- Job chaining + error recovery + retry logic
 
-**Phase 4:** Testing
-- Unit tests for adapters
+**Phase 4:** Testing (expand)
+- Unit tests for all PDF adapters
 - Integration tests for transformations
-- E2E tests with real CSV files
+- E2E tests with real CSV + PDF files
 
 **Phase 5:** CLI tool
-- Manual ingestion
-- Pipeline inspection
+- Manual ingestion command
+- Pipeline inspection/status
 - Demo script
 
 ---
