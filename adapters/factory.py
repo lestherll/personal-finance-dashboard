@@ -11,6 +11,7 @@ from adapters.kroo_pdf_adapter import KrooPdfAdapter
 from adapters.natwest_pdf_adapter import NatwestPdfAdapter
 from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
 from adapters.amex_pdf_adapter import AmexPdfAdapter
+from adapters.vanguard_pdf_adapter import VanguardPdfAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class AdapterFactory:
             NatwestPdfAdapter(),
             FirstDirectPdfAdapter(),
             AmexPdfAdapter(),
+            VanguardPdfAdapter(),
         ]
 
     def detect_adapter(self, file_content: Union[str, bytes]) -> DataSourceAdapter:
@@ -65,7 +67,7 @@ class AdapterFactory:
             raise ValueError(
                 f"File format not recognized ({content_type}). "
                 f"CSV: Monzo, Natwest, Vanguard | "
-                f"PDF: Kroo, Natwest, First Direct, American Express"
+                f"PDF: Kroo, Natwest, First Direct, American Express, Vanguard"
             )
 
         # Sort by confidence
