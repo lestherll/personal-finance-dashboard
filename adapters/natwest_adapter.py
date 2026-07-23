@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from adapters.base import DataSourceAdapter, RawRecord
 
 
-class NatwelstAdapter(DataSourceAdapter):
+class NatwestAdapter(DataSourceAdapter):
     """Natwest CSV export (different format from Monzo)."""
 
     EXPECTED_COLUMNS = [

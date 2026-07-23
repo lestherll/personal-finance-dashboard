@@ -1,36 +1,61 @@
 """Adapter factory for auto-detecting and routing to the right adapter."""
 
 import logging
-from typing import List
+from typing import List, Union
 
 from adapters.base import DataSourceAdapter, RawRecord
 from adapters.monzo_adapter import MonzoAdapter
-from adapters.natwest_adapter import NatwelstAdapter
+from adapters.natwest_adapter import NatwestAdapter
 from adapters.vanguard_adapter import VanguardAdapter
+from adapters.kroo_pdf_adapter import KrooPdfAdapter
+from adapters.natwest_pdf_adapter import NatwestPdfAdapter
+from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
+from adapters.amex_pdf_adapter import AmexPdfAdapter
 
 logger = logging.getLogger(__name__)
 
 
 class AdapterFactory:
-    """Auto-detect and route to the right adapter."""
+    """Auto-detect and route to the right adapter (CSV and PDF)."""
 
     def __init__(self):
-        # Registry of all adapters—add new ones here
-        self.adapters: List[DataSourceAdapter] = [
+        # CSV adapters (handle string content)
+        self.csv_adapters: List[DataSourceAdapter] = [
             MonzoAdapter(),
-            NatwelstAdapter(),
+            NatwestAdapter(),
             VanguardAdapter(),
         ]
 
-    def detect_adapter(self, file_content: str) -> DataSourceAdapter:
+        # PDF adapters (handle bytes content)
+        self.pdf_adapters: List[DataSourceAdapter] = [
+            KrooPdfAdapter(),
+            NatwestPdfAdapter(),
+            FirstDirectPdfAdapter(),
+            AmexPdfAdapter(),
+        ]
+
+    def detect_adapter(self, file_content: Union[str, bytes]) -> DataSourceAdapter:
         """
-        Try each adapter; highest confidence wins.
+        Auto-detect adapter based on content type (CSV or PDF).
+
+        Tries CSV adapters first (faster), then PDF adapters.
 
         Raises:
             ValueError if no adapter confidence >= 0.8 or tie at top
         """
+        # Determine content type
+        is_pdf = isinstance(file_content, bytes)
+
+        if is_pdf:
+            adapters_to_try = self.pdf_adapters
+            content_type = "PDF"
+        else:
+            adapters_to_try = self.csv_adapters
+            content_type = "CSV"
+
+        # Try all adapters and score them
         results = [
-            (adapter, *adapter.validate(file_content)) for adapter in self.adapters
+            (adapter, *adapter.validate(file_content)) for adapter in adapters_to_try
         ]
 
         # Filter to valid matches
@@ -38,7 +63,9 @@ class AdapterFactory:
 
         if not valid_matches:
             raise ValueError(
-                "File format not recognized. Supported: Monzo, Natwest, Vanguard"
+                f"File format not recognized ({content_type}). "
+                f"CSV: Monzo, Natwest, Vanguard | "
+                f"PDF: Kroo, Natwest, First Direct, American Express"
             )
 
         # Sort by confidence
@@ -57,8 +84,10 @@ class AdapterFactory:
 
         return best_adapter
 
-    def ingest(self, file_content: str, filename: str, file_hash: str) -> List[RawRecord]:
-        """Single entry point: detect + parse."""
+    def ingest(
+        self, file_content: Union[str, bytes], filename: str, file_hash: str
+    ) -> List[RawRecord]:
+        """Single entry point: detect + parse (CSV or PDF)."""
         adapter = self.detect_adapter(file_content)
         records = adapter.parse(file_content, filename, file_hash)
 
