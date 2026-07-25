@@ -235,6 +235,6 @@ class UnmappedAccountsError(Exception):
             f"{ACCOUNT_MAP_PATH}. Register them first:\n"
             "  uv run python cli.py accounts list-unmapped\n"
             "  uv run python cli.py accounts register <account_identifier> <account_id> "
-            "<display_name> <current|credit|investment>\n" + "\n".join(lines)
+            "<display_name> <current|credit|investment|savings>\n" + "\n".join(lines)
         )
         super().__init__(message)

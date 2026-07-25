@@ -1,12 +1,42 @@
 """Base class for PDF statement adapters."""
 
 from abc import abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 import fitz
 
 from adapters.base import DataSourceAdapter, RawRecord, hash_account_identifier
+
+# Real statements can list a transaction a day or two outside the declared
+# "From X to Y" period (e.g. a purchase processed right at the boundary) -
+# a few days' tolerance absorbs that without risking the wrong year, since
+# the alternative candidate year is ~365 days away, not a few days away.
+_PERIOD_BOUNDARY_TOLERANCE = timedelta(days=3)
+
+
+def resolve_year_in_period(
+    day_month: str, from_date: datetime, to_date: datetime
+) -> Optional[str]:
+    """Attach a year to a 'DD Mon' string using a known statement period.
+
+    Tries both the period's start and end year, preferring whichever places
+    the date inside [from_date, to_date] (with a small boundary tolerance) -
+    handles a statement period that crosses a year boundary (e.g. "20 Dec"
+    to "19 Jan 2026"). Returns None if neither year places the date in
+    range (caller should fall back to upload-timestamp inference, e.g.
+    silver_transformer._infer_dated_with_year).
+    """
+    window_start = from_date - _PERIOD_BOUNDARY_TOLERANCE
+    window_end = to_date + _PERIOD_BOUNDARY_TOLERANCE
+    for year in {from_date.year, to_date.year}:
+        try:
+            candidate = datetime.strptime(f"{day_month} {year}", "%d %b %Y")
+        except ValueError:
+            continue
+        if window_start <= candidate <= window_end:
+            return f"{day_month} {year}"
+    return None
 
 
 class PdfAdapter(DataSourceAdapter):
@@ -61,6 +91,7 @@ class PdfAdapter(DataSourceAdapter):
             transactions = self.parse_transactions(text)
 
             records = []
+            occurrence_counts: Dict[str, int] = {}
             for idx, txn in enumerate(transactions, start=1):
                 raw_identifier = txn.pop("_account_identifier_raw", None)
                 account_identifier = (
@@ -71,6 +102,21 @@ class PdfAdapter(DataSourceAdapter):
                 # adapters that produce multiple record types (e.g. Vanguard's
                 # holdings vs transactions) can still branch key format on it.
                 source_key = self.generate_source_key(txn, idx, account_identifier)
+
+                # Two transactions that look identical (same date/description/
+                # amount) within one statement are always two real, distinct
+                # transactions - never a parsing duplicate - so the Nth
+                # occurrence of a given content-key within this file gets a
+                # disambiguating suffix. The *first* occurrence keeps the key
+                # unsuffixed, so a genuinely unique transaction that also
+                # appears (once) in an overlapping-period statement still
+                # dedupes correctly across files - only same-file repeats are
+                # disambiguated.
+                occurrence = occurrence_counts.get(source_key, 0)
+                occurrence_counts[source_key] = occurrence + 1
+                if occurrence > 0:
+                    source_key = f"{source_key}_dup{occurrence}"
+
                 record_type = txn.pop("record_type", "transaction")
                 records.append(
                     RawRecord(

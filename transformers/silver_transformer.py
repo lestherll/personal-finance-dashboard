@@ -11,6 +11,7 @@ follow-up, not this transformer.
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -38,6 +39,8 @@ TRANSACTION_SOURCE_TYPES = {
     "firstdirect",
     "amex",
     "vanguard-pdf",
+    "monzo-pdf",
+    "chase",
 }
 
 
@@ -144,11 +147,24 @@ def _normalize_pdf_full_month_year(
 
 
 def _normalize_pdf_no_year(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    """Natwest PDF, AmEx: 'DD Mmm' with no year in source text."""
+    """Natwest PDF, AmEx: 'DD Mmm', with the year attached at the adapter
+    level (resolve_year_in_period()) whenever the statement's period header
+    was found. Falls back to upload-timestamp inference (Gotcha #7) for
+    Bronze rows ingested before that existed, or where the period header
+    wasn't present in the statement text.
+
+    Chase always carries the year natively ('DD Mon YYYY') so it's mapped
+    to this same normalizer purely to reuse the "%d %b %Y" parse path -
+    it never needs the upload-timestamp fallback in practice.
+    """
+    date_str = raw.get("date", "")
+    transaction_date = (
+        _parse_date(date_str, "%d %b %Y") if re.search(r"\d{4}", date_str) else None
+    )
+    if transaction_date is None:
+        transaction_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
-        "transaction_date": _infer_dated_with_year(
-            raw.get("date", ""), "%d %b", reference
-        ),
+        "transaction_date": transaction_date,
         "description": raw.get("description", ""),
         "amount": float(raw.get("amount") or 0),
         "currency": "GBP",
@@ -168,7 +184,7 @@ def _normalize_pdf_short_year(raw: Dict[str, Any], reference: Any) -> Dict[str, 
 
 
 def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    """Vanguard PDF: 'DD/MM/YYYY'."""
+    """Vanguard PDF, Monzo PDF: 'DD/MM/YYYY'."""
     return {
         "transaction_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
         "description": raw.get("description", ""),
@@ -186,6 +202,8 @@ _TRANSACTION_NORMALIZERS = {
     "firstdirect": _normalize_pdf_short_year,
     "amex": _normalize_pdf_no_year,
     "vanguard-pdf": _normalize_pdf_slash_date,
+    "monzo-pdf": _normalize_pdf_slash_date,
+    "chase": _normalize_pdf_no_year,
 }
 
 

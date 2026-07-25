@@ -12,6 +12,8 @@ from adapters.natwest_pdf_adapter import NatwestPdfAdapter
 from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
 from adapters.amex_pdf_adapter import AmexPdfAdapter
 from adapters.vanguard_pdf_adapter import VanguardPdfAdapter
+from adapters.monzo_pdf_adapter import MonzoPdfAdapter
+from adapters.chase_pdf_adapter import ChasePdfAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,8 @@ class AdapterFactory:
         "firstdirect",
         "amex",
         "vanguard-pdf",
+        "monzo-pdf",
+        "chase",
     }
 
     def __init__(self, disabled_source_types: Optional[Set[str]] = None):
@@ -60,6 +64,8 @@ class AdapterFactory:
             FirstDirectPdfAdapter(),
             AmexPdfAdapter(),
             VanguardPdfAdapter(),
+            MonzoPdfAdapter(),
+            ChasePdfAdapter(),
         ]
 
         self.csv_adapters = [

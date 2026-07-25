@@ -7,6 +7,8 @@ structure, including a boilerplate paragraph containing decimal numbers
 that must NOT be mistaken for transaction amounts.
 """
 
+from datetime import datetime
+
 import pytest
 
 from adapters.amex_pdf_adapter import AmexPdfAdapter
@@ -54,6 +56,15 @@ Statement of Account
 American Express®
 Preferred Rewards Gold Credit Card
 """
+
+
+# Mirrors real statements, which print the period once as e.g.
+# "From  20 April to 19 May 2026" - the source text never puts a year on
+# individual transaction dates ("Apr 19"), only on this summary line.
+SAMPLE_PAGE_WITH_PERIOD = (
+    "Statement includes payments and charges received by 19 May 2026\n"
+    "From  20 April to 19 May 2026\n" + SAMPLE_PAGE
+)
 
 
 @pytest.fixture
@@ -116,6 +127,35 @@ class TestAmexMultiPage:
         two_pages = SAMPLE_PAGE + "\x0c" + SAMPLE_PAGE
         txns = adapter.parse_transactions(two_pages)
         assert len(txns) == 6
+
+
+class TestAmexStatementPeriod:
+    def test_extracts_period_with_inferred_from_year(self, adapter):
+        period = adapter._extract_statement_period(SAMPLE_PAGE_WITH_PERIOD)
+        assert period == (datetime(2026, 4, 20), datetime(2026, 5, 19))
+
+    def test_returns_none_when_period_missing(self, adapter):
+        assert adapter._extract_statement_period(SAMPLE_PAGE) is None
+
+    def test_period_crossing_year_boundary_infers_prior_year_for_from_date(
+        self, adapter
+    ):
+        text = "From  20 December to 19 January 2026\n"
+        period = adapter._extract_statement_period(text)
+        assert period == (datetime(2025, 12, 20), datetime(2026, 1, 19))
+
+    def test_parse_transactions_attaches_year_from_period(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_PAGE_WITH_PERIOD)
+        assert len(txns) == 3
+        assert all(len(t["date"].split()) == 3 for t in txns)
+        coffee = next(t for t in txns if "COFFEE SHOP" in t["description"])
+        assert coffee["date"] == "19 Apr 2026"
+
+    def test_parse_transactions_without_period_leaves_date_year_less(self, adapter):
+        """Backward compatible: no period header -> date stays 'DD Mon' and
+        the Silver-layer upload-timestamp fallback takes over instead."""
+        txns = adapter.parse_transactions(SAMPLE_PAGE)
+        assert all(len(t["date"].split()) == 2 for t in txns)
 
 
 class TestAmexSourceKey:
