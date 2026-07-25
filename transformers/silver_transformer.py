@@ -38,6 +38,7 @@ LEDGER_SOURCE_TYPES = {
     "amex",
     "firstdirect",
     "natwest-statement",
+    "monzo-pdf",
 }
 
 TRANSACTION_SOURCE_TYPES = {
@@ -284,9 +285,22 @@ def _ledger_from_kroo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
 
 
 def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    """AmEx's `date` may already carry a year (adapter-level
+    `resolve_year_in_period()`, see `_normalize_pdf_no_year` above) or may
+    not (Bronze rows from before that existed, or no period header found) -
+    same dual-path check as `_normalize_pdf_no_year`, needed here too since
+    `_infer_dated_with_year` assumes a bare 'DD Mmm' and mishandles a
+    string that already has a year appended.
+    """
+    date_str = raw.get("date", "")
+    as_of_date = (
+        _parse_date(date_str, "%d %b %Y") if re.search(r"\d{4}", date_str) else None
+    )
+    if as_of_date is None:
+        as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance": float(raw.get("balance") or 0),
-        "as_of_date": _infer_dated_with_year(raw.get("date", ""), "%d %b", reference),
+        "as_of_date": as_of_date,
     }
 
 
@@ -306,6 +320,13 @@ def _ledger_from_natwest_statement(
     }
 
 
+def _ledger_from_monzo_pdf(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
+    }
+
+
 _LEDGER_NORMALIZERS = {
     "natwest": _ledger_from_natwest,
     "vanguard": _ledger_from_vanguard,
@@ -313,6 +334,7 @@ _LEDGER_NORMALIZERS = {
     "amex": _ledger_from_amex,
     "firstdirect": _ledger_from_firstdirect,
     "natwest-statement": _ledger_from_natwest_statement,
+    "monzo-pdf": _ledger_from_monzo_pdf,
 }
 
 _TRANSACTIONS_COLUMNS = [

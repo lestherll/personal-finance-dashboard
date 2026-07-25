@@ -458,6 +458,54 @@ class TestNormalizeAccountLedger:
         assert row["balance"] == 0.0
         assert row["as_of_date"] == pd.Timestamp("2026-01-31")
 
+    def test_amex_balance_captured_with_year_already_stamped(self, transformer):
+        """AmEx's adapter now stamps a real year onto `date` at parse time
+        when the statement's period header is found (resolve_year_in_period)
+        - the ledger normalizer must handle that directly rather than
+        assuming a bare 'DD Mmm' and mishandling the extra year token."""
+        raw = {
+            "date": "31 Jan 2026",
+            "description": "PAYMENT RECEIVED - THANK YOU",
+            "amount": 769.58,
+            "balance": 0.0,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "amex": _bronze_frame(
+                    "amex",
+                    [raw],
+                    upload_timestamp=pd.Timestamp("2026-02-19"),
+                    account_identifier=_AMEX_ID,
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["balance"] == 0.0
+        assert row["as_of_date"] == pd.Timestamp("2026-01-31")
+
+    def test_monzo_pdf_balance_captured(self, transformer):
+        raw = {
+            "date": "30/06/2026",
+            "description": "Lesther Llacuna (Faster Payments)",
+            "amount": -100.0,
+            "balance": 2255.37,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "monzo-pdf": _bronze_frame(
+                    "monzo-pdf", [raw], account_identifier=_MONZO_PDF_ID
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_monzo_current"
+        assert row["balance"] == 2255.37
+        assert row["as_of_date"] == pd.Timestamp("2026-06-30")
+
     def test_firstdirect_balance_captured(self, transformer):
         raw = {
             "date": "30 Apr 26",

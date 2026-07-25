@@ -95,8 +95,8 @@ class MonzoPdfAdapter(PdfAdapter):
         """Parse a transaction that spans multiple lines.
 
         Exactly two numeric lines are expected: signed amount, then signed
-        running balance (dropped - see silver_transformer Gotcha #6, PDF
-        adapters don't carry balance history into account_ledger).
+        running balance - a direct read, like Kroo/Vanguard PDF (see
+        silver_transformer Gotcha #6), not derived from an anchor.
         """
         if not lines:
             return None
@@ -119,13 +119,14 @@ class MonzoPdfAdapter(PdfAdapter):
         if not description_parts or len(amounts) != 2:
             return None
 
-        amount = amounts[0]
+        amount, balance = amounts
         description = " ".join(description_parts)
 
         return {
             "date": date_str,
             "description": description,
             "amount": amount,
+            "balance": balance,
         }
 
     def generate_source_key(

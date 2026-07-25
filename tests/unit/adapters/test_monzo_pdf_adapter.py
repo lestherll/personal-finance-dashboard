@@ -101,6 +101,13 @@ class TestMonzoParsing:
         payment = next(t for t in txns if "Jaylord" in t["description"])
         assert payment["amount"] == 197.00
 
+    def test_captures_running_balance(self, adapter):
+        """Balance is a direct read (like Kroo/Vanguard PDF), not derived -
+        must not be dropped the way it originally was (see Gotcha #6)."""
+        txns = adapter.parse_transactions(SAMPLE_TEXT)
+        payment = next(t for t in txns if "Jaylord" in t["description"])
+        assert payment["balance"] == 3026.49
+
     def test_reference_continuation_is_joined(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         txn = next(t for t in txns if "vrp2524950438141" in t["description"])
