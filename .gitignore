@@ -15,3 +15,6 @@ data/
 
 # Personal/local Claude notes - not shared with the team.
 .claude.local.md
+
+# Claude Code local settings + worktrees - machine-local, not shared.
+.claude/
