@@ -91,7 +91,7 @@ class TestAdapterDisabling:
         """Disabling all CSV source types leaves csv_adapters empty."""
         factory = AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)
         assert factory.csv_adapters == []
-        assert len(factory.pdf_adapters) == 6
+        assert len(factory.pdf_adapters) == 8
 
         for content in (sample_monzo_csv, sample_natwest_csv, sample_vanguard_csv):
             with pytest.raises(ValueError, match="File format not recognized"):
@@ -101,7 +101,7 @@ class TestAdapterDisabling:
         """Default constructor enables every adapter."""
         factory = AdapterFactory()
         assert len(factory.csv_adapters) == 3
-        assert len(factory.pdf_adapters) == 6
+        assert len(factory.pdf_adapters) == 8
 
     def test_unknown_disabled_source_type_raises(self):
         """Typos in disabled_source_types are caught rather than silently ignored."""

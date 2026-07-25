@@ -10,10 +10,14 @@ class KrooPdfAdapter(PdfAdapter):
     """Parse Kroo PDF statements."""
 
     def validate_text(self, text: str) -> bool:
-        """Check if text is from Kroo statement."""
-        return "Kroo Current Account" in text or (
-            "Kroo" in text and "Sort code" in text
-        )
+        """Check if text is from Kroo statement.
+
+        Must match the literal statement header, not just "Kroo" + "Sort code"
+        anywhere in the text - other banks' statements can incidentally contain
+        both (e.g. a transaction description referencing a Kroo account, plus
+        the statement's own "Sort code:" line), causing a false positive.
+        """
+        return "Kroo Current Account" in text
 
     def _extract_account_identifier(self, text: str) -> Optional[str]:
         """Extract 'Sort code: XX-XX-XX' + 'Account number: XXXXXXXX' from the header."""

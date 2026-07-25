@@ -16,6 +16,7 @@ _NATWEST_PDF_ID = "43ae9e53d8a2"
 _FIRSTDIRECT_ID = "8765efc92b23"
 _AMEX_ID = "63e97de2060d"
 _VANGUARD_ISA_ID = "992add198186"
+_MONZO_PDF_ID = "4fa9c17f5f09"
 
 
 def _bronze_frame(
@@ -192,6 +193,61 @@ class TestNormalizeTransactionsPdfSources:
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2025-12-20")
 
+    def test_amex_uses_year_when_adapter_already_attached_one(self, transformer):
+        """When the adapter resolved the year via the statement period
+        (resolve_year_in_period), the date string already carries it - the
+        upload_timestamp fallback must not be consulted (and could give a
+        wrong answer if it were, since it's unrelated to the real year)."""
+        raw = {"date": "28 Apr 2024", "description": "Amazon", "amount": -99.99}
+        bronze = _bronze_frame(
+            "amex",
+            [raw],
+            upload_timestamp=pd.Timestamp("2026-05-10"),  # deliberately wrong year
+            account_identifier=_AMEX_ID,
+        )
+        df = transformer.normalize_transactions({"amex": bronze})
+
+        row = df.iloc[0]
+        assert row["transaction_date"] == pd.Timestamp("2024-04-28")
+
+    def test_amex_same_recurring_charge_a_year_apart_both_survive(self, transformer):
+        """Regression test: before the adapter attached a year to the date,
+        two real charges a year apart (same day/month/amount/description)
+        produced an identical bronze_source_key and one silently vanished
+        at the Bronze->Silver dedupe step. With the year in the date string,
+        source_key naturally differs and both survive normalize_transactions."""
+        raw_2025 = {
+            "date": "15 Jan 2025",
+            "description": "NETFLIX.COM",
+            "amount": -10.99,
+        }
+        raw_2026 = {
+            "date": "15 Jan 2026",
+            "description": "NETFLIX.COM",
+            "amount": -10.99,
+        }
+        from adapters.amex_pdf_adapter import AmexPdfAdapter
+
+        amex = AmexPdfAdapter()
+        key_2025 = amex.generate_source_key(raw_2025, 1, _AMEX_ID)
+        key_2026 = amex.generate_source_key(raw_2026, 1, _AMEX_ID)
+        assert key_2025 != key_2026
+
+        bronze_2025 = _bronze_frame("amex", [raw_2025], account_identifier=_AMEX_ID)
+        bronze_2025["bronze_source_key"] = key_2025
+        bronze_2026 = _bronze_frame("amex", [raw_2026], account_identifier=_AMEX_ID)
+        bronze_2026["bronze_source_key"] = key_2026
+        combined = pd.concat([bronze_2025, bronze_2026], ignore_index=True)
+
+        df = transformer.normalize_transactions({"amex": combined})
+        df = df.drop_duplicates(subset=["bronze_source_key"], keep="last")
+
+        assert len(df) == 2
+        assert set(df["transaction_date"]) == {
+            pd.Timestamp("2025-01-15"),
+            pd.Timestamp("2026-01-15"),
+        }
+
     def test_first_direct_two_digit_year(self, transformer):
         raw = {"date": "15 Jan 24", "description": "Restaurant", "amount": -30.0}
         bronze = _bronze_frame("firstdirect", [raw], account_identifier=_FIRSTDIRECT_ID)
@@ -210,6 +266,20 @@ class TestNormalizeTransactionsPdfSources:
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_VANGUARD_ISA_ID, "vanguard-pdf")
         assert row["transaction_date"] == pd.Timestamp("2024-01-15")
+
+    def test_monzo_pdf_slash_date(self, transformer):
+        raw = {
+            "date": "30/06/2026",
+            "description": "Lesther Llacuna (Faster Payments) Reference: vrp2524950438141",
+            "amount": -100.0,
+        }
+        bronze = _bronze_frame("monzo-pdf", [raw], account_identifier=_MONZO_PDF_ID)
+        df = transformer.normalize_transactions({"monzo-pdf": bronze})
+
+        row = df.iloc[0]
+        assert row["account_id"] == get_account_id(_MONZO_PDF_ID, "monzo-pdf")
+        assert row["transaction_date"] == pd.Timestamp("2026-06-30")
+        assert row["amount"] == -100.0
 
     def test_vanguard_pdf_holdings_excluded_from_transactions(self, transformer):
         """A holding-record_type row must not leak into normalize_transactions."""

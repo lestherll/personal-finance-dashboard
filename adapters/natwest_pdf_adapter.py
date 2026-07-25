@@ -1,9 +1,14 @@
 """Natwest bank PDF statement adapter."""
 
 import re
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.pdf_adapter import PdfAdapter
+from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
+
+# e.g. "From  01/01/2026  To  31/05/2026" - full DD/MM/YYYY dates, unlike
+# Amex's period (which only carries a year on the closing date).
+_PERIOD_RE = re.compile(r"From\s+(\d{2}/\d{2}/\d{4})\s+To\s+(\d{2}/\d{2}/\d{4})")
 
 
 class NatwestPdfAdapter(PdfAdapter):
@@ -29,6 +34,22 @@ class NatwestPdfAdapter(PdfAdapter):
             return None
         return f"{match.group(1)}_{match.group(2)}"
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. 'From 01/01/2026 To 31/05/2026'."""
+        match = _PERIOD_RE.search(text)
+        if not match:
+            return None
+        from_str, to_str = match.groups()
+        try:
+            return (
+                datetime.strptime(from_str, "%d/%m/%Y"),
+                datetime.strptime(to_str, "%d/%m/%Y"),
+            )
+        except ValueError:
+            return None
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract transactions from Natwest statement.
@@ -39,6 +60,7 @@ class NatwestPdfAdapter(PdfAdapter):
         Amounts (Paid in and/or Paid out)
         """
         account_identifier = self._extract_account_identifier(text)
+        period = self._extract_statement_period(text)
         transactions = []
         lines = text.split("\n")
 
@@ -88,6 +110,13 @@ class NatwestPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if period:
+            from_date, to_date = period
+            for txn in transactions:
+                dated = resolve_year_in_period(txn["date"], from_date, to_date)
+                if dated:
+                    txn["date"] = dated
 
         if account_identifier:
             for txn in transactions:

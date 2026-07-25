@@ -2,12 +2,13 @@
 
 import logging
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import fitz
 
-from adapters.pdf_adapter import PdfAdapter
+from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,12 @@ _ACCOUNT_SUMMARY_RE = re.compile(
     re.DOTALL,
 )
 _SUMMARY_AMOUNT_RE = re.compile(r"£\s*([\d,]+\.\d{2})")
+# e.g. "From  20 April to 19 May 2026" - the year only appears once, on the
+# closing ("to") date; the opening date's year is inferred (see
+# _extract_statement_period), since the period can cross a year boundary.
+_PERIOD_RE = re.compile(
+    r"From\s+(\d{1,2}\s+[A-Za-z]+)\s+to\s+(\d{1,2}\s+[A-Za-z]+)\s+(\d{4})"
+)
 
 
 class AmexPdfAdapter(PdfAdapter):
@@ -182,13 +189,47 @@ class AmexPdfAdapter(PdfAdapter):
         match = _CARD_RE.search(text)
         return match.group(0) if match else None
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. 'From 20 April to 19 May 2026'.
+
+        Only the closing date carries a year in the source text - the
+        opening date's year is inferred from it (same year, unless the
+        opening month is numerically after the closing month, which means
+        the period crossed a year boundary, e.g. Dec -> Jan).
+        """
+        match = _PERIOD_RE.search(text)
+        if not match:
+            return None
+        from_str, to_str, year_str = match.groups()
+        to_year = int(year_str)
+        try:
+            to_date = datetime.strptime(f"{to_str} {to_year}", "%d %B %Y")
+            # Placeholder leap year so "29 February" parses without needing
+            # (and without pandas warning about) an implicit default year.
+            from_no_year = datetime.strptime(f"{from_str} 2000", "%d %B %Y")
+        except ValueError:
+            return None
+        from_year = to_year if from_no_year.month <= to_date.month else to_year - 1
+        from_date = from_no_year.replace(year=from_year)
+        return from_date, to_date
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """Extract transactions from an American Express statement."""
         account_identifier = self._extract_account_identifier(text)
+        period = self._extract_statement_period(text)
 
         transactions = []
         for page_text in text.split("\x0c"):
             transactions.extend(self._parse_page(page_text))
+
+        if period:
+            from_date, to_date = period
+            for txn in transactions:
+                dated = resolve_year_in_period(txn["date"], from_date, to_date)
+                if dated:
+                    txn["date"] = dated
 
         if account_identifier:
             for txn in transactions:
