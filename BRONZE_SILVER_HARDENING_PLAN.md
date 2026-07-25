@@ -1,5 +1,12 @@
 # Plan: Hardening Bronze & Silver before Gold
 
+> **Status update:** the Bronze section (B1 structured reconciliation, B2
+> friendly detection errors, B3 statement coverage tracking) has since been
+> implemented in full — see `CLAUDE.md`'s "What Bronze guarantees" (under
+> Architecture & Data Flow → Bronze Layer) and Gotcha #14. The Silver section
+> below (S1-S4) is still open and unstarted. The rest of this document is
+> left as originally written, for history/rationale.
+
 ## Why this doc exists
 
 Written after a product-level step-back: the project is functionally at the

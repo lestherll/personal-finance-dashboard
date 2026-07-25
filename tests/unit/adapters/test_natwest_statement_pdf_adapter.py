@@ -8,6 +8,8 @@ format), an opening "BROUGHT FORWARD" row, and a same-day continuation
 transaction that omits its date line (only printed once per calendar day).
 """
 
+from datetime import datetime
+
 import pytest
 
 from adapters.natwest_statement_pdf_adapter import NatwestStatementPdfAdapter
@@ -146,6 +148,91 @@ class TestNatwestStatementParsing:
         txns = adapter.parse_transactions(mismatched_text)
         assert len(txns) == 3  # doesn't raise or drop data
         assert "does not match" in caplog.text
+
+
+BARE_TEXT = """Account Name
+Account No
+Sort Code
+Page No
+MR TEST PERSON
+12345678
+11-22-33
+1 of 1
+CURRENT ACCOUNT
+Date
+Description
+Paid In(£)
+Withdrawn(£)
+Balance(£)
+
+14 FEB 2026
+
+BROUGHT FORWARD
+
+
+1,010.00
+
+26 FEB
+
+Automated Credit 3305 JPMCB
+
+100.00
+
+1,110.00
+"""
+
+
+class TestNatwestStatementReconciliation:
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.check_name == "natwest_statement_new_balance"
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        mismatched_text = SAMPLE_TEXT.replace(
+            "New Balance\n£960.00", "New Balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_new_balance_leaves_last_reconciliation_none(self, adapter):
+        adapter.parse_transactions(BARE_TEXT)
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_and_period_reset_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching/period-bearing file must not leak into a later bare
+        file with neither anchor."""
+        mismatched_text = SAMPLE_TEXT.replace(
+            "New Balance\n£960.00", "New Balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_statement_period is not None
+
+        adapter.parse_transactions(BARE_TEXT)
+        assert adapter.last_reconciliation is None
+        assert adapter.last_statement_period is None
+
+
+class TestNatwestStatementPeriodCovered:
+    def test_extracts_period_covered(self, adapter):
+        period = adapter._extract_period_covered(SAMPLE_TEXT)
+        assert period is not None
+        from_date, to_date = period
+        assert from_date == datetime(2026, 2, 14)
+        assert to_date == datetime(2026, 5, 13)
+
+    def test_returns_none_when_missing(self, adapter):
+        assert adapter._extract_period_covered(BARE_TEXT) is None
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 2, 14)
+        assert adapter.last_statement_period.to_date == datetime(2026, 5, 13)
 
 
 class TestNatwestStatementSourceKey:

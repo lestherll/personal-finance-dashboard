@@ -5,6 +5,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
+from adapters.base import ReconciliationResult
 from adapters.pdf_adapter import PdfAdapter
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class FirstDirectPdfAdapter(PdfAdapter):
         Details (can be multiple lines)
         Amount (e.g., "47.22CR" or "47.22")
         """
+        self.last_reconciliation = None
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -99,8 +101,9 @@ class FirstDirectPdfAdapter(PdfAdapter):
 
         return transactions
 
-    @staticmethod
-    def _attach_derived_balances(text: str, transactions: List[Dict[str, Any]]) -> None:
+    def _attach_derived_balances(
+        self, text: str, transactions: List[Dict[str, Any]]
+    ) -> None:
         """Roll a "Previous Balance" anchor forward through transactions.
 
         First Direct statements don't print a per-transaction running
@@ -129,20 +132,30 @@ class FirstDirectPdfAdapter(PdfAdapter):
             txn["balance"] = float(running.quantize(Decimal("0.01")))
 
         new_balance_match = _NEW_BALANCE_RE.search(text)
-        if new_balance_match:
-            try:
-                expected = Decimal(new_balance_match.group(1).replace(",", ""))
-            except InvalidOperation:
-                expected = None
-            if expected is not None and running.quantize(Decimal("0.01")) != expected:
-                logger.warning(
-                    "First Direct statement: derived closing balance %.2f "
-                    "does not match statement's printed New Balance %.2f - "
-                    "transaction amounts don't fully reconcile with the "
-                    "Account Summary block. Balance fields may be inaccurate.",
-                    running,
-                    expected,
-                )
+        if not new_balance_match:
+            return
+        try:
+            expected = Decimal(new_balance_match.group(1).replace(",", ""))
+        except InvalidOperation:
+            return
+
+        derived_closing = running.quantize(Decimal("0.01"))
+        matches = derived_closing == expected
+        self.last_reconciliation = ReconciliationResult(
+            check_name="first_direct_new_balance",
+            expected_closing=expected,
+            derived_closing=derived_closing,
+            matches=matches,
+        )
+        if not matches:
+            logger.warning(
+                "First Direct statement: derived closing balance %.2f "
+                "does not match statement's printed New Balance %.2f - "
+                "transaction amounts don't fully reconcile with the "
+                "Account Summary block. Balance fields may be inaccurate.",
+                running,
+                expected,
+            )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """

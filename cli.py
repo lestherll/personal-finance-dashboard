@@ -9,12 +9,15 @@ Usage:
 
 import hashlib
 import shutil
+import sys
 from pathlib import Path
+from typing import Optional
 
 import click
 import pandas as pd
 
-from adapters.factory import AdapterFactory
+from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.factory import AdapterDetectionError, AdapterFactory
 from config import RAW_DIR
 from models.datalake import get_datalake
 from transformers.account_config import (
@@ -22,6 +25,7 @@ from transformers.account_config import (
     register_account,
     register_source_type_fallback,
 )
+from transformers.coverage import find_coverage_gaps, find_statement_periods
 
 ACCOUNT_TYPE_CHOICES = click.Choice(["current", "credit", "investment", "savings"])
 
@@ -109,6 +113,30 @@ def _archive_raw_file(path: Path, source_type: str, file_hash: str) -> str:
     return str(dest)
 
 
+def _echo_reconciliation(result: Optional[ReconciliationResult]) -> None:
+    if result is None or result.matches is None:
+        return
+    if result.matches:
+        click.echo(
+            f"  ✓ reconciles against printed closing balance "
+            f"(£{result.expected_closing:.2f})"
+        )
+    else:
+        click.echo(
+            f"  ⚠ balance mismatch: derived £{result.derived_closing:.2f} vs "
+            f"statement's printed £{result.expected_closing:.2f} - balance "
+            "figures on this statement may be inaccurate, check manually"
+        )
+
+
+def _echo_statement_period(period: Optional[StatementPeriod]) -> None:
+    if period is None:
+        return
+    click.echo(
+        f"  statement period: {period.from_date.date()} to {period.to_date.date()}"
+    )
+
+
 @cli.command("ingest")
 @click.argument(
     "files", nargs=-1, required=True, type=click.Path(exists=True, dir_okay=False)
@@ -117,6 +145,7 @@ def ingest(files):
     """Parse statement files and write raw records to the Bronze layer."""
     datalake = get_datalake()
     factory = AdapterFactory()
+    had_failure = False
 
     for file_arg in files:
         path = Path(file_arg)
@@ -129,11 +158,20 @@ def ingest(files):
         )
 
         try:
-            records = factory.ingest(content, path.name, file_hash)
-        except ValueError as e:
+            result = factory.ingest(content, path.name, file_hash)
+        except AdapterDetectionError as e:
             click.echo(f"✗ {path.name}: {e}")
+            had_failure = True
+            continue
+        except ValueError as e:
+            click.echo(
+                f"✗ {path.name}: recognized the format but failed to parse "
+                f"this file ({e})"
+            )
+            had_failure = True
             continue
 
+        records = result.records
         if not records:
             click.echo(f"⚠ {path.name}: parsed 0 records")
             continue
@@ -152,10 +190,51 @@ def ingest(files):
                 for r in records
             ]
         )
-        filepath = datalake.write_bronze(source_type, path.name, df)
+        filepath = datalake.write_bronze(
+            source_type,
+            path.name,
+            df,
+            reconciliation=result.reconciliation,
+            statement_period=result.statement_period,
+        )
         raw_path = _archive_raw_file(path, source_type, file_hash)
         click.echo(f"✓ {path.name}: {len(records)} record(s) -> {filepath}")
         click.echo(f"  archived raw file -> {raw_path}")
+        _echo_reconciliation(result.reconciliation)
+        _echo_statement_period(result.statement_period)
+
+    if had_failure:
+        sys.exit(1)
+
+
+@accounts.command("coverage")
+def coverage():
+    """List ingested statement periods per account and flag gaps between them."""
+    datalake = get_datalake()
+    periods = find_statement_periods(datalake)
+
+    if periods.empty:
+        click.echo(
+            "No statement-period data found yet (only amex, natwest-pdf, and "
+            "natwest-statement sources track periods)."
+        )
+        return
+
+    gaps = find_coverage_gaps(periods)
+
+    for account_id, group in periods.groupby("account_id"):
+        click.echo(f"{account_id}:")
+        for row in group.sort_values("period_from").itertuples():
+            click.echo(
+                f"  {row.period_from.date()} to {row.period_to.date()}  "
+                f"({row.filename})"
+            )
+        account_gaps = gaps[gaps["account_id"] == account_id]
+        for gap in account_gaps.itertuples():
+            click.echo(
+                f"  ⚠ gap: {gap.gap_start.date()} to {gap.gap_end.date()} "
+                f"({gap.days} days uncovered)"
+            )
 
 
 if __name__ == "__main__":

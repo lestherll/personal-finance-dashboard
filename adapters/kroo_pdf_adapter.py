@@ -1,9 +1,13 @@
 """Kroo bank PDF statement adapter."""
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
+from adapters.base import ReconciliationResult
 from adapters.pdf_adapter import PdfAdapter
+
+_CLOSING_BALANCE_RE = re.compile(r"Closing balance\s*\n\s*£\s*([\d,]+\.\d{2})")
 
 
 class KrooPdfAdapter(PdfAdapter):
@@ -34,6 +38,7 @@ class KrooPdfAdapter(PdfAdapter):
         Kroo format (multi-line per transaction):
         Date | Description | Out | In | Balance
         """
+        self.last_reconciliation = None
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -90,7 +95,41 @@ class KrooPdfAdapter(PdfAdapter):
             for txn in transactions:
                 txn["_account_identifier_raw"] = account_identifier
 
+        self._check_reconciliation(text, transactions)
+
         return transactions
+
+    def _check_reconciliation(
+        self, text: str, transactions: List[Dict[str, Any]]
+    ) -> None:
+        """Compare the last parsed transaction's printed balance against the
+        statement's own "Closing balance" anchor (previously skipped over,
+        never captured).
+
+        Unlike Amex/First Direct/Natwest Statement, Kroo's per-transaction
+        `balance` is a *direct read* of a printed column, not rolled forward
+        from an opening anchor - so this doesn't confirm the arithmetic
+        reconciles, only that the transaction table was read through to its
+        end (a truncated/incompletely-parsed table would show a mismatch
+        here just the same as a genuine parsing bug would).
+        """
+        if not transactions:
+            return
+        match = _CLOSING_BALANCE_RE.search(text)
+        if not match:
+            return
+        try:
+            expected = Decimal(match.group(1).replace(",", ""))
+            derived = Decimal(str(transactions[-1]["balance"]))
+        except InvalidOperation:
+            return
+
+        self.last_reconciliation = ReconciliationResult(
+            check_name="kroo_closing_balance",
+            expected_closing=expected,
+            derived_closing=derived,
+            matches=derived == expected,
+        )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """

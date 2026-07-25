@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import fitz
 
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ class AmexPdfAdapter(PdfAdapter):
         for this one lookup, not for transaction parsing, which continues to
         rely on the default flattened order handled elsewhere in this file.
         """
+        self.last_reconciliation = None
         records = super().parse(file_content, filename, file_hash)
         if isinstance(file_content, str) or not records:
             return records
@@ -114,7 +116,15 @@ class AmexPdfAdapter(PdfAdapter):
             running += plan_it_instalments_due
             records[-1].raw_data["balance"] = float(running.quantize(Decimal("0.01")))
 
-        if running.quantize(Decimal("0.01")) != statement_closing_balance:
+        derived_closing = running.quantize(Decimal("0.01"))
+        matches = derived_closing == statement_closing_balance
+        self.last_reconciliation = ReconciliationResult(
+            check_name="amex_closing_balance",
+            expected_closing=statement_closing_balance,
+            derived_closing=derived_closing,
+            matches=matches,
+        )
+        if not matches:
             logger.warning(
                 "Amex %s: derived closing balance %.2f does not match "
                 "statement's printed Closing Balance %.2f - transaction "
@@ -217,6 +227,7 @@ class AmexPdfAdapter(PdfAdapter):
 
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """Extract transactions from an American Express statement."""
+        self.last_statement_period = None
         account_identifier = self._extract_account_identifier(text)
         period = self._extract_statement_period(text)
 
@@ -226,6 +237,7 @@ class AmexPdfAdapter(PdfAdapter):
 
         if period:
             from_date, to_date = period
+            self.last_statement_period = StatementPeriod(from_date, to_date)
             for txn in transactions:
                 dated = resolve_year_in_period(txn["date"], from_date, to_date)
                 if dated:

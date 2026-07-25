@@ -12,9 +12,11 @@ rather than a branch inside the existing one.
 
 import logging
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,12 @@ _IDENTIFIER_RE = re.compile(
 _PREVIOUS_BALANCE_RE = re.compile(r"Previous Balance\s*\n\s*£([\d,]+\.\d{2})")
 _NEW_BALANCE_RE = re.compile(r"New Balance\s*\n\s*£([\d,]+\.\d{2})")
 _FOOTER_MARKERS = ("Interest (variable)", "RETSTMT")
+# e.g. "Period Covered\n14 FEB 2026 to 13 MAY 2026" - unlike Amex/natwest-pdf,
+# this document prints an explicit year on both ends already.
+_PERIOD_COVERED_RE = re.compile(
+    r"Period Covered\s*\n\s*(\d{1,2}\s+[A-Z]{3}\s+\d{4})\s+to\s+"
+    r"(\d{1,2}\s+[A-Z]{3}\s+\d{4})"
+)
 
 
 class NatwestStatementPdfAdapter(PdfAdapter):
@@ -62,6 +70,27 @@ class NatwestStatementPdfAdapter(PdfAdapter):
             return None
         return f"{match.group(1)}_{match.group(2)}"
 
+    @staticmethod
+    def _extract_period_covered(text: str) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement's own "Period Covered" range.
+
+        Unlike Amex/natwest-pdf, both dates already carry an explicit year
+        here, so no year-inference is needed - this is purely for B3
+        coverage tracking, not for dating transactions (this format's
+        per-line dates already carry years where printed).
+        """
+        match = _PERIOD_COVERED_RE.search(text)
+        if not match:
+            return None
+        from_str, to_str = match.groups()
+        try:
+            return (
+                datetime.strptime(from_str, "%d %b %Y"),
+                datetime.strptime(to_str, "%d %b %Y"),
+            )
+        except ValueError:
+            return None
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """Extract transactions from the Date/Description/Paid In/Withdrawn/
         Balance table.
@@ -78,6 +107,12 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         transaction omits the date line, so the last-seen date carries
         forward.
         """
+        self.last_reconciliation = None
+        self.last_statement_period = None
+        period = self._extract_period_covered(text)
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
+
         account_identifier = self._extract_account_identifier(text)
         lines = [line.strip() for line in text.split("\n")]
         lines = [line for line in lines if line]
@@ -160,8 +195,9 @@ class NatwestStatementPdfAdapter(PdfAdapter):
 
         return transactions
 
-    @staticmethod
-    def _check_reconciliation(text: str, computed_final: Optional[Decimal]) -> None:
+    def _check_reconciliation(
+        self, text: str, computed_final: Optional[Decimal]
+    ) -> None:
         """Non-blocking sanity check against the statement's own summary figures."""
         if computed_final is None:
             return
@@ -174,7 +210,14 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         except InvalidOperation:
             return
 
-        if computed_final != expected:
+        matches = computed_final == expected
+        self.last_reconciliation = ReconciliationResult(
+            check_name="natwest_statement_new_balance",
+            expected_closing=expected,
+            derived_closing=computed_final,
+            matches=matches,
+        )
+        if not matches:
             logger.warning(
                 "Natwest statement: final parsed balance %.2f does not "
                 "match statement's printed New Balance %.2f - the "

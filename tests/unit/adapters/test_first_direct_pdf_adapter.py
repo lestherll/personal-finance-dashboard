@@ -107,3 +107,53 @@ Outstanding Balance
         txns = adapter.parse_transactions(text_without_summary)
         assert len(txns) == 1
         assert "balance" not in txns[0]
+
+
+TEXT_WITHOUT_SUMMARY = """first direct
+Your Transaction Details
+Received By Us
+Transaction Date
+Details
+Amount
+01 May 26
+01 May 26
+PAYMENT RECEIVED - THANK YOU
+47.22CR
+Outstanding Balance
+"""
+
+
+class TestFirstDirectReconciliation:
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        """SAMPLE_TEXT's Previous Balance (1000.00) rolled forward through
+        both transactions lands exactly on its printed New Balance
+        (968.28) - see TestFirstDirectDerivedBalance's balance assertions."""
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.check_name == "first_direct_new_balance"
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        mismatching_text = SAMPLE_TEXT.replace(
+            "New Balance\n968.28", "New Balance\n999.99", 1
+        )
+        adapter.parse_transactions(mismatching_text)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_account_summary_leaves_last_reconciliation_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_SUMMARY)
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching file must not leak its result into a later file with no
+        anchor of its own."""
+        mismatching_text = SAMPLE_TEXT.replace(
+            "New Balance\n968.28", "New Balance\n999.99", 1
+        )
+        adapter.parse_transactions(mismatching_text)
+        assert adapter.last_reconciliation is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_SUMMARY)
+        assert adapter.last_reconciliation is None

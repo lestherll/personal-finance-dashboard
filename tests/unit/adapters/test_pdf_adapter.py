@@ -94,6 +94,16 @@ Closing balance
         assert not records[0].source_key.endswith("_dup1")
 
 
+class TestDataSourceAdapterDefaults:
+    """DataSourceAdapter.__init__ (adapters/base.py) gives every adapter -
+    CSV or PDF - these two attributes, defaulted to None before parse() is
+    ever called."""
+
+    def test_fresh_adapter_has_no_reconciliation_or_period(self, adapter):
+        assert adapter.last_reconciliation is None
+        assert adapter.last_statement_period is None
+
+
 class TestResolveYearInPeriod:
     def test_within_period_resolves(self):
         result = resolve_year_in_period(

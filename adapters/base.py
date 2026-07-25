@@ -5,6 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 
@@ -36,8 +37,38 @@ class RawRecord:
     record_type: str = "transaction"  # "transaction" | "holding"
 
 
+@dataclass
+class ReconciliationResult:
+    """Per-file self-check: does a rolled-forward/derived balance match a
+    printed anchor (e.g. Closing/New Balance) on the statement itself?"""
+
+    check_name: str
+    expected_closing: Optional[Decimal]
+    derived_closing: Optional[Decimal]
+    matches: Optional[bool]  # None = anchor not found in this file, inconclusive
+
+
+@dataclass
+class StatementPeriod:
+    """Per-file statement coverage period, as printed on the statement."""
+
+    from_date: datetime
+    to_date: datetime
+
+
 class DataSourceAdapter(ABC):
     """All adapters inherit from this."""
+
+    def __init__(self) -> None:
+        # Per-file, whole-statement facts a subclass's parse() may set -
+        # not part of the RawRecord/parse() contract since they describe
+        # the file as a whole, not an individual record. Must be reset to
+        # None at the top of whatever method computes them: adapter
+        # instances are reused across files by AdapterFactory, so a stale
+        # value would otherwise leak into a file that has no anchor of its
+        # own to check/extract.
+        self.last_reconciliation: Optional[ReconciliationResult] = None
+        self.last_statement_period: Optional[StatementPeriod] = None
 
     @abstractmethod
     def validate(self, file_content: str) -> tuple[bool, float]:

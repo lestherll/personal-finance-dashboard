@@ -9,6 +9,7 @@ These fixtures mirror that single-line structure.
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 import fitz
 import pytest
@@ -254,10 +255,143 @@ class TestAmexDerivedBalance:
         assert "balance" not in records[0].raw_data
 
 
+class TestAmexReconciliation:
+    """See TestAmexDerivedBalance for the same Account Summary extraction
+    mechanics - these tests check the resulting self.last_reconciliation
+    attribute (B1), not the derived-balance numbers themselves."""
+
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("Account Summary", 120),
+                (
+                    "Previous Closing Balance New Credits New Debits Closing Balance",
+                    140,
+                ),
+                ("£100.00 - £0.00 + £3.85 = £103.85", 160),
+                (
+                    "Apr 19   Apr 19   COFFEE SHOP LONDON                     3.85",
+                    200,
+                ),
+                ("Amount  £", 460),
+            ]
+        )
+        adapter.parse(content, "test.pdf", "fakehash")
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.expected_closing == Decimal("103.85")
+        assert adapter.last_reconciliation.derived_closing == Decimal("103.85")
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("Account Summary", 120),
+                (
+                    "Previous Closing Balance New Credits New Debits Closing Balance",
+                    140,
+                ),
+                ("£100.00 - £20.00 + £30.00 = £110.00", 160),
+                (
+                    "May 1   May 1   PAYMENT RECEIVED - THANK YOU            20.00",
+                    200,
+                ),
+                ("CR", 220),
+                (
+                    "Apr 19   Apr 19   COFFEE SHOP LONDON                     3.85",
+                    260,
+                ),
+                ("Amount  £", 460),
+            ]
+        )
+        adapter.parse(content, "test.pdf", "fakehash")
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_account_summary_leaves_last_reconciliation_none(self, adapter):
+        content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("CR", 180),
+                (
+                    "May 1   May 1   PAYMENT RECEIVED - THANK YOU        20.00",
+                    220,
+                ),
+            ]
+        )
+        adapter.parse(content, "test.pdf", "fakehash")
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_and_period_reset_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching/period-bearing file must not leak its results into a
+        later file that has neither."""
+        mismatching_content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("Account Summary", 120),
+                (
+                    "Previous Closing Balance New Credits New Debits Closing Balance",
+                    140,
+                ),
+                ("£100.00 - £20.00 + £30.00 = £110.00", 160),
+                (
+                    "May 1   May 1   PAYMENT RECEIVED - THANK YOU            20.00",
+                    200,
+                ),
+                ("CR", 220),
+                ("From  20 April to 19 May 2026", 240),
+                (
+                    "Apr 19   Apr 19   COFFEE SHOP LONDON                     3.85",
+                    260,
+                ),
+                ("Amount  £", 460),
+            ]
+        )
+        adapter.parse(mismatching_content, "test.pdf", "fakehash")
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_statement_period is not None
+
+        bare_content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("CR", 180),
+                (
+                    "May 1   May 1   PAYMENT RECEIVED - THANK YOU        20.00",
+                    220,
+                ),
+            ]
+        )
+        adapter.parse(bare_content, "test2.pdf", "fakehash")
+        assert adapter.last_reconciliation is None
+        assert adapter.last_statement_period is None
+
+
 class TestAmexStatementPeriod:
     def test_extracts_period_with_inferred_from_year(self, adapter):
         period = adapter._extract_statement_period(SAMPLE_PAGE_WITH_PERIOD)
         assert period == (datetime(2026, 4, 20), datetime(2026, 5, 19))
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_PAGE_WITH_PERIOD)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 4, 20)
+        assert adapter.last_statement_period.to_date == datetime(2026, 5, 19)
+
+    def test_no_period_leaves_last_statement_period_none(self, adapter):
+        adapter.parse_transactions(SAMPLE_PAGE)
+        assert adapter.last_statement_period is None
 
     def test_returns_none_when_period_missing(self, adapter):
         assert adapter._extract_statement_period(SAMPLE_PAGE) is None

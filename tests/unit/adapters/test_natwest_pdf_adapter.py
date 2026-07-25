@@ -109,3 +109,23 @@ class TestNatwestPdfStatementPeriod:
         the Silver-layer upload-timestamp fallback takes over instead."""
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         assert all(len(t["date"].split()) == 2 for t in txns)
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT_WITH_PERIOD)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 1, 1)
+        assert adapter.last_statement_period.to_date == datetime(2026, 5, 31)
+
+    def test_no_period_leaves_last_statement_period_none(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is None
+
+    def test_statement_period_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        period-bearing file must not leak into a later file with no period
+        header of its own."""
+        adapter.parse_transactions(SAMPLE_TEXT_WITH_PERIOD)
+        assert adapter.last_statement_period is not None
+
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is None

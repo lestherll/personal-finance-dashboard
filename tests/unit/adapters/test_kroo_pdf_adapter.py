@@ -86,6 +86,48 @@ class TestKrooParsing:
         assert salary["balance"] == 576.23
 
 
+TEXT_WITHOUT_CLOSING_BALANCE = SAMPLE_TEXT.replace("Closing balance\n£576.23\n", "")
+
+
+class TestKrooReconciliation:
+    """Kroo's per-transaction balance is a direct read of a printed column,
+    not rolled forward - so this check only confirms the last transaction's
+    printed balance matches the statement's separate "Closing balance"
+    anchor (previously skipped over during parsing, never captured), not
+    that the transaction arithmetic itself reconciles."""
+
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.check_name == "kroo_closing_balance"
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        mismatched_text = SAMPLE_TEXT.replace(
+            "Closing balance\n£576.23", "Closing balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_closing_balance_leaves_last_reconciliation_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_CLOSING_BALANCE)
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching file must not leak its result into a later file with no
+        closing-balance anchor of its own."""
+        mismatched_text = SAMPLE_TEXT.replace(
+            "Closing balance\n£576.23", "Closing balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_CLOSING_BALANCE)
+        assert adapter.last_reconciliation is None
+
+
 class TestKrooSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
         txn = {"date": "1June2026", "description": "Test", "amount": -1.0}

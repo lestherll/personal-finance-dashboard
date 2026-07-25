@@ -1,9 +1,15 @@
 """Adapter factory for auto-detecting and routing to the right adapter."""
 
 import logging
+from dataclasses import dataclass
 from typing import List, Optional, Set, Union
 
-from adapters.base import DataSourceAdapter, RawRecord
+from adapters.base import (
+    DataSourceAdapter,
+    RawRecord,
+    ReconciliationResult,
+    StatementPeriod,
+)
 from adapters.monzo_adapter import MonzoAdapter
 from adapters.natwest_adapter import NatwestAdapter
 from adapters.vanguard_adapter import VanguardAdapter
@@ -17,6 +23,51 @@ from adapters.monzo_pdf_adapter import MonzoPdfAdapter
 from adapters.chase_pdf_adapter import ChasePdfAdapter
 
 logger = logging.getLogger(__name__)
+
+
+class AdapterDetectionError(ValueError):
+    """Base class for AdapterFactory.detect_adapter() failures."""
+
+
+class UnrecognizedFormatError(AdapterDetectionError):
+    """Raised when no adapter recognizes the uploaded file at all."""
+
+    def __init__(self, content_type: str, enabled: str):
+        self.content_type = content_type
+        message = (
+            f"File format not recognized ({content_type}): we don't support "
+            f"this {content_type} statement format yet. Supported "
+            f"{content_type} adapters: {enabled}."
+        )
+        super().__init__(message)
+
+
+class AmbiguousFormatError(AdapterDetectionError):
+    """Raised when two or more adapters match with indistinguishable confidence."""
+
+    def __init__(
+        self, best_type: str, best_conf: float, second_type: str, second_conf: float
+    ):
+        self.best_type = best_type
+        self.second_type = second_type
+        message = (
+            f"File format ambiguous: this could be {best_type} "
+            f"({best_conf:.1%}) or {second_type} ({second_conf:.1%}) and "
+            "we're not confident enough to pick automatically."
+        )
+        super().__init__(message)
+
+
+@dataclass
+class IngestResult:
+    """Return value of AdapterFactory.ingest(): the parsed records plus any
+    whole-file facts (reconciliation, statement period) the adapter set on
+    itself while parsing - see DataSourceAdapter.last_reconciliation /
+    last_statement_period."""
+
+    records: List[RawRecord]
+    reconciliation: Optional[ReconciliationResult]
+    statement_period: Optional[StatementPeriod]
 
 
 class AdapterFactory:
@@ -113,10 +164,12 @@ class AdapterFactory:
             enabled = (
                 ", ".join(a.detect_source_type() for a in adapters_to_try) or "none"
             )
-            raise ValueError(
-                f"File format not recognized ({content_type}). "
-                f"Enabled {content_type} adapters: {enabled}"
+            logger.info(
+                "Unsupported format attempted: no %s adapter matched (enabled: %s)",
+                content_type,
+                enabled,
             )
+            raise UnrecognizedFormatError(content_type, enabled)
 
         # Sort by confidence
         valid_matches.sort(key=lambda x: x[1], reverse=True)
@@ -126,17 +179,27 @@ class AdapterFactory:
         if len(valid_matches) > 1:
             second_conf = valid_matches[1][1]
             if abs(best_conf - second_conf) < 0.05:
-                raise ValueError(
-                    f"File format ambiguous: {best_adapter.detect_source_type()} "
-                    f"({best_conf:.1%}) vs {valid_matches[1][0].detect_source_type()} "
-                    f"({second_conf:.1%})"
+                second_type = valid_matches[1][0].detect_source_type()
+                logger.info(
+                    "Unsupported format attempted: ambiguous match between %s "
+                    "(%.1f%%) and %s (%.1f%%)",
+                    best_adapter.detect_source_type(),
+                    best_conf * 100,
+                    second_type,
+                    second_conf * 100,
+                )
+                raise AmbiguousFormatError(
+                    best_adapter.detect_source_type(),
+                    best_conf,
+                    second_type,
+                    second_conf,
                 )
 
         return best_adapter
 
     def ingest(
         self, file_content: Union[str, bytes], filename: str, file_hash: str
-    ) -> List[RawRecord]:
+    ) -> IngestResult:
         """Single entry point: detect + parse (CSV or PDF)."""
         adapter = self.detect_adapter(file_content)
         records = adapter.parse(file_content, filename, file_hash)
@@ -148,4 +211,8 @@ class AdapterFactory:
         )
         logger.info(f"✓ Parsed {len(records)} records from {filename}")
 
-        return records
+        return IngestResult(
+            records=records,
+            reconciliation=getattr(adapter, "last_reconciliation", None),
+            statement_period=getattr(adapter, "last_statement_period", None),
+        )

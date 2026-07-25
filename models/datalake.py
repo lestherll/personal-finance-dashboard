@@ -1,12 +1,12 @@
 """Data lake utilities for Parquet files and DuckDB queries."""
 
 import logging
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
+from adapters.base import ReconciliationResult, StatementPeriod
 from config import BRONZE_DIR, DUCKDB_PATH, GOLD_DIR, SILVER_DIR
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,14 @@ class DataLake:
         self.conn = duckdb.connect(db_path)
         logger.info(f"DuckDB initialized at {db_path}")
 
-    def write_bronze(self, source_type: str, filename: str, df: pd.DataFrame) -> str:
+    def write_bronze(
+        self,
+        source_type: str,
+        filename: str,
+        df: pd.DataFrame,
+        reconciliation: Optional[ReconciliationResult] = None,
+        statement_period: Optional[StatementPeriod] = None,
+    ) -> str:
         """
         Write raw records to Bronze layer (immutable).
 
@@ -29,6 +36,10 @@ class DataLake:
             source_type: 'monzo', 'natwest', 'vanguard'
             filename: Original filename
             df: DataFrame with raw data
+            reconciliation: whole-file balance self-check result, if the
+                adapter performed one (see adapters.base.ReconciliationResult)
+            statement_period: whole-file statement coverage period, if the
+                adapter extracted one (see adapters.base.StatementPeriod)
 
         Returns:
             Path to written Parquet file
@@ -41,6 +52,27 @@ class DataLake:
         df["source_type"] = source_type
         df["upload_timestamp"] = pd.Timestamp.now()
         df["filename"] = filename
+
+        # Only added when the adapter actually produced the fact, so
+        # sources with no reconciliation/period concept simply don't get
+        # these columns rather than getting them NaN-filled.
+        if reconciliation is not None:
+            df["reconciliation_check"] = reconciliation.check_name
+            df["reconciliation_expected_closing"] = (
+                float(reconciliation.expected_closing)
+                if reconciliation.expected_closing is not None
+                else None
+            )
+            df["reconciliation_derived_closing"] = (
+                float(reconciliation.derived_closing)
+                if reconciliation.derived_closing is not None
+                else None
+            )
+            df["reconciliation_matches"] = reconciliation.matches
+
+        if statement_period is not None:
+            df["statement_period_from"] = statement_period.from_date
+            df["statement_period_to"] = statement_period.to_date
 
         # Write Parquet (immutable, append-only)
         table = pa.Table.from_pandas(df)

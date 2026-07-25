@@ -1,7 +1,11 @@
 """Tests for Adapter Factory."""
 
 import pytest
-from adapters.factory import AdapterFactory
+from adapters.factory import (
+    AdapterFactory,
+    AmbiguousFormatError,
+    UnrecognizedFormatError,
+)
 
 
 @pytest.fixture
@@ -29,13 +33,24 @@ class TestAdapterDetection:
 
     def test_detect_unknown_format(self, factory, invalid_csv):
         """Unknown format raises error."""
-        with pytest.raises(ValueError, match="File format not recognized"):
+        with pytest.raises(UnrecognizedFormatError, match="File format not recognized"):
             factory.detect_adapter(invalid_csv)
 
     def test_detect_empty_file(self, factory):
         """Empty file raises error."""
-        with pytest.raises(ValueError, match="File format not recognized"):
+        with pytest.raises(UnrecognizedFormatError, match="File format not recognized"):
             factory.detect_adapter("")
+
+    def test_detect_ambiguous_format(self, factory, monkeypatch):
+        """Two adapters tying at the top raises AmbiguousFormatError."""
+        adapter_a, adapter_b = factory.csv_adapters[0], factory.csv_adapters[1]
+        monkeypatch.setattr(adapter_a, "validate", lambda content: (True, 0.95))
+        monkeypatch.setattr(adapter_b, "validate", lambda content: (True, 0.95))
+        for other in factory.csv_adapters[2:]:
+            monkeypatch.setattr(other, "validate", lambda content: (False, 0.0))
+
+        with pytest.raises(AmbiguousFormatError, match="File format ambiguous"):
+            factory.detect_adapter("some content")
 
 
 class TestAdapterIngest:
@@ -43,21 +58,21 @@ class TestAdapterIngest:
 
     def test_ingest_monzo(self, factory, sample_monzo_csv):
         """Ingest Monzo CSV end-to-end."""
-        records = factory.ingest(sample_monzo_csv, "test.csv", "abc123")
+        records = factory.ingest(sample_monzo_csv, "test.csv", "abc123").records
 
         assert len(records) == 3
         assert all(r.source_type == "monzo" for r in records)
 
     def test_ingest_natwest(self, factory, sample_natwest_csv):
         """Ingest Natwest CSV end-to-end."""
-        records = factory.ingest(sample_natwest_csv, "test.csv", "abc123")
+        records = factory.ingest(sample_natwest_csv, "test.csv", "abc123").records
 
         assert len(records) == 3
         assert all(r.source_type == "natwest" for r in records)
 
     def test_ingest_vanguard(self, factory, sample_vanguard_csv):
         """Ingest Vanguard CSV end-to-end."""
-        records = factory.ingest(sample_vanguard_csv, "test.csv", "abc123")
+        records = factory.ingest(sample_vanguard_csv, "test.csv", "abc123").records
 
         assert len(records) == 2
         assert all(r.source_type == "vanguard" for r in records)
@@ -65,15 +80,24 @@ class TestAdapterIngest:
     def test_ingest_preserves_file_hash(self, factory, sample_monzo_csv):
         """File hash preserved in records."""
         file_hash = "test_hash_123"
-        records = factory.ingest(sample_monzo_csv, "test.csv", file_hash)
+        records = factory.ingest(sample_monzo_csv, "test.csv", file_hash).records
 
         assert all(r.file_hash == file_hash for r in records)
 
     def test_ingest_preserves_filename(self, factory, sample_monzo_csv):
         """Filename preserved in records."""
-        records = factory.ingest(sample_monzo_csv, "export_2024.csv", "abc123")
+        records = factory.ingest(sample_monzo_csv, "export_2024.csv", "abc123").records
 
         assert all(r.filename == "export_2024.csv" for r in records)
+
+    def test_ingest_csv_has_no_reconciliation_or_period(
+        self, factory, sample_monzo_csv
+    ):
+        """CSV adapters have no reconciliation/period concept."""
+        result = factory.ingest(sample_monzo_csv, "test.csv", "abc123")
+
+        assert result.reconciliation is None
+        assert result.statement_period is None
 
 
 class TestAdapterDisabling:

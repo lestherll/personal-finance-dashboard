@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
 # e.g. "From  01/01/2026  To  31/05/2026" - full DD/MM/YYYY dates, unlike
@@ -59,6 +60,7 @@ class NatwestPdfAdapter(PdfAdapter):
         Description (can be multiple lines)
         Amounts (Paid in and/or Paid out)
         """
+        self.last_statement_period = None
         account_identifier = self._extract_account_identifier(text)
         period = self._extract_statement_period(text)
         transactions = []
@@ -113,6 +115,7 @@ class NatwestPdfAdapter(PdfAdapter):
 
         if period:
             from_date, to_date = period
+            self.last_statement_period = StatementPeriod(from_date, to_date)
             for txn in transactions:
                 dated = resolve_year_in_period(txn["date"], from_date, to_date)
                 if dated:

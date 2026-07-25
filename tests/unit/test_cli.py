@@ -1,12 +1,20 @@
 """Tests for the account-mapping CLI commands."""
 
 import json
+from datetime import datetime
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
 import cli as cli_module
+from adapters.base import RawRecord, ReconciliationResult, StatementPeriod
+from adapters.factory import (
+    AmbiguousFormatError,
+    IngestResult,
+    UnrecognizedFormatError,
+)
 from cli import cli
 
 
@@ -107,3 +115,283 @@ class TestListUnmappedCommand:
         assert "kroo" in result.output
         assert "brand_new_hash" in result.output
         assert "accounts register" in result.output
+
+
+def _make_record(source_type="amex", filename="statement.pdf"):
+    return RawRecord(
+        source_key=f"{source_type}_key1",
+        source_type=source_type,
+        raw_data={"date": "01 Jan 2026", "description": "Test", "amount": -10.0},
+        filename=filename,
+        file_hash="hash123",
+        upload_timestamp=datetime(2026, 1, 1),
+        line_number=1,
+    )
+
+
+class _FakeDatalake:
+    """Stand-in for get_datalake(): records write_bronze calls for assertion."""
+
+    def __init__(self):
+        self.write_calls = []
+
+    def write_bronze(
+        self, source_type, filename, df, reconciliation=None, statement_period=None
+    ):
+        self.write_calls.append(
+            {
+                "source_type": source_type,
+                "filename": filename,
+                "reconciliation": reconciliation,
+                "statement_period": statement_period,
+            }
+        )
+        return f"/fake/bronze/{source_type}/{filename}.parquet"
+
+
+class _FakeFactory:
+    """Stand-in for AdapterFactory: canned IngestResult/exception per filename."""
+
+    def __init__(self, outcomes):
+        self._outcomes = outcomes
+
+    def ingest(self, content, filename, file_hash):
+        outcome = self._outcomes[filename]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class TestIngestCommand:
+    def test_reports_reconciliation_match_and_period(
+        self, runner, tmp_path, monkeypatch
+    ):
+        pdf_path = tmp_path / "statement.pdf"
+        pdf_path.write_bytes(b"%PDF-fake")
+
+        outcome = IngestResult(
+            records=[_make_record()],
+            reconciliation=ReconciliationResult(
+                check_name="amex_closing_balance",
+                expected_closing=Decimal("863.04"),
+                derived_closing=Decimal("863.04"),
+                matches=True,
+            ),
+            statement_period=StatementPeriod(
+                datetime(2026, 6, 20), datetime(2026, 7, 19)
+            ),
+        )
+        fake_datalake = _FakeDatalake()
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"statement.pdf": outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(pdf_path)])
+        assert result.exit_code == 0
+        assert "reconciles against printed closing balance (£863.04)" in result.output
+        assert "statement period: 2026-06-20 to 2026-07-19" in result.output
+        assert fake_datalake.write_calls[0]["reconciliation"] is outcome.reconciliation
+
+    def test_reports_reconciliation_mismatch(self, runner, tmp_path, monkeypatch):
+        pdf_path = tmp_path / "statement.pdf"
+        pdf_path.write_bytes(b"%PDF-fake")
+
+        outcome = IngestResult(
+            records=[_make_record()],
+            reconciliation=ReconciliationResult(
+                check_name="amex_closing_balance",
+                expected_closing=Decimal("863.04"),
+                derived_closing=Decimal("678.04"),
+                matches=False,
+            ),
+            statement_period=None,
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"statement.pdf": outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(pdf_path)])
+        assert result.exit_code == 0
+        assert "balance mismatch" in result.output
+        assert "£678.04" in result.output
+        assert "£863.04" in result.output
+
+    def test_unrecognized_format_message_and_exit_code(
+        self, runner, tmp_path, monkeypatch
+    ):
+        bad_path = tmp_path / "unknown.pdf"
+        bad_path.write_bytes(b"garbage")
+        error = UnrecognizedFormatError("PDF", "amex, kroo")
+        monkeypatch.setattr(
+            cli_module, "AdapterFactory", lambda: _FakeFactory({"unknown.pdf": error})
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+
+        result = runner.invoke(cli, ["ingest", str(bad_path)])
+        assert result.exit_code == 1
+        assert "File format not recognized" in result.output
+
+    def test_ambiguous_format_message_and_exit_code(
+        self, runner, tmp_path, monkeypatch
+    ):
+        bad_path = tmp_path / "ambiguous.pdf"
+        bad_path.write_bytes(b"garbage")
+        error = AmbiguousFormatError("amex", 0.95, "kroo", 0.95)
+        monkeypatch.setattr(
+            cli_module, "AdapterFactory", lambda: _FakeFactory({"ambiguous.pdf": error})
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+
+        result = runner.invoke(cli, ["ingest", str(bad_path)])
+        assert result.exit_code == 1
+        assert "File format ambiguous" in result.output
+
+    def test_generic_parse_failure_distinguished_from_detection_failure(
+        self, runner, tmp_path, monkeypatch
+    ):
+        bad_path = tmp_path / "broken.pdf"
+        bad_path.write_bytes(b"garbage")
+        error = ValueError("Failed to parse PDF: something broke")
+        monkeypatch.setattr(
+            cli_module, "AdapterFactory", lambda: _FakeFactory({"broken.pdf": error})
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+
+        result = runner.invoke(cli, ["ingest", str(bad_path)])
+        assert result.exit_code == 1
+        assert "recognized the format but failed to parse" in result.output
+
+    def test_continues_after_one_bad_file(self, runner, tmp_path, monkeypatch):
+        """One bad file must not stop the rest of the batch - only the
+        final exit code reflects the failure."""
+        bad_path = tmp_path / "bad.pdf"
+        bad_path.write_bytes(b"garbage")
+        good_path = tmp_path / "good.pdf"
+        good_path.write_bytes(b"%PDF-fake")
+
+        good_outcome = IngestResult(
+            records=[_make_record(filename="good.pdf")],
+            reconciliation=None,
+            statement_period=None,
+        )
+        outcomes = {
+            "bad.pdf": UnrecognizedFormatError("PDF", "amex"),
+            "good.pdf": good_outcome,
+        }
+        fake_datalake = _FakeDatalake()
+        monkeypatch.setattr(
+            cli_module, "AdapterFactory", lambda: _FakeFactory(outcomes)
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/good.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(bad_path), str(good_path)])
+        assert result.exit_code == 1
+        assert "good.pdf: 1 record(s)" in result.output
+        assert len(fake_datalake.write_calls) == 1
+
+    def test_all_succeed_exit_code_zero(self, runner, tmp_path, monkeypatch):
+        good_path = tmp_path / "good.pdf"
+        good_path.write_bytes(b"%PDF-fake")
+        good_outcome = IngestResult(
+            records=[_make_record(filename="good.pdf")],
+            reconciliation=None,
+            statement_period=None,
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"good.pdf": good_outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/good.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(good_path)])
+        assert result.exit_code == 0
+
+
+class TestCoverageCommand:
+    def test_no_period_data_found(self, runner, monkeypatch):
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module,
+            "find_statement_periods",
+            lambda datalake: pd.DataFrame(
+                columns=[
+                    "account_id",
+                    "source_type",
+                    "filename",
+                    "period_from",
+                    "period_to",
+                ]
+            ),
+        )
+
+        result = runner.invoke(cli, ["accounts", "coverage"])
+        assert result.exit_code == 0
+        assert "No statement-period data found" in result.output
+
+    def test_lists_periods_and_flags_gaps(self, runner, monkeypatch):
+        periods = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "period_from": pd.Timestamp("2026-01-01"),
+                    "period_to": pd.Timestamp("2026-01-31"),
+                },
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "mar.pdf",
+                    "period_from": pd.Timestamp("2026-03-01"),
+                    "period_to": pd.Timestamp("2026-03-31"),
+                },
+            ]
+        )
+        gaps = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "gap_start": pd.Timestamp("2026-01-31"),
+                    "gap_end": pd.Timestamp("2026-03-01"),
+                    "days": 29,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_statement_periods", lambda datalake: periods
+        )
+        monkeypatch.setattr(cli_module, "find_coverage_gaps", lambda periods: gaps)
+
+        result = runner.invoke(cli, ["accounts", "coverage"])
+        assert result.exit_code == 0
+        assert "acc_amex" in result.output
+        assert "2026-01-01 to 2026-01-31" in result.output
+        assert "gap:" in result.output
