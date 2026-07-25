@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Personal finance dashboard using a **medallion data lake architecture**. Ingests bank statements (CSV + PDF) from 9 source_types across 8 financial institutions, normalizes them through Bronze→Silver→Gold layers, and enables SQL analytics via DuckDB.
+Personal finance dashboard using a **medallion data lake architecture**. Ingests bank statements (CSV + PDF) from 11 source_types across 7 financial institutions, normalizes them through Bronze→Silver→Gold layers, and enables SQL analytics via DuckDB.
 
 - **Storage:** File-based Parquet files (not a database)
 - **Query Engine:** DuckDB (in-process, no server)
@@ -37,8 +37,8 @@ uv run pytest --cov=adapters tests/                # Coverage report (adapters m
 
 ### Code Quality
 ```bash
-uv run black adapters/ models/ tests/              # Format code
-uv run ruff check adapters/ models/ tests/ --fix   # Lint + auto-fix
+uv run black adapters/ models/ transformers/ tests/ cli.py              # Format code
+uv run ruff check adapters/ models/ transformers/ tests/ cli.py --fix   # Lint + auto-fix
 ```
 
 ### Running the App
@@ -70,6 +70,7 @@ uv run python cli.py accounts register-fallback <source_type> <account_id> <disp
 - Created by `adapters/` parsing CSV/PDF files
 - Stores as-is: Monzo fields, Natwest fields, etc. (no normalization yet)
 - Deduplication via deterministic `source_key` (prevents re-import duplicates)
+- `cli.py ingest` also archives a copy of the original uploaded file to `data/raw/{source_type}/`, so every statement ever ingested lives in one place instead of scattered wherever it was downloaded from (`_archive_raw_file()` in `cli.py`; never overwrites a differently-named file, suffixes with a short hash on a genuine name collision)
 
 **Silver Layer** (`data/silver/`):
 - Normalized records: `transactions.parquet`, `accounts.parquet`, `holdings.parquet`, `account_ledger.parquet`
@@ -193,7 +194,7 @@ Pattern used:
 3. `run_bronze_to_silver(datalake)` is the orchestration entry point — pre-flight checks every Bronze account is mapped (raises `UnmappedAccountsError` listing *all* unmapped accounts at once if not), then normalizes, merges with existing Silver data via `_dedupe_with_existing()` (dedup by `bronze_source_key`, idempotent reruns), and writes all four Silver tables
 4. To add a new adapter's transactions to Silver: add a normalizer function to `_TRANSACTION_NORMALIZERS`. To register a new physical account: `uv run python cli.py accounts list-unmapped` then `accounts register` — never hand-edit `account_map.json`
 
-**Known limitation:** Natwest PDF and AmEx statements never capture a year in their transaction dates (e.g. `"15 Jan"`). `_infer_dated_with_year()` guesses the year from the Bronze `upload_timestamp` rather than fixing this at the source — a proper fix belongs in the Phase 1 adapters, not the transformer.
+**PDF date-year handling:** see Gotcha #7 — Natwest PDF and AmEx now stamp a real year onto transaction dates at the adapter level when the statement's period header is found; `_infer_dated_with_year()` here is the fallback for when it isn't (or for Bronze rows ingested before that existed). Natwest Statement has no adapter-level fix yet and always uses this fallback.
 
 ### Adding a Gold Enrichment
 
@@ -214,12 +215,12 @@ Pattern to follow:
 | `adapters/factory.py` | `AdapterFactory.detect_adapter()` + `ingest()` — main entry point |
 | `adapters/*_adapter.py` | Concrete adapters for each bank/format |
 | `adapters/natwest_statement_pdf_adapter.py` | Natwest quarterly Statement PDF (`"natwest-statement"`) — distinct from `natwest_pdf_adapter.py`'s online export; see Gotcha #10 |
-| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `_parse_decimal()` helper) |
+| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `_parse_decimal()` helper, `resolve_year_in_period()` — see Gotcha #7) |
 | `models/datalake.py` | `DataLake` singleton for Parquet I/O + DuckDB queries |
 | `config.py` | Paths, logging level, Celery/Redis config (read-only at runtime) |
 | `logging_config.py` | Structured logging setup (dictConfig-based) |
 | `tests/conftest.py` | Shared pytest fixtures (sample CSV strings) |
-| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 6 PDF adapters have coverage) |
+| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 8 PDF adapters have coverage, plus the shared `PdfAdapter` base class in `test_pdf_adapter.py`) |
 | `cli.py` | `ingest` (Bronze ingestion) + `accounts list-unmapped/register/register-fallback` — CLI for the account map |
 | `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization (Phase 2) |
 | `transformers/account_config.py` | `get_account_id()`/`find_unmapped_accounts()`/`register_account()` — resolves against `data/account_map.json` (user data, not code) |
@@ -252,7 +253,7 @@ Pattern to follow:
 - Job chaining + error recovery
 
 **Phase 4: Testing**
-- Add unit tests for all PDF adapters
+- ✅ Unit tests for all PDF adapters (all 8 have coverage)
 - Integration tests for the full Bronze→Silver→Gold pipeline (transformer unit tests exist; no disk-backed integration test yet)
 - E2E tests with real files
 
@@ -274,7 +275,7 @@ Pattern to follow:
 
 Read-only at runtime (defined in `config.py`):
 - `DATA_DIR` — root data lake directory (default: `./data`)
-- `BRONZE_DIR`, `SILVER_DIR`, `GOLD_DIR` — medallion layer paths
+- `RAW_DIR`, `BRONZE_DIR`, `SILVER_DIR`, `GOLD_DIR` — medallion layer paths, plus `RAW_DIR` (`data/raw/{source_type}/`), where `cli.py ingest` archives a copy of every original uploaded file (see Architecture)
 - `DUCKDB_PATH` — DuckDB database file path
 - `LOG_LEVEL` — logging level (default: `INFO`)
 - `REDIS_URL` — Redis broker for Celery (default: `redis://localhost:6379/0`)
