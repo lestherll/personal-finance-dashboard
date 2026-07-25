@@ -1,9 +1,22 @@
 """Base adapter interface for all data sources."""
 
+import hashlib
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+
+def hash_account_identifier(raw_identifier: str) -> str:
+    """Deterministically mask a sensitive account identifier (card/account number).
+
+    Not a cryptographic secret - just avoids persisting a raw card/account
+    number in Bronze Parquet or config files. Same physical account always
+    hashes to the same value, so it's still usable as a lookup key.
+    """
+    normalized = re.sub(r"\s+", "", raw_identifier).upper()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:12]
 
 
 @dataclass
@@ -17,6 +30,10 @@ class RawRecord:
     file_hash: str  # SHA256 of uploaded file
     upload_timestamp: datetime
     line_number: int
+    account_identifier: Optional[
+        str
+    ] = None  # hashed; distinguishes multiple accounts of the same source_type
+    record_type: str = "transaction"  # "transaction" | "holding"
 
 
 class DataSourceAdapter(ABC):
@@ -44,9 +61,17 @@ class DataSourceAdapter(ABC):
         """Return: 'monzo', 'natwest', 'amex', 'vanguard'"""
 
     @abstractmethod
-    def generate_source_key(self, row_data: Dict[str, Any], line_num: int) -> str:
+    def generate_source_key(
+        self,
+        row_data: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
         """
         Generate deterministic source key.
 
         Same record from re-uploaded file has same key (no duplicates).
+        account_identifier should be folded in wherever a source_type can
+        cover multiple physical accounts (e.g. two Amex cards), otherwise
+        same-day/same-amount transactions on different accounts could collide.
         """

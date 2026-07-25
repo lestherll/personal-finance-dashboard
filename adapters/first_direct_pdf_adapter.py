@@ -11,10 +11,19 @@ class FirstDirectPdfAdapter(PdfAdapter):
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from First Direct statement."""
-        return (
-            "first direct" in text.lower()
-            and ("Your Transaction Details" in text or "Credit Card" in text)
+        return "first direct" in text.lower() and (
+            "Your Transaction Details" in text or "Credit Card" in text
         )
+
+    def _extract_account_identifier(self, text: str) -> Optional[str]:
+        """Extract the card number, e.g. '4543 1222 4201 2670'.
+
+        Note: real First Direct statements show the full, unmasked card
+        number in extracted text (unlike Amex/Natwest's masked forms) -
+        hashed immediately by PdfAdapter.parse(), never stored raw.
+        """
+        match = re.search(r"\b(\d{4}\s\d{4}\s\d{4}\s\d{4})\b", text)
+        return match.group(1) if match else None
 
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -25,6 +34,7 @@ class FirstDirectPdfAdapter(PdfAdapter):
         Details (can be multiple lines)
         Amount (e.g., "47.22CR" or "47.22")
         """
+        account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
 
@@ -48,7 +58,12 @@ class FirstDirectPdfAdapter(PdfAdapter):
                 break
 
             # Skip empty lines and headers
-            if not line or line in ["Received By Us", "Transaction Date", "Details", "Amount"]:
+            if not line or line in [
+                "Received By Us",
+                "Transaction Date",
+                "Details",
+                "Amount",
+            ]:
                 continue
 
             # Check if this line starts a new transaction (matches date pattern DD Mmm YY)
@@ -68,6 +83,10 @@ class FirstDirectPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if account_identifier:
+            for txn in transactions:
+                txn["_account_identifier_raw"] = account_identifier
 
         return transactions
 
@@ -133,13 +152,19 @@ class FirstDirectPdfAdapter(PdfAdapter):
             "amount": amount,
         }
 
-    def generate_source_key(self, txn: Dict[str, Any], line_num: int) -> str:
-        """Generate deterministic key from date + description + amount."""
+    def generate_source_key(
+        self,
+        txn: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
+        """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
         amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        account_part = f"{account_identifier}_" if account_identifier else ""
 
-        return f"firstdirect_txn_{date_str}_{description}_{amount}"
+        return f"firstdirect_txn_{account_part}{date_str}_{description}_{amount}"
 
     def detect_source_type(self) -> str:
         """Return source type."""

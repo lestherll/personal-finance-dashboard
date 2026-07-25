@@ -11,7 +11,17 @@ class KrooPdfAdapter(PdfAdapter):
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from Kroo statement."""
-        return "Kroo Current Account" in text or ("Kroo" in text and "Sort code" in text)
+        return "Kroo Current Account" in text or (
+            "Kroo" in text and "Sort code" in text
+        )
+
+    def _extract_account_identifier(self, text: str) -> Optional[str]:
+        """Extract 'Sort code: XX-XX-XX' + 'Account number: XXXXXXXX' from the header."""
+        sort_code_match = re.search(r"Sort code:\s*([\d-]+)", text)
+        account_match = re.search(r"Account number:\s*(\d+)", text)
+        if not sort_code_match or not account_match:
+            return None
+        return f"{sort_code_match.group(1)}_{account_match.group(1)}"
 
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -20,6 +30,7 @@ class KrooPdfAdapter(PdfAdapter):
         Kroo format (multi-line per transaction):
         Date | Description | Out | In | Balance
         """
+        account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
 
@@ -43,7 +54,14 @@ class KrooPdfAdapter(PdfAdapter):
                 break
 
             # Skip empty lines and headers
-            if not line or line in ["Date", "Description", "Out", "In", "Balance", "Page"]:
+            if not line or line in [
+                "Date",
+                "Description",
+                "Out",
+                "In",
+                "Balance",
+                "Page",
+            ]:
                 continue
 
             # Check if this line starts a new transaction (matches date pattern)
@@ -63,6 +81,10 @@ class KrooPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if account_identifier:
+            for txn in transactions:
+                txn["_account_identifier_raw"] = account_identifier
 
         return transactions
 
@@ -132,11 +154,25 @@ class KrooPdfAdapter(PdfAdapter):
             # Check for explicit Out/In indicators first
             has_out_indicator = any(
                 re.search(rf"\b{word}\b", desc_lower)
-                for word in ["payment out", "faster payment out", "sent to", "sent", " out"]
+                for word in [
+                    "payment out",
+                    "faster payment out",
+                    "sent to",
+                    "sent",
+                    " out",
+                ]
             )
             has_in_indicator = any(
                 re.search(rf"\b{word}\b", desc_lower)
-                for word in ["from", "deposit", "interest", "salary", "paid in", "credit", "payment in"]
+                for word in [
+                    "from",
+                    "deposit",
+                    "interest",
+                    "salary",
+                    "paid in",
+                    "credit",
+                    "payment in",
+                ]
             )
 
             # If both present or only "From" at start, it's incoming
@@ -181,13 +217,19 @@ class KrooPdfAdapter(PdfAdapter):
             "amount": amount,
         }
 
-    def generate_source_key(self, txn: Dict[str, Any], line_num: int) -> str:
-        """Generate deterministic key from date + description + amount."""
+    def generate_source_key(
+        self,
+        txn: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
+        """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
         amount = str(txn.get("amount", 0)).replace(".", "_")
+        account_part = f"{account_identifier}_" if account_identifier else ""
 
-        return f"kroo_txn_{date_str}_{description}_{amount}"
+        return f"kroo_txn_{account_part}{date_str}_{description}_{amount}"
 
     def detect_source_type(self) -> str:
         """Return source type."""

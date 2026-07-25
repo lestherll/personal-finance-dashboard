@@ -1,7 +1,7 @@
 """Adapter factory for auto-detecting and routing to the right adapter."""
 
 import logging
-from typing import List, Union
+from typing import List, Optional, Set, Union
 
 from adapters.base import DataSourceAdapter, RawRecord
 from adapters.monzo_adapter import MonzoAdapter
@@ -19,21 +19,58 @@ logger = logging.getLogger(__name__)
 class AdapterFactory:
     """Auto-detect and route to the right adapter (CSV and PDF)."""
 
-    def __init__(self):
+    CSV_SOURCE_TYPES: Set[str] = {"monzo", "natwest", "vanguard"}
+    PDF_SOURCE_TYPES: Set[str] = {
+        "kroo",
+        "natwest-pdf",
+        "firstdirect",
+        "amex",
+        "vanguard-pdf",
+    }
+
+    def __init__(self, disabled_source_types: Optional[Set[str]] = None):
+        """
+        Args:
+            disabled_source_types: source_type strings to exclude from
+                detection/routing, e.g. AdapterFactory.CSV_SOURCE_TYPES to
+                disable all CSV adapters (real exports are PDF-only, so
+                CSV parsing correctness can't be verified against them).
+        """
+        self.disabled_source_types = disabled_source_types or set()
+
+        unknown = self.disabled_source_types - (
+            self.CSV_SOURCE_TYPES | self.PDF_SOURCE_TYPES
+        )
+        if unknown:
+            raise ValueError(
+                f"Unknown source_type(s) in disabled_source_types: {unknown}"
+            )
+
         # CSV adapters (handle string content)
-        self.csv_adapters: List[DataSourceAdapter] = [
+        all_csv_adapters: List[DataSourceAdapter] = [
             MonzoAdapter(),
             NatwestAdapter(),
             VanguardAdapter(),
         ]
 
         # PDF adapters (handle bytes content)
-        self.pdf_adapters: List[DataSourceAdapter] = [
+        all_pdf_adapters: List[DataSourceAdapter] = [
             KrooPdfAdapter(),
             NatwestPdfAdapter(),
             FirstDirectPdfAdapter(),
             AmexPdfAdapter(),
             VanguardPdfAdapter(),
+        ]
+
+        self.csv_adapters = [
+            a
+            for a in all_csv_adapters
+            if a.detect_source_type() not in self.disabled_source_types
+        ]
+        self.pdf_adapters = [
+            a
+            for a in all_pdf_adapters
+            if a.detect_source_type() not in self.disabled_source_types
         ]
 
     def detect_adapter(self, file_content: Union[str, bytes]) -> DataSourceAdapter:
@@ -64,10 +101,12 @@ class AdapterFactory:
         valid_matches = [(a, conf) for a, is_valid, conf in results if is_valid]
 
         if not valid_matches:
+            enabled = (
+                ", ".join(a.detect_source_type() for a in adapters_to_try) or "none"
+            )
             raise ValueError(
                 f"File format not recognized ({content_type}). "
-                f"CSV: Monzo, Natwest, Vanguard | "
-                f"PDF: Kroo, Natwest, First Direct, American Express, Vanguard"
+                f"Enabled {content_type} adapters: {enabled}"
             )
 
         # Sort by confidence

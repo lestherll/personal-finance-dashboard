@@ -1,16 +1,16 @@
 """Tests for Natwest adapter."""
 
 import pytest
-from adapters.natwest_adapter import NatwelstAdapter
+from adapters.natwest_adapter import NatwestAdapter
 from adapters.base import RawRecord
 
 
 @pytest.fixture
 def adapter():
-    return NatwelstAdapter()
+    return NatwestAdapter()
 
 
-class TestNatwelstValidation:
+class TestNatwestValidation:
     """Tests for Natwest CSV validation."""
 
     def test_validate_correct_format(self, adapter, sample_natwest_csv):
@@ -30,7 +30,7 @@ class TestNatwelstValidation:
         assert not is_valid
 
 
-class TestNatwelstParsing:
+class TestNatwestParsing:
     """Tests for Natwest CSV parsing."""
 
     def test_parse_records(self, adapter, sample_natwest_csv):
@@ -79,7 +79,7 @@ DEBIT,,,-50.00,450.00,15/01/2024
         assert "natwest_unknown_" in records[0].source_key
 
 
-class TestNatwelstDetection:
+class TestNatwestDetection:
     """Tests for Natwest source type detection."""
 
     def test_detect_source_type(self, adapter):

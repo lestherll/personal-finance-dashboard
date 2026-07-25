@@ -51,6 +51,13 @@ factory = AdapterFactory()
 EOF
 ```
 
+### CLI (account mapping)
+```bash
+uv run python cli.py accounts list-unmapped              # Bronze accounts with no mapping yet
+uv run python cli.py accounts register <hash> <account_id> <display_name> <current|credit|investment>
+uv run python cli.py accounts register-fallback <source_type> <account_id> <display_name> <account_type>
+```
+
 ---
 
 ## Architecture & Data Flow
@@ -66,8 +73,8 @@ EOF
 **Silver Layer** (`data/silver/`):
 - Normalized records: `transactions.parquet`, `accounts.parquet`, `holdings.parquet`, `account_ledger.parquet`
 - Unified schema across all sources (e.g., all transaction amounts are single signed `amount` column, not Kroo's `out`/`in` split)
-- Account linking applied (cross-source dedup: "this Natwest account is the same as this Monzo account")
-- Created by `transformers/` (not yet implemented; Phase 2 scope)
+- Account linking applied via hashed statement identifiers (sort code+account number, masked card number, etc.) resolved against `data/account_map.json` — see `transformers/account_config.py` and Gotcha #5
+- Created by `transformers/silver_transformer.py::run_bronze_to_silver()` (Phase 2 — done)
 
 **Gold Layer** (`data/gold/`):
 - Enriched records: `transactions.parquet`, `subscriptions.parquet`, `transfers.parquet`, `account_snapshots.parquet`
@@ -83,7 +90,9 @@ Located in `adapters/`:
 - `validate(file_content)` → `(is_valid: bool, confidence: float)` — Parse + score whether this file matches this adapter
 - `parse(file_content, filename, file_hash)` → `List[RawRecord]` — Extract transactions/holdings
 - `detect_source_type()` → `str` — Return adapter name (e.g., "monzo", "kroo")
-- `generate_source_key(txn, line_num)` → `str` — Deterministic key for dedup
+- `generate_source_key(txn, line_num, account_identifier=None)` → `str` — Deterministic key for dedup; PDF adapters fold `account_identifier` in so two accounts of the same source_type (e.g. two Amex cards) never collide
+
+`RawRecord` also carries `account_identifier` (hashed, see Gotcha #5) and `record_type` ("transaction" | "holding" — only Vanguard PDF produces both).
 
 **CSV Adapters:** Monzo, Natwest, Vanguard (`*_adapter.py`)
 - Parse string content (CSV text)
@@ -99,6 +108,7 @@ Located in `adapters/`:
 - Branches on content type: `str` → try CSV adapters, `bytes` → try PDF adapters
 - Scores each adapter, picks highest confidence
 - Raises if no valid match or ambiguous tie (< 0.05 confidence gap at top)
+- Supports disabling adapters: `AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)`
 
 ### Data Lake I/O
 
@@ -170,16 +180,18 @@ Singleton pattern: `get_datalake()` returns cached connection; safe to call mult
 
 ### Writing a Silver Transformer
 
-Silver transformers normalize multi-source raw data to a common schema. Not yet implemented (Phase 2 scope).
+Silver transformers normalize multi-source raw data to a common schema. Implemented in `transformers/silver_transformer.py` (Phase 2 — done).
 
-Pattern to follow:
-1. Create `transformers/silver_transformer.py` with class like `SilverTransformer`
-2. Methods like `normalize_transactions(bronze_df)` that:
-   - Take a Bronze DataFrame with mixed source types
-   - Map source-specific fields to common schema
-   - Return normalized DataFrame ready for write to Silver
-3. Handle account linking: identify which accounts across sources are duplicates
-4. Write to Silver via `datalake.write_silver("transactions", normalized_df)`
+Pattern used:
+1. `SilverTransformer` class with `normalize_transactions(bronze_frames)`, `normalize_holdings(bronze_frames)`, `normalize_account_ledger(bronze_frames)`:
+   - Each takes a `dict[source_type, Bronze DataFrame]`
+   - A per-`source_type` normalizer function (`_TRANSACTION_NORMALIZERS` dict) maps that source's `raw_data` fields to the common schema
+   - Returns a normalized DataFrame ready for `write_silver`
+2. Account linking: `transformers/account_config.py::get_account_id(account_identifier, source_type)` — resolves against `data/account_map.json`, a data file, not code (see Gotcha #5)
+3. `run_bronze_to_silver(datalake)` is the orchestration entry point — pre-flight checks every Bronze account is mapped (raises `UnmappedAccountsError` listing *all* unmapped accounts at once if not), then normalizes, merges with existing Silver data via `_dedupe_with_existing()` (dedup by `bronze_source_key`, idempotent reruns), and writes all four Silver tables
+4. To add a new adapter's transactions to Silver: add a normalizer function to `_TRANSACTION_NORMALIZERS`. To register a new physical account: `uv run python cli.py accounts list-unmapped` then `accounts register` — never hand-edit `account_map.json`
+
+**Known limitation:** Natwest PDF and AmEx statements never capture a year in their transaction dates (e.g. `"15 Jan"`). `_infer_dated_with_year()` guesses the year from the Bronze `upload_timestamp` rather than fixing this at the source — a proper fix belongs in the Phase 1 adapters, not the transformer.
 
 ### Adding a Gold Enrichment
 
@@ -204,8 +216,11 @@ Pattern to follow:
 | `config.py` | Paths, logging level, Celery/Redis config (read-only at runtime) |
 | `logging_config.py` | Structured logging setup (dictConfig-based) |
 | `tests/conftest.py` | Shared pytest fixtures (sample CSV strings) |
-| `tests/unit/adapters/` | Unit tests for adapters (CSV only; PDF tests are missing — Phase 4) |
-| `transformers/` | (Empty, Phase 2) Silver normalization logic goes here |
+| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 5 PDF adapters have coverage) |
+| `cli.py` | `accounts list-unmapped/register/register-fallback` — CLI for the account map |
+| `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization (Phase 2) |
+| `transformers/account_config.py` | `get_account_id()`/`find_unmapped_accounts()`/`register_account()` — resolves against `data/account_map.json` (user data, not code) |
+| `tests/unit/transformers/` | Unit tests for the Silver transformer + account config |
 | `tasks/` | (Empty, Phase 3) Celery task definitions go here |
 | `ARCHITECTURE.md` | Design philosophy, data flow diagrams, Phase roadmap |
 
@@ -215,23 +230,25 @@ Pattern to follow:
 
 **Phase 1 ✅ DONE:** Adapters (CSV + PDF parsing)
 - 8 bank sources working: Monzo, Natwest, Vanguard (CSV); Kroo, Natwest, First Direct, AmEx, Vanguard (PDF)
-- Tested on real user data
-- ⚠️ PDF adapters lack unit tests (only CSV adapters have test coverage)
+- CSV adapters are currently disabled by default (`AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)`) — real exports are PDF-only for this user; CSV code still works and is tested, just not in the default routing path
+- ⚠️ AmEx and Vanguard PDF adapters were rewritten after validating against real statements — the original implementations didn't actually work against real exports despite being marked "tested manually". See Gotcha #8 before trusting a "tested manually" claim on a PDF adapter
 
-**Phase 2 (Next): Silver Transformations**
-- Account linking logic (identify duplicate accounts across sources)
-- Schema normalization (map source-specific fields → common schema)
-- Deduplication by `source_key`
-- Lives in `transformers/` (currently empty)
+**Phase 2 ✅ DONE: Silver Transformations**
+- Account linking via hashed statement identifiers resolved against `data/account_map.json` (`transformers/account_config.py`) — distinguishes multiple accounts of the same source_type (e.g. two Amex cards, Natwest current vs credit), not just cross-source dedup
+- Schema normalization for all 8 source_types → `transactions`, `holdings`, `account_ledger` (`transformers/silver_transformer.py`)
+- Deduplication by `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`)
+- New accounts registered via `cli.py accounts register`, not hand-edited into `account_map.json`
+- ⚠️ `account_ledger` only covers Natwest CSV + Vanguard CSV — PDF adapters discard balance data during Phase 1 parsing, so they're excluded (see Gotcha below)
+- ⚠️ Natwest PDF / AmEx transaction dates have no year in source text; year is inferred from upload time, not fixed at the source
 
-**Phase 3: Celery Orchestration** (configured but not wired up)
-- Bronze→Silver transformation job
+**Phase 3 (Next): Celery Orchestration** (configured but not wired up)
+- Bronze→Silver transformation job — should just wrap `run_bronze_to_silver()`
 - Silver→Gold enrichment job
 - Job chaining + error recovery
 
 **Phase 4: Testing**
 - Add unit tests for all PDF adapters
-- Integration tests for transformers
+- Integration tests for the full Bronze→Silver→Gold pipeline (transformer unit tests exist; no disk-backed integration test yet)
 - E2E tests with real files
 
 ---
@@ -239,8 +256,10 @@ Pattern to follow:
 ## Testing Notes
 
 - **Unit tests** live in `tests/unit/adapters/` and use sample CSV strings from `conftest.py`
-- **PDF adapters tested manually** on real statements (Kroo: 14 txns, Natwest: 12 txns, First Direct: 1 txn, Vanguard: 10 txns) but lack pytest coverage
-- **No integration tests yet** (for Silver transformations or end-to-end pipelines)
+- **PDF adapters** have pytest coverage (`tests/unit/adapters/test_*_pdf_adapter.py`, fabricated fixtures mirroring real structural patterns) and were validated against real downloaded statements during development — see Gotcha #8
+- **Silver transformer unit tests** live in `tests/unit/transformers/` — normalize_* methods are tested purely in-memory (no disk I/O); `run_bronze_to_silver()` itself has only been verified manually end-to-end (via a temp `DATA_DIR`), not under pytest
+- **CLI (`cli.py`) tests** live in `tests/unit/test_cli.py`, using `click.testing.CliRunner`
+- **No integration tests yet** (disk-backed Bronze→Silver→Gold pipeline)
 - Dev dependencies require `uv sync --extra dev` (pytest, black, ruff not auto-installed with base `uv sync`)
 
 ---
@@ -253,10 +272,11 @@ Read-only at runtime (defined in `config.py`):
 - `DUCKDB_PATH` — DuckDB database file path
 - `LOG_LEVEL` — logging level (default: `INFO`)
 - `REDIS_URL` — Redis broker for Celery (default: `redis://localhost:6379/0`)
+- `ACCOUNT_MAP_PATH` — account_identifier → account mapping data file (default: `data/account_map.json`)
 
-Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`.
+Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`, `ACCOUNT_MAP_PATH`.
 
-Note: `.gitignore` does not explicitly exclude `data/`, so raw statement files *will* be committed if not careful — consider adding `data/` to `.gitignore` before first commit if you don't want raw files in git.
+`data/` is gitignored — raw statements, Bronze/Silver/Gold parquet, the DuckDB file, and `account_map.json` are all personal financial data and never committed.
 
 ---
 
@@ -264,11 +284,19 @@ Note: `.gitignore` does not explicitly exclude `data/`, so raw statement files *
 
 1. **PyArrow import placement:** In `models/datalake.py`, `import pyarrow as pa` is at the bottom (line 177) instead of top. This works at runtime but is unconventional; consider moving it to the top.
 
-2. **PDF adapter field normalization:** Kroo uses `out`/`in` columns, Natwest PDF uses signed `amount`, Monzo uses different field names entirely. Silver transformer will need to map all of these to a common schema.
+2. **PDF adapter field normalization:** ✅ Resolved in Phase 2 — `transformers/silver_transformer.py`'s `_TRANSACTION_NORMALIZERS` maps each source_type's `raw_data` shape (Kroo's already-signed `amount`, Natwest CSV's signed string, Monzo's full-vs-search export field names, etc.) to the common `transactions` schema.
 
 3. **Re-upload deduplication:** Based on `source_key` (deterministic hash of date + description + amount). If parsing logic changes and produces different `source_key` for the same transaction, it could be imported twice. Document the generation rule clearly per adapter.
 
 4. **Celery not yet wired:** Celery/Redis dependencies are installed and `CELERY_CONFIG` dict exists, but no Celery app instance or `@app.task` decorators exist yet. Phase 3 will wire this up.
 
-5. **Account linking complexity:** Identifying that "this Natwest account ending in 1234 is the same as this Monzo account" requires heuristics (IBAN matching, account numbers, balance matching at a point in time). This is currently not implemented and will be in Phase 2.
+5. **Account linking:** PDF adapters extract a real identifier from the statement (sort code+account number, masked card number, Vanguard account+wrapper), hash it (`adapters/base.py::hash_account_identifier` — SHA256 truncated, never stores the raw number), and resolve it against `data/account_map.json`. That file is a data store, not code — it's user data and deliberately kept out of source control/hardcoding. New accounts go through `uv run python cli.py accounts register`, not hand-editing JSON. `run_bronze_to_silver()` pre-flight-checks every account is mapped and raises `UnmappedAccountsError` listing *all* unmapped accounts at once (not just the first) before writing anything.
+
+6. **`account_ledger` balance coverage is partial:** PDF adapters (Kroo, Natwest PDF, First Direct, AmEx, Vanguard PDF) already discard running-balance data during Phase 1 parsing — only `date`/`description`/`amount` survive. `normalize_account_ledger()` can therefore only populate the ledger from Natwest CSV (`Balance`/`Balance Date`) and Vanguard CSV (`Portfolio Value`). Extending balance history to PDF sources requires going back and modifying those Phase 1 adapters, not just the transformer.
+
+7. **PDF date-year inference:** Natwest PDF and AmEx statement text never includes a year (e.g. `"15 Jan"`). `_infer_dated_with_year()` in `silver_transformer.py` guesses the year from the Bronze `upload_timestamp`, preferring the most recent year that doesn't land after the upload time (handles Dec/Jan boundaries). This is a best-effort workaround, not a fix — the correct fix is extracting the statement period from the PDF itself at the adapter level.
+
+8. **"Tested manually" isn't proof a PDF adapter works:** AmEx and Vanguard's Phase 1 adapters looked reasonable but silently didn't work against real statements. AmEx: PyMuPDF extracts real tables column-by-column (all dates, then all descriptions, then all amounts as one block at the end) — one-line-per-transaction regex can't parse that; rows must be reconstructed by zipping the blocks back together positionally, and boilerplate text (e.g. an interest-rate worked example) can contain decoy numbers that must be filtered by matching the expected transaction count. Vanguard: real statements cover multiple product wrappers (e.g. ISA + Personal Pension) under one account, each with its own holdings table and activity section — a single flat "Activity" assumption merges them. Validate PDF adapter regex against an actual downloaded statement, not just a hand-written fixture, especially for table-heavy layouts.
+
+9. **`PdfAdapter._extract_text()` page boundaries:** pages are joined with `"\n\x0c\n"` (form-feed), not just `"\n"`, so adapters needing per-page structure (e.g. Amex's column reconstruction) can `text.split("\x0c")`. Existing line-based adapters are unaffected — `\x0c` strips to `""` and gets skipped by their blank-line checks.
 

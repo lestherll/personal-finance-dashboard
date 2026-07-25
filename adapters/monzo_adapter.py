@@ -51,7 +51,9 @@ class MonzoAdapter(DataSourceAdapter):
         full_score = full_matches / 5
 
         # Check for search export format
-        search_matches = sum(1 for col in self.SEARCH_EXPORT_COLUMNS[:5] if col in headers)
+        search_matches = sum(
+            1 for col in self.SEARCH_EXPORT_COLUMNS[:5] if col in headers
+        )
         search_score = search_matches / 5
 
         # Use highest score

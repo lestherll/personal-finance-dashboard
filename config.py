@@ -17,6 +17,12 @@ GOLD_DIR = DATA_DIR / "gold"  # Enriched parquet files
 # DuckDB (in-process query engine, no server needed)
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", str(DATA_DIR / "personal_finance.duckdb"))
 
+# User-editable data: hashed account_identifier -> canonical account mapping.
+# Lives in the data store, not source code - see transformers/account_config.py.
+ACCOUNT_MAP_PATH = Path(
+    os.getenv("ACCOUNT_MAP_PATH", str(DATA_DIR / "account_map.json"))
+)
+
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 

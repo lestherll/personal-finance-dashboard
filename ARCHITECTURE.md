@@ -180,13 +180,14 @@ data/
 - Error handling for ambiguous formats
 - ⚠️ **Test coverage:** CSV adapters have full unit tests; PDF adapters validated on real statements but lack unit tests (need to be added in Phase 4)
 
-**Phase 2 (Next):** Data transformations
-- Account linking (source-specific account identification rules)
-- Silver transformer (normalize multi-source `RawRecord` fields to common schema — e.g., Kroo's `out`/`in` columns → single signed `amount`, Natwest PDF's `-£` notation → amount with sign)
-- Subscription/transfer detection (Silver→Gold enrichment heuristics)
-- Deduplication via `source_key` (prevent re-import duplicates)
+✅ **Phase 2:** Data transformations (DONE)
+- Account linking via a static `source_type → account_id` mapping (`transformers/account_config.py`) — deliberately not runtime heuristics, since the account set is small and known in advance
+- Silver transformer (`transformers/silver_transformer.py`) — normalizes all 8 adapters' `RawRecord.raw_data` fields to a common schema across `transactions`, `holdings`, `account_ledger`
+- Deduplication via `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`)
+- ⚠️ `account_ledger` only covers Natwest CSV + Vanguard CSV (PDF adapters discard balance in Phase 1); Natwest PDF/AmEx dates need year inference since source text omits the year
+- Subscription/transfer detection deferred to Phase 3 (Silver→Gold enrichment, not Silver normalization)
 
-**Phase 3:** Celery orchestration
+**Phase 3 (Next):** Celery orchestration
 - Bronze→Silver transformation job
 - Silver→Gold enrichment job
 - Job chaining + error recovery + retry logic
@@ -268,9 +269,9 @@ print(result)
 
 ## Next Steps
 
-1. **Phase 2:** Implement transformers (account linking, normalization, detection)
-2. **Phase 3:** Create Celery tasks for medallion transitions
-3. **Phase 4:** Write comprehensive tests
+1. ✅ **Phase 2:** Implement transformers (account linking, normalization) — DONE
+2. **Phase 3:** Create Celery tasks for medallion transitions (wrap `run_bronze_to_silver()`; add Silver→Gold enrichment)
+3. **Phase 4:** Write comprehensive tests (PDF adapter unit tests, disk-backed pipeline integration tests)
 4. **Phase 5:** Build CLI for manual testing
 5. **V1:** Add REST API + Claude integration
 

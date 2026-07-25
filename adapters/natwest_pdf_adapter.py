@@ -11,10 +11,16 @@ class NatwestPdfAdapter(PdfAdapter):
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from Natwest statement."""
-        return (
-            "NatWest" in text
-            and ("Your transactions" in text or "Transaction" in text)
+        return "NatWest" in text and (
+            "Your transactions" in text or "Transaction" in text
         )
+
+    def _extract_account_identifier(self, text: str) -> Optional[str]:
+        """Extract masked account + sort code, e.g. '*****227 · 54-10-04'."""
+        match = re.search(r"(\*+\d+)\s*\xb7\s*([\d-]+)", text)
+        if not match:
+            return None
+        return f"{match.group(1)}_{match.group(2)}"
 
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -25,6 +31,7 @@ class NatwestPdfAdapter(PdfAdapter):
         Description (can be multiple lines)
         Amounts (Paid in and/or Paid out)
         """
+        account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
 
@@ -48,7 +55,13 @@ class NatwestPdfAdapter(PdfAdapter):
                 break
 
             # Skip empty lines and headers
-            if not line or line in ["Date", "Description", "Type", "Paid in", "Paid out"]:
+            if not line or line in [
+                "Date",
+                "Description",
+                "Type",
+                "Paid in",
+                "Paid out",
+            ]:
                 continue
 
             # Check if this line starts a new transaction (matches date pattern DD Mmm)
@@ -68,6 +81,10 @@ class NatwestPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if account_identifier:
+            for txn in transactions:
+                txn["_account_identifier_raw"] = account_identifier
 
         return transactions
 
@@ -127,13 +144,19 @@ class NatwestPdfAdapter(PdfAdapter):
             "amount": amount,
         }
 
-    def generate_source_key(self, txn: Dict[str, Any], line_num: int) -> str:
-        """Generate deterministic key from date + description + amount."""
+    def generate_source_key(
+        self,
+        txn: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
+        """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
         amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        account_part = f"{account_identifier}_" if account_identifier else ""
 
-        return f"natwest_pdf_txn_{date_str}_{description}_{amount}"
+        return f"natwest_pdf_txn_{account_part}{date_str}_{description}_{amount}"
 
     def detect_source_type(self) -> str:
         """Return source type."""

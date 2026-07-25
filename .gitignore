@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data lake (raw statements, Bronze/Silver/Gold parquet, DuckDB file,
+# account_map.json) - personal financial data, never committed.
+data/
+
+# Personal/local Claude notes - not shared with the team.
+.claude.local.md

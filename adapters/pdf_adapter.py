@@ -2,11 +2,11 @@
 
 from abc import abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import fitz
 
-from adapters.base import DataSourceAdapter, RawRecord
+from adapters.base import DataSourceAdapter, RawRecord, hash_account_identifier
 
 
 class PdfAdapter(DataSourceAdapter):
@@ -62,7 +62,16 @@ class PdfAdapter(DataSourceAdapter):
 
             records = []
             for idx, txn in enumerate(transactions, start=1):
-                source_key = self.generate_source_key(txn, idx)
+                raw_identifier = txn.pop("_account_identifier_raw", None)
+                account_identifier = (
+                    hash_account_identifier(raw_identifier) if raw_identifier else None
+                )
+
+                # generate_source_key runs before popping record_type, so
+                # adapters that produce multiple record types (e.g. Vanguard's
+                # holdings vs transactions) can still branch key format on it.
+                source_key = self.generate_source_key(txn, idx, account_identifier)
+                record_type = txn.pop("record_type", "transaction")
                 records.append(
                     RawRecord(
                         source_key=source_key,
@@ -72,6 +81,8 @@ class PdfAdapter(DataSourceAdapter):
                         file_hash=file_hash,
                         upload_timestamp=datetime.now(),
                         line_number=idx,
+                        account_identifier=account_identifier,
+                        record_type=record_type,
                     )
                 )
 
@@ -82,11 +93,17 @@ class PdfAdapter(DataSourceAdapter):
 
     @staticmethod
     def _extract_text(file_content: bytes) -> str:
-        """Extract text from PDF using PyMuPDF."""
+        """Extract text from PDF using PyMuPDF.
+
+        Pages are joined with a form-feed ("\\x0c") sentinel so adapters that
+        need per-page structure (e.g. Amex's column-flattened tables) can
+        split on it. It's whitespace, so str.strip() reduces it to "" and
+        existing line-based adapters that ignore page boundaries are unaffected.
+        """
         doc = fitz.open(stream=file_content, filetype="pdf")
         text = ""
         for page in doc:
-            text += page.get_text() + "\n"
+            text += page.get_text() + "\n\x0c\n"
         doc.close()
         return text
 
@@ -108,12 +125,23 @@ class PdfAdapter(DataSourceAdapter):
         - description: str (merchant/transaction description)
         - amount: float (transaction amount, signed)
 
+        May also include (popped by parse() before reaching raw_data):
+        - _account_identifier_raw: str - unmasked account/card identifier,
+          extracted from the statement text. Hashed by parse() before storage.
+        - record_type: str - "transaction" (default) or "holding", for
+          adapters that can produce both (e.g. Vanguard PDF).
+
         Returns:
             List of transaction dictionaries
         """
 
     @abstractmethod
-    def generate_source_key(self, txn: Dict[str, Any], line_num: int) -> str:
+    def generate_source_key(
+        self,
+        txn: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
         """Generate deterministic source key for transaction."""
 
     def detect_source_type(self) -> str:

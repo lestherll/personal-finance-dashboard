@@ -1,13 +1,38 @@
 """Vanguard investment account PDF statement adapter."""
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from adapters.pdf_adapter import PdfAdapter
 
+_ACCOUNT_NUMBER_RE = re.compile(r"Account number:\s*([A-Z0-9]+)")
+_WRAPPER_INVESTMENTS_RE = re.compile(r"^Your (.+) investments at (.+)$")
+_HOLDING_VALUE_RE = re.compile(r"^-$|^£[\d,]+\.\d{2}$|^\d+\.\d{2}$")
+_ACTIVITY_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+_ACTIVITY_AMOUNT_RE = re.compile(r"^[-+]?£[\d,]+\.\d{2}$")
+_HOLDINGS_HEADER_TOKENS = {"Description", "Quantity", "Price", "Value"}
+_ACTIVITY_HEADER_NOISE = {
+    "The transaction date is the date we carried out the activity.",
+    "Transaction date Transaction details",
+    "Cash amount",
+    "Cash balance",
+}
+_PAGE_FOOTER_RE = re.compile(r"^Page \d+ of \d+$")
+_ACCOUNT_LINE_RE = re.compile(r"^Account number:\s*[A-Z0-9]+$")
+_ISSUED_BY_RE = re.compile(r"^Issued by Vanguard Asset Management")
+
 
 class VanguardPdfAdapter(PdfAdapter):
-    """Parse Vanguard investment statement PDFs."""
+    """Parse Vanguard investment statement PDFs.
+
+    Real Vanguard statements cover one account number but multiple product
+    wrappers (e.g. "ISA" and "Vanguard Personal Pension"), each with its own
+    holdings table ("Your X investments at DATE") and its own activity
+    section ("Activity from ... for your X"). This adapter tracks which
+    wrapper it's currently inside and emits both holding-shaped and
+    transaction-shaped dicts (tagged via "record_type"), unlike every other
+    adapter which only produces transactions.
+    """
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from Vanguard statement."""
@@ -17,129 +42,215 @@ class VanguardPdfAdapter(PdfAdapter):
             and "Activity" in text
         )
 
+    def _extract_account_number(self, text: str) -> Optional[str]:
+        match = _ACCOUNT_NUMBER_RE.search(text)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _strip_page_boilerplate(lines: List[str]) -> List[str]:
+        """Drop the repeating per-page header/footer block.
+
+        Real statements repeat "{client name}\\nAccount number: X\\nPage N of M\\n
+        Issued by Vanguard Asset Management...EC4N 8AF." on every page. Left in,
+        it bleeds into whatever multi-line transaction description happens to
+        fall on a page break. Detected structurally (anchored on the "Account
+        number:" and "Issued by..." lines), not by hardcoding the client's name.
+        """
+        cleaned: List[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if _ACCOUNT_LINE_RE.match(line):
+                if cleaned:
+                    cleaned.pop()  # the client-name line just added
+                i += 1
+                if i < len(lines) and _PAGE_FOOTER_RE.match(lines[i]):
+                    i += 1
+                continue
+            if _ISSUED_BY_RE.match(line):
+                # This boilerplate paragraph wraps across multiple lines;
+                # skip through to the closing address line, inclusive.
+                while i < len(lines) and "EC4N 8AF." not in lines[i]:
+                    i += 1
+                if i < len(lines):
+                    i += 1
+                continue
+            cleaned.append(line)
+            i += 1
+        return cleaned
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract transactions from Vanguard statement.
+        """Extract holdings + activity across all product wrappers."""
+        account_number = self._extract_account_number(text)
+        lines = [line.strip() for line in text.split("\n")]
+        lines = [line for line in lines if line]
+        lines = self._strip_page_boilerplate(lines)
 
-        Vanguard format (multi-line per transaction after PDF extraction):
-        Date (DD/MM/YYYY)
-        Description (can be multiple lines)
-        Cash amount (£ value)
-        Cash balance (£ value)
-        """
-        transactions = []
-        lines = text.split("\n")
+        records: List[Dict[str, Any]] = []
+        current_wrapper: Optional[str] = None
+        i = 0
+        while i < len(lines):
+            line = lines[i]
 
-        # Find activity section
-        in_transactions = False
-        current_txn_lines = []
-
-        for line in lines:
-            line = line.strip()
-
-            # Start of activity section
-            if "Activity" in line or "The transaction date is the date" in line:
-                in_transactions = True
+            wrapper_match = _WRAPPER_INVESTMENTS_RE.match(line)
+            if wrapper_match:
+                current_wrapper = wrapper_match.group(1).strip()
+                as_of_date = wrapper_match.group(2).strip()
+                i, holdings = self._parse_holdings_block(
+                    lines, i + 1, current_wrapper, as_of_date, account_number
+                )
+                records.extend(holdings)
                 continue
 
-            if not in_transactions:
+            if line.startswith("Activity from") and current_wrapper:
+                i, activity = self._parse_activity_block(
+                    lines, i + 1, current_wrapper, account_number
+                )
+                records.extend(activity)
                 continue
 
-            # Skip empty lines and headers
-            if not line or line in ["Transaction date", "Transaction details", "Cash amount", "Cash balance"]:
+            i += 1
+
+        return records
+
+    def _parse_holdings_block(
+        self,
+        lines: List[str],
+        i: int,
+        wrapper: str,
+        as_of_date: str,
+        account_number: Optional[str],
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """Parse the 'Your X investments at DATE' table for one wrapper."""
+        holdings = []
+        description_parts: List[str] = []
+        values: List[str] = []
+
+        while i < len(lines) and lines[i] in _HOLDINGS_HEADER_TOKENS:
+            i += 1
+
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("Activity from") or _WRAPPER_INVESTMENTS_RE.match(line):
+                break
+
+            if _HOLDING_VALUE_RE.match(line):
+                values.append(line)
+            else:
+                description_parts.append(line)
+
+            if len(values) == 3:
+                account_identifier = (
+                    f"{account_number}_{wrapper}" if account_number else None
+                )
+                holdings.append(
+                    {
+                        "record_type": "holding",
+                        "wrapper": wrapper,
+                        "fund_name": " ".join(description_parts).strip(),
+                        "quantity": values[0],
+                        "unit_price": values[1],
+                        "total_value": values[2],
+                        "as_of_date": as_of_date,
+                        "_account_identifier_raw": account_identifier,
+                    }
+                )
+                description_parts = []
+                values = []
+
+            i += 1
+
+        return i, holdings
+
+    def _parse_activity_block(
+        self, lines: List[str], i: int, wrapper: str, account_number: Optional[str]
+    ) -> Tuple[int, List[Dict[str, Any]]]:
+        """Parse the 'Activity from ... for your X' section for one wrapper."""
+        activity = []
+        current_txn_lines: List[str] = []
+
+        def flush() -> Optional[Dict[str, Any]]:
+            if not current_txn_lines:
+                return None
+            return self._parse_single_activity_txn(
+                current_txn_lines, wrapper, account_number
+            )
+
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("Your ") or line.startswith("Activity from"):
+                break
+            if line in _ACTIVITY_HEADER_NOISE:
+                i += 1
                 continue
 
-            # Stop at footer or end of document
-            if "important information" in line.lower() or "vanguard" in line.lower() and "fund" not in line.lower():
-                if current_txn_lines:
-                    break
-
-            # Check if this line starts a new transaction (matches date pattern DD/MM/YYYY)
-            is_new_txn = re.match(r"^\d{2}/\d{2}/\d{4}", line)
-
+            is_new_txn = _ACTIVITY_DATE_RE.match(line)
             if is_new_txn and current_txn_lines:
-                # Process the accumulated transaction
-                txn = self._parse_transaction_lines(current_txn_lines)
+                txn = flush()
                 if txn:
-                    transactions.append(txn)
+                    activity.append(txn)
                 current_txn_lines = [line]
             elif is_new_txn or current_txn_lines:
                 current_txn_lines.append(line)
 
-        # Don't forget the last transaction
-        if current_txn_lines:
-            txn = self._parse_transaction_lines(current_txn_lines)
-            if txn:
-                transactions.append(txn)
+            i += 1
 
-        return transactions
+        txn = flush()
+        if txn:
+            activity.append(txn)
 
-    def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
-        """
-        Parse a transaction that spans multiple lines.
+        return i, activity
 
-        Format:
-        Date (DD/MM/YYYY)
-        Description (can be multiple lines)
-        Cash amount (£ value, can be +/-)
-        Cash balance (£ value)
-        """
-        if not lines or not lines[0]:
+    def _parse_single_activity_txn(
+        self, lines: List[str], wrapper: str, account_number: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        if not lines or not _ACTIVITY_DATE_RE.match(lines[0]):
             return None
+        date_str = lines[0]
 
-        # First line is the date
-        date_str = lines[0].strip()
-        date_match = re.match(r"^(\d{2}/\d{2}/\d{4})", date_str)
-        if not date_match:
-            return None
-
-        date_str = date_match.group(1)
-
-        # Collect description and amounts
         description_parts = []
         amounts = []
-
         for line in lines[1:]:
-            line = line.strip()
-            # Look for £ amounts
-            if re.match(r"^[-+]?£", line):
-                # Extract amount
-                match = re.search(r"([-+])?£\s*([0-9,]+\.?\d*)", line)
-                if match:
-                    sign = match.group(1)
-                    amount_str = match.group(2).replace(",", "")
-                    try:
-                        amount = float(amount_str)
-                        if sign == "-":
-                            amount = -amount
-                        amounts.append(amount)
-                    except ValueError:
-                        pass
+            if _ACTIVITY_AMOUNT_RE.match(line):
+                sign = -1 if line.startswith("-") else 1
+                amount_str = line.lstrip("+-").lstrip("£").replace(",", "")
+                try:
+                    amounts.append(sign * float(amount_str))
+                except ValueError:
+                    pass
             else:
                 description_parts.append(line)
 
-        if not description_parts or len(amounts) < 1:
+        if not description_parts or not amounts:
             return None
 
-        description = " ".join(description_parts)
-
-        # Vanguard format: Cash amount is the transaction, Cash balance is the running total
-        # We only care about the cash amount (first amount)
-        transaction_amount = amounts[0] if amounts else 0.0
-
+        account_identifier = f"{account_number}_{wrapper}" if account_number else None
         return {
+            "record_type": "transaction",
             "date": date_str,
-            "description": description,
-            "amount": transaction_amount,
+            "description": " ".join(description_parts),
+            "amount": amounts[0],  # cash amount; cash balance discarded (as before)
+            "_account_identifier_raw": account_identifier,
         }
 
-    def generate_source_key(self, txn: Dict[str, Any], line_num: int) -> str:
-        """Generate deterministic key from date + description + amount."""
+    def generate_source_key(
+        self,
+        txn: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
+    ) -> str:
+        """Generate deterministic key from account + (date|as_of_date) + description/fund + amount."""
+        account_part = f"{account_identifier}_" if account_identifier else ""
+
+        if txn.get("record_type") == "holding":
+            as_of = txn.get("as_of_date", "").replace(" ", "_")
+            fund = txn.get("fund_name", "")[:15].replace(" ", "_")
+            return f"vanguard_holding_{account_part}{fund}_{as_of}"
+
         date_str = txn.get("date", "").replace("/", "")
         description = txn.get("description", "")[:15].replace(" ", "_")
         amount = str(abs(txn.get("amount", 0))).replace(".", "_")
-
-        return f"vanguard_txn_{date_str}_{description}_{amount}"
+        return f"vanguard_txn_{account_part}{date_str}_{description}_{amount}"
 
     def detect_source_type(self) -> str:
         """Return source type."""
