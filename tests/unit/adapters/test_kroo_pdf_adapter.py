@@ -1,5 +1,7 @@
 """Tests for Kroo PDF adapter."""
 
+from datetime import datetime
+
 import pytest
 
 from adapters.kroo_pdf_adapter import KrooPdfAdapter
@@ -13,6 +15,7 @@ Overview
 Total opening balance
 £100.00
 Account transactions
+1 June 2026 to 30 June 2026
 01 June 2026
 Deposit interest
 June interest earned
@@ -87,6 +90,36 @@ class TestKrooParsing:
 
 
 TEXT_WITHOUT_CLOSING_BALANCE = SAMPLE_TEXT.replace("Closing balance\n£576.23\n", "")
+TEXT_WITHOUT_PERIOD = SAMPLE_TEXT.replace("1 June 2026 to 30 June 2026\n", "")
+
+
+class TestKrooStatementPeriod:
+    def test_extracts_period(self, adapter):
+        period = adapter._extract_statement_period(SAMPLE_TEXT)
+        assert period == (datetime(2026, 6, 1), datetime(2026, 6, 30))
+
+    def test_returns_none_when_period_missing(self, adapter):
+        assert adapter._extract_statement_period(TEXT_WITHOUT_PERIOD) is None
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 6, 1)
+        assert adapter.last_statement_period.to_date == datetime(2026, 6, 30)
+
+    def test_no_period_leaves_last_statement_period_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_PERIOD)
+        assert adapter.last_statement_period is None
+
+    def test_statement_period_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        period-bearing file must not leak into a later file with no period
+        header of its own."""
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_PERIOD)
+        assert adapter.last_statement_period is None
 
 
 class TestKrooReconciliation:

@@ -1,0 +1,89 @@
+"""Queryable balance-reconciliation status across Bronze data.
+
+B1 (see BRONZE_SILVER_HARDENING_PLAN.md / CLAUDE.md "What Bronze guarantees")
+gives every self-checking adapter a structured per-file reconciliation
+result, persisted as reconciliation_check/reconciliation_expected_closing/
+reconciliation_derived_closing/reconciliation_matches columns on the Bronze
+row (models/datalake.py::write_bronze). Until now the only way to see it was
+`cli.py ingest`'s per-file console output at ingest time. This module makes
+it queryable after the fact, joinable to an account_id - mirroring
+transformers/coverage.py's pattern exactly, since reconciliation, like a
+statement period, is a per-file fact (every transaction row from one Bronze
+parquet carries the same value), not a per-transaction one.
+"""
+
+from typing import Optional, Set, Union
+from pathlib import Path
+
+import pandas as pd
+
+from models.datalake import DataLake, get_datalake
+from transformers.account_config import get_account_id
+
+PathLike = Union[str, Path]
+
+# Sources that self-check a rolled-forward/derived balance against a
+# printed anchor - see CLAUDE.md "What Bronze guarantees" (B1). Vanguard/
+# Monzo PDF have a direct-read balance with no anchor to check against, so
+# they're deliberately excluded here, same rationale as coverage.py's CSV
+# exclusion.
+_RECONCILIATION_SOURCE_TYPES: Set[str] = {
+    "amex",
+    "firstdirect",
+    "natwest-statement",
+    "kroo",
+}
+
+_STATUS_COLUMNS = [
+    "account_id",
+    "source_type",
+    "filename",
+    "check_name",
+    "expected_closing",
+    "derived_closing",
+    "matches",
+]
+
+
+def find_reconciliation_status(
+    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+) -> pd.DataFrame:
+    """Collect one row per ingested statement file that captured a
+    reconciliation result, resolved to its canonical account_id.
+
+    Accounts not yet registered in the account map are skipped rather than
+    raising - this is a reporting command, not a pipeline pre-flight check,
+    same rationale as find_statement_periods().
+    """
+    datalake = datalake or get_datalake()
+    rows = []
+
+    for source_type in _RECONCILIATION_SOURCE_TYPES:
+        df = datalake.read_bronze(source_type)
+        if df is None or df.empty or "reconciliation_check" not in df.columns:
+            continue
+
+        per_file = df.dropna(subset=["reconciliation_check"]).drop_duplicates(
+            "filename"
+        )
+
+        for row in per_file.itertuples():
+            try:
+                account_id = get_account_id(
+                    row.account_identifier, source_type, path=path
+                )
+            except KeyError:
+                continue
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "source_type": source_type,
+                    "filename": row.filename,
+                    "check_name": row.reconciliation_check,
+                    "expected_closing": row.reconciliation_expected_closing,
+                    "derived_closing": row.reconciliation_derived_closing,
+                    "matches": row.reconciliation_matches,
+                }
+            )
+
+    return pd.DataFrame(rows, columns=_STATUS_COLUMNS)

@@ -1,8 +1,10 @@
 """Vanguard investment account PDF statement adapter."""
 
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 _ACCOUNT_NUMBER_RE = re.compile(r"Account number:\s*([A-Z0-9]+)")
@@ -11,6 +13,14 @@ _HOLDING_VALUE_RE = re.compile(r"^-$|^£[\d,]+\.\d{2}$|^\d+\.\d{2}$")
 _ACTIVITY_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 _ACTIVITY_AMOUNT_RE = re.compile(r"^[-+]?£[\d,]+\.\d{2}$")
 _HOLDINGS_HEADER_TOKENS = {"Description", "Quantity", "Price", "Value"}
+# e.g. "Activity from 01 April 2026 to 01 July 2026 for your ISA" - repeats
+# once per product wrapper, same range every time on real statements seen so
+# far (not treated as per-wrapper periods) - first match used. Matched
+# per-line (not across the whole joined text) since the wrapper name after
+# "for your " can itself wrap onto a following line.
+_ACTIVITY_PERIOD_RE = re.compile(
+    r"^Activity from (\d{1,2}\s+[A-Za-z]+\s+\d{4}) to (\d{1,2}\s+[A-Za-z]+\s+\d{4})"
+)
 _ACTIVITY_HEADER_NOISE = {
     "The transaction date is the date we carried out the activity.",
     "Transaction date Transaction details",
@@ -45,6 +55,26 @@ class VanguardPdfAdapter(PdfAdapter):
     def _extract_account_number(self, text: str) -> Optional[str]:
         match = _ACCOUNT_NUMBER_RE.search(text)
         return match.group(1) if match else None
+
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. 'Activity from 01 April 2026 to
+        01 July 2026 for your ISA' (first wrapper's range is used - see
+        _ACTIVITY_PERIOD_RE)."""
+        for line in text.split("\n"):
+            match = _ACTIVITY_PERIOD_RE.match(line.strip())
+            if not match:
+                continue
+            from_str, to_str = match.groups()
+            try:
+                return (
+                    datetime.strptime(from_str, "%d %B %Y"),
+                    datetime.strptime(to_str, "%d %B %Y"),
+                )
+            except ValueError:
+                return None
+        return None
 
     @staticmethod
     def _strip_page_boilerplate(lines: List[str]) -> List[str]:
@@ -81,6 +111,11 @@ class VanguardPdfAdapter(PdfAdapter):
 
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """Extract holdings + activity across all product wrappers."""
+        self.last_statement_period = None
+        period = self._extract_statement_period(text)
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
+
         account_number = self._extract_account_number(text)
         lines = [line.strip() for line in text.split("\n")]
         lines = [line for line in lines if line]

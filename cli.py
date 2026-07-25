@@ -4,6 +4,8 @@ Usage:
     uv run python cli.py accounts list-unmapped
     uv run python cli.py accounts register <account_identifier> <account_id> <display_name> <account_type>
     uv run python cli.py accounts register-fallback <source_type> <account_id> <display_name> <account_type>
+    uv run python cli.py accounts coverage
+    uv run python cli.py accounts reconciliation
     uv run python cli.py ingest <file> [<file> ...]
 """
 
@@ -26,6 +28,7 @@ from transformers.account_config import (
     register_source_type_fallback,
 )
 from transformers.coverage import find_coverage_gaps, find_statement_periods
+from transformers.reconciliation_status import find_reconciliation_status
 
 ACCOUNT_TYPE_CHOICES = click.Choice(["current", "credit", "investment", "savings"])
 
@@ -215,8 +218,8 @@ def coverage():
 
     if periods.empty:
         click.echo(
-            "No statement-period data found yet (only amex, natwest-pdf, and "
-            "natwest-statement sources track periods)."
+            "No statement-period data found yet (PDF sources track periods; "
+            "CSV sources - monzo, natwest, vanguard - don't print one)."
         )
         return
 
@@ -235,6 +238,33 @@ def coverage():
                 f"  ⚠ gap: {gap.gap_start.date()} to {gap.gap_end.date()} "
                 f"({gap.days} days uncovered)"
             )
+
+
+@accounts.command("reconciliation")
+def reconciliation():
+    """Show balance-reconciliation status per account."""
+    datalake = get_datalake()
+    statuses = find_reconciliation_status(datalake)
+
+    if statuses.empty:
+        click.echo(
+            "No reconciliation data found yet (only amex, firstdirect, kroo, "
+            "and natwest-statement sources self-check a balance anchor)."
+        )
+        return
+
+    for account_id, group in statuses.groupby("account_id"):
+        click.echo(f"{account_id}:")
+        for row in group.itertuples():
+            if row.matches:
+                click.echo(
+                    f"  ✓ {row.filename}: reconciles (£{row.expected_closing:.2f})"
+                )
+            else:
+                click.echo(
+                    f"  ⚠ {row.filename}: mismatch - derived £{row.derived_closing:.2f} "
+                    f"vs printed £{row.expected_closing:.2f}"
+                )
 
 
 if __name__ == "__main__":

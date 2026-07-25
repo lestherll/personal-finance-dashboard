@@ -1,11 +1,14 @@
 """Statement-period coverage tracking across Bronze data.
 
-Only a subset of source_types extract a statement period today (see
-BRONZE_SILVER_HARDENING_PLAN.md B3): the sources that print a "From X to Y"
-(or equivalent) range on the statement itself. Kroo and First Direct, for
-example, have a closing-balance anchor to reconcile against (see B1) but no
-period text to extract, so they're deliberately excluded here rather than
-producing empty/misleading rows.
+All 8 PDF source_types now extract a statement period (see
+BRONZE_SILVER_HARDENING_PLAN.md B3, extended by the B4 follow-up): each
+prints a "From X to Y" (or equivalent) range on the statement itself, except
+First Direct, which only prints a single Statement Date - its `from_date` is
+derived (one calendar month earlier, its known fixed billing cycle), not
+read from the page (see `FirstDirectPdfAdapter._extract_statement_period`).
+The 3 CSV source_types (monzo, natwest, vanguard) have no such concept at
+all - flat per-row exports, no printed period anywhere - so they're
+deliberately excluded here rather than producing empty/misleading rows.
 """
 
 from datetime import timedelta
@@ -25,7 +28,16 @@ PathLike = Union[str, Path]
 # bank), so a small tolerance avoids flagging phantom gaps.
 _COVERAGE_GAP_TOLERANCE = timedelta(days=3)
 
-_PERIOD_SOURCE_TYPES: Set[str] = {"amex", "natwest-pdf", "natwest-statement"}
+_PERIOD_SOURCE_TYPES: Set[str] = {
+    "amex",
+    "natwest-pdf",
+    "natwest-statement",
+    "monzo-pdf",
+    "chase",
+    "vanguard-pdf",
+    "kroo",
+    "firstdirect",
+}
 
 _PERIODS_COLUMNS = ["account_id", "source_type", "filename", "period_from", "period_to"]
 _GAPS_COLUMNS = ["account_id", "gap_start", "gap_end", "days"]

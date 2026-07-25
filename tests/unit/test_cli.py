@@ -395,3 +395,61 @@ class TestCoverageCommand:
         assert "acc_amex" in result.output
         assert "2026-01-01 to 2026-01-31" in result.output
         assert "gap:" in result.output
+
+
+class TestReconciliationCommand:
+    def test_no_reconciliation_data_found(self, runner, monkeypatch):
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module,
+            "find_reconciliation_status",
+            lambda datalake: pd.DataFrame(
+                columns=[
+                    "account_id",
+                    "source_type",
+                    "filename",
+                    "check_name",
+                    "expected_closing",
+                    "derived_closing",
+                    "matches",
+                ]
+            ),
+        )
+
+        result = runner.invoke(cli, ["accounts", "reconciliation"])
+        assert result.exit_code == 0
+        assert "No reconciliation data found" in result.output
+
+    def test_lists_status_per_account(self, runner, monkeypatch):
+        statuses = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "check_name": "amex_closing_balance",
+                    "expected_closing": 863.04,
+                    "derived_closing": 863.04,
+                    "matches": True,
+                },
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "feb.pdf",
+                    "check_name": "amex_closing_balance",
+                    "expected_closing": 900.00,
+                    "derived_closing": 678.04,
+                    "matches": False,
+                },
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_reconciliation_status", lambda datalake: statuses
+        )
+
+        result = runner.invoke(cli, ["accounts", "reconciliation"])
+        assert result.exit_code == 0
+        assert "acc_amex" in result.output
+        assert "✓ jan.pdf" in result.output
+        assert "⚠ feb.pdf" in result.output

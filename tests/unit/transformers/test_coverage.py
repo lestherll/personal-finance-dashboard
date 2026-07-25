@@ -102,8 +102,9 @@ class TestFindStatementPeriods:
         assert len(result) == 1
 
     def test_missing_period_columns_returns_empty(self, tmp_path):
-        """A source_type present in Bronze but with no reconciliation/period
-        columns written (e.g. Kroo, First Direct - see B1/B3 scoping)."""
+        """A period-tracked source_type present in Bronze, but from a file
+        ingested before B4's period capture existed for it - no
+        statement_period_from/to columns written yet."""
         path = _account_map_path(tmp_path)
         bronze_df = pd.DataFrame(
             [{"account_identifier": "hash_kroo", "filename": "f.pdf"}]

@@ -25,19 +25,30 @@ def _bronze_frame(
     upload_timestamp=None,
     account_identifier=None,
     record_type="transaction",
+    statement_period_to=None,
+    filename="test_upload",
+    line_number_start=1,
 ):
-    """Build a Bronze-shaped DataFrame matching what datalake.read_bronze() returns."""
+    """Build a Bronze-shaped DataFrame matching what datalake.read_bronze() returns.
+
+    upload_timestamp/statement_period_to/filename are per-file constants (as
+    they are on a real Bronze write - see models/datalake.py::write_bronze),
+    applied identically to every row in one call; line_number increments per
+    row within the call, mirroring one real ingested file's row sequence.
+    """
     upload_timestamp = upload_timestamp or pd.Timestamp("2026-06-01")
     return pd.DataFrame(
         [
             {
-                "bronze_source_key": f"{source_type}_key_{i}",
+                "bronze_source_key": f"{source_type}_key_{filename}_{i}",
                 "source_type": source_type,
                 "raw_data": raw,
                 "upload_timestamp": upload_timestamp,
-                "filename": "test_upload",
+                "filename": filename,
                 "account_identifier": account_identifier,
                 "record_type": record_type,
+                "statement_period_to": statement_period_to,
+                "line_number": line_number_start + i,
             }
             for i, raw in enumerate(raw_rows)
         ]
@@ -577,6 +588,62 @@ class TestNormalizeAccountLedger:
         df = transformer.normalize_account_ledger({})
         assert df.empty
         assert "balance" in df.columns
+
+    def test_same_day_rows_carry_ordering_columns(self, transformer):
+        """S1: two rows for the same account sharing an as_of_date - here
+        from two different ingested files - must carry through distinct
+        upload_timestamp/statement_period_to/line_number so a later
+        "current balance" query can break the tie correctly (see
+        transformers/balance.py). Sort correctness itself is exercised
+        there; this only checks the columns survive normalization."""
+        raw_first_file = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount": -4.50,
+            "balance": 495.50,
+        }
+        raw_second_file = {
+            "date": "12 January 2026",
+            "description": "Later Deposit",
+            "amount": 100.00,
+            "balance": 595.50,
+        }
+        bronze = pd.concat(
+            [
+                _bronze_frame(
+                    "kroo",
+                    [raw_first_file],
+                    account_identifier=_KROO_ID,
+                    upload_timestamp=pd.Timestamp("2026-01-15 09:00:00"),
+                    statement_period_to=pd.Timestamp("2026-01-12"),
+                    filename="jan_statement_early.pdf",
+                    line_number_start=5,
+                ),
+                _bronze_frame(
+                    "kroo",
+                    [raw_second_file],
+                    account_identifier=_KROO_ID,
+                    upload_timestamp=pd.Timestamp("2026-02-01 09:00:00"),
+                    statement_period_to=pd.Timestamp("2026-01-31"),
+                    filename="jan_statement_late.pdf",
+                    line_number_start=1,
+                ),
+            ],
+            ignore_index=True,
+        )
+        df = transformer.normalize_account_ledger({"kroo": bronze})
+
+        assert len(df) == 2
+        assert (df["as_of_date"] == pd.Timestamp("2026-01-12")).all()
+
+        first = df[df["balance"] == 495.50].iloc[0]
+        second = df[df["balance"] == 595.50].iloc[0]
+        assert first["upload_timestamp"] == pd.Timestamp("2026-01-15 09:00:00")
+        assert second["upload_timestamp"] == pd.Timestamp("2026-02-01 09:00:00")
+        assert first["statement_period_to"] == pd.Timestamp("2026-01-12")
+        assert second["statement_period_to"] == pd.Timestamp("2026-01-31")
+        assert first["line_number"] == 5
+        assert second["line_number"] == 1
 
 
 class TestDedupeNatwestCrossFormat:

@@ -347,6 +347,9 @@ _TRANSACTIONS_COLUMNS = [
     "currency",
     "category",
     "ingested_at",
+    "upload_timestamp",
+    "statement_period_to",
+    "line_number",
 ]
 
 _HOLDINGS_COLUMNS = [
@@ -367,6 +370,9 @@ _LEDGER_COLUMNS = [
     "source_type",
     "balance",
     "as_of_date",
+    "upload_timestamp",
+    "statement_period_to",
+    "line_number",
 ]
 
 
@@ -409,6 +415,9 @@ class SilverTransformer:
                         "source_type": source_type,
                         "account_id": account_id,
                         "ingested_at": pd.Timestamp.now(),
+                        "upload_timestamp": bronze_row.get("upload_timestamp"),
+                        "statement_period_to": bronze_row.get("statement_period_to"),
+                        "line_number": bronze_row.get("line_number"),
                         **normalized,
                     }
                 )
@@ -480,6 +489,9 @@ class SilverTransformer:
                         "bronze_source_key": bronze_row.get("bronze_source_key"),
                         "account_id": account_id,
                         "source_type": source_type,
+                        "upload_timestamp": bronze_row.get("upload_timestamp"),
+                        "statement_period_to": bronze_row.get("statement_period_to"),
+                        "line_number": bronze_row.get("line_number"),
                         **normalized,
                     }
                 )

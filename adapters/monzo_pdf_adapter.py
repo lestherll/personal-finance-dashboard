@@ -1,9 +1,18 @@
 """Monzo Personal Account PDF statement adapter."""
 
 import re
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+
+# e.g. "01/04/2026 - 30/06/2026" - printed once right under the "Personal
+# Account statement" header, and again under "Pot statement" (same range in
+# every real statement seen so far) - the first match is used. Anchored to a
+# whole line (not searched across the full text with re.DOTALL-style \s+)
+# so it can't accidentally span across newlines onto unrelated text.
+_PERIOD_RE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$")
 
 
 class MonzoPdfAdapter(PdfAdapter):
@@ -26,6 +35,24 @@ class MonzoPdfAdapter(PdfAdapter):
             return None
         return f"{sort_code_match.group(1)}_{account_match.group(1)}"
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. '01/04/2026 - 30/06/2026'."""
+        for line in text.split("\n"):
+            match = _PERIOD_RE.match(line.strip())
+            if not match:
+                continue
+            from_str, to_str = match.groups()
+            try:
+                return (
+                    datetime.strptime(from_str, "%d/%m/%Y"),
+                    datetime.strptime(to_str, "%d/%m/%Y"),
+                )
+            except ValueError:
+                return None
+        return None
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract transactions from a Monzo Personal Account statement.
@@ -42,6 +69,8 @@ class MonzoPdfAdapter(PdfAdapter):
         page - skipped explicitly rather than left to pollute the
         transaction either side of it.
         """
+        self.last_statement_period = None
+        period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -84,6 +113,9 @@ class MonzoPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
 
         if account_identifier:
             for txn in transactions:

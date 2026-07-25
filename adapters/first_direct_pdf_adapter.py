@@ -2,16 +2,32 @@
 
 import logging
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.base import ReconciliationResult
+from dateutil.relativedelta import relativedelta
+
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 logger = logging.getLogger(__name__)
 
 _PREVIOUS_BALANCE_RE = re.compile(r"Previous Balance\s*\n\s*([\d,]+\.\d{2})")
 _NEW_BALANCE_RE = re.compile(r"New Balance\s*\n\s*([\d,]+\.\d{2})")
+# e.g. "Statement Date 05 May 2026" - printed inline on one line (unlike
+# Previous/New Balance above, which are label-then-newline-then-value, this
+# is label-space-value on a real statement), and repeats once per sheet.
+# Unlike every other adapter's period extraction, this is a single date, not
+# a printed "from...to" range. First Direct's statements are always
+# generated on a fixed monthly cycle (the 5th), so `from_date` isn't printed
+# anywhere at all - it's derived as exactly one calendar month before the
+# printed Statement Date, a hardcoded assumption specific to this adapter's
+# known billing cycle. If that cycle ever changes (a different day-of-month,
+# or a non-monthly cadence), this will silently produce a wrong `from_date` -
+# unlike the other B4 adapters, which only ever echo a date range the
+# statement prints itself.
+_STATEMENT_DATE_RE = re.compile(r"Statement Date\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})")
 
 
 class FirstDirectPdfAdapter(PdfAdapter):
@@ -33,6 +49,24 @@ class FirstDirectPdfAdapter(PdfAdapter):
         match = re.search(r"\b(\d{4}\s\d{4}\s\d{4}\s\d{4})\b", text)
         return match.group(1) if match else None
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period from the single printed "Statement
+        Date", e.g. "05 May 2026".
+
+        `from_date` is derived, not printed - see _STATEMENT_DATE_RE.
+        """
+        match = _STATEMENT_DATE_RE.search(text)
+        if not match:
+            return None
+        try:
+            to_date = datetime.strptime(match.group(1), "%d %B %Y")
+        except ValueError:
+            return None
+        from_date = to_date - relativedelta(months=1)
+        return from_date, to_date
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract transactions from First Direct statement.
@@ -43,6 +77,8 @@ class FirstDirectPdfAdapter(PdfAdapter):
         Amount (e.g., "47.22CR" or "47.22")
         """
         self.last_reconciliation = None
+        self.last_statement_period = None
+        period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -92,6 +128,9 @@ class FirstDirectPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
 
         if account_identifier:
             for txn in transactions:

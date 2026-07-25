@@ -1,13 +1,21 @@
 """Kroo bank PDF statement adapter."""
 
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.base import ReconciliationResult
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 _CLOSING_BALANCE_RE = re.compile(r"Closing balance\s*\n\s*£\s*([\d,]+\.\d{2})")
+# e.g. "1 June 2026 to 30 June 2026" - printed once right under the "Account
+# transactions" header, unpadded day (no leading zero, unlike the per-
+# transaction "01 June 2026"-style dates below). Anchored to a whole line so
+# it can't span across newlines or get mistaken for a transaction row.
+_PERIOD_RE = re.compile(
+    r"^(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s+to\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})$"
+)
 
 
 class KrooPdfAdapter(PdfAdapter):
@@ -31,6 +39,24 @@ class KrooPdfAdapter(PdfAdapter):
             return None
         return f"{sort_code_match.group(1)}_{account_match.group(1)}"
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. '1 June 2026 to 30 June 2026'."""
+        for line in text.split("\n"):
+            match = _PERIOD_RE.match(line.strip())
+            if not match:
+                continue
+            from_str, to_str = match.groups()
+            try:
+                return (
+                    datetime.strptime(from_str, "%d %B %Y"),
+                    datetime.strptime(to_str, "%d %B %Y"),
+                )
+            except ValueError:
+                return None
+        return None
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract transactions from Kroo statement.
@@ -39,6 +65,8 @@ class KrooPdfAdapter(PdfAdapter):
         Date | Description | Out | In | Balance
         """
         self.last_reconciliation = None
+        self.last_statement_period = None
+        period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -90,6 +118,9 @@ class KrooPdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
 
         if account_identifier:
             for txn in transactions:

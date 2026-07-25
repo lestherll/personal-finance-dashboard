@@ -7,12 +7,22 @@ two Amex cards under one source_type (see CLAUDE.md Gotcha #5).
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
 
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 _AMOUNT_RE = re.compile(r"^[+-]?£[\d,]+\.\d{2}$")
 _DATE_RE = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})$")
+# e.g. "02 June 2026 - 30 June 2026" - full month name, unlike the per-
+# transaction "02 Jun 2026" dates above; repeats once per page, first match
+# used. Anchored to a whole line so it can't span across newlines onto
+# unrelated text, and doesn't collide with _DATE_RE (3-letter month, single
+# date, no hyphen).
+_PERIOD_RE = re.compile(
+    r"^(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s*-\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})$"
+)
 
 
 class ChasePdfAdapter(PdfAdapter):
@@ -32,6 +42,24 @@ class ChasePdfAdapter(PdfAdapter):
             return None
         return f"{account_match.group(1)}_{sort_code_match.group(1)}"
 
+    def _extract_statement_period(
+        self, text: str
+    ) -> Optional[Tuple[datetime, datetime]]:
+        """Extract the statement period, e.g. '02 June 2026 - 30 June 2026'."""
+        for line in text.split("\n"):
+            match = _PERIOD_RE.match(line.strip())
+            if not match:
+                continue
+            from_str, to_str = match.groups()
+            try:
+                return (
+                    datetime.strptime(from_str, "%d %B %Y"),
+                    datetime.strptime(to_str, "%d %B %Y"),
+                )
+            except ValueError:
+                return None
+        return None
+
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract transactions from a Chase statement.
@@ -50,6 +78,8 @@ class ChasePdfAdapter(PdfAdapter):
         opening-balance and closing-balance rows without special-casing
         each one.
         """
+        self.last_statement_period = None
+        period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
         transactions = []
         lines = text.split("\n")
@@ -89,6 +119,9 @@ class ChasePdfAdapter(PdfAdapter):
             txn = self._parse_transaction_lines(current_txn_lines)
             if txn:
                 transactions.append(txn)
+
+        if period:
+            self.last_statement_period = StatementPeriod(period[0], period[1])
 
         if account_identifier:
             for txn in transactions:

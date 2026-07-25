@@ -1,5 +1,7 @@
 """Tests for First Direct PDF adapter."""
 
+from datetime import datetime
+
 import pytest
 
 from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
@@ -8,6 +10,7 @@ SAMPLE_TEXT = """first direct
 Card number
 Sheet number 1 of 1
 1234 5678 9012 3456
+Statement Date 05 May 2026
 Account Summary
 Credit Limit
 £ 5,000.00
@@ -121,6 +124,47 @@ PAYMENT RECEIVED - THANK YOU
 47.22CR
 Outstanding Balance
 """
+
+
+class TestFirstDirectStatementPeriod:
+    """First Direct only prints a single "Statement Date", not a from/to
+    range - from_date is derived as exactly one calendar month earlier,
+    a hardcoded assumption tied to this adapter's known fixed monthly
+    billing cycle (see _STATEMENT_DATE_RE)."""
+
+    def test_extracts_period(self, adapter):
+        period = adapter._extract_statement_period(SAMPLE_TEXT)
+        assert period == (datetime(2026, 4, 5), datetime(2026, 5, 5))
+
+    def test_from_date_is_exactly_one_month_before_statement_date(self, adapter):
+        period = adapter._extract_statement_period(SAMPLE_TEXT)
+        from_date, to_date = period
+        assert to_date.day == from_date.day == 5
+        assert to_date.month == 5 and from_date.month == 4
+        assert to_date.year == from_date.year == 2026
+
+    def test_returns_none_when_period_missing(self, adapter):
+        assert adapter._extract_statement_period(TEXT_WITHOUT_SUMMARY) is None
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 4, 5)
+        assert adapter.last_statement_period.to_date == datetime(2026, 5, 5)
+
+    def test_no_period_leaves_last_statement_period_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_SUMMARY)
+        assert adapter.last_statement_period is None
+
+    def test_statement_period_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        period-bearing file must not leak into a later file with no
+        Statement Date of its own."""
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_SUMMARY)
+        assert adapter.last_statement_period is None
 
 
 class TestFirstDirectReconciliation:

@@ -2,9 +2,13 @@
 
 > **Status update:** the Bronze section (B1 structured reconciliation, B2
 > friendly detection errors, B3 statement coverage tracking) has since been
-> implemented in full — see `CLAUDE.md`'s "What Bronze guarantees" (under
-> Architecture & Data Flow → Bronze Layer) and Gotcha #14. The Silver section
-> below (S1-S4) is still open and unstarted. The rest of this document is
+> implemented in full, and extended by a B4 follow-up (statement-period
+> capture broadened from 3 to all 8 PDF source_types) — see `CLAUDE.md`'s
+> "What Bronze guarantees" (under Architecture & Data Flow → Bronze Layer)
+> and Gotcha #14/#15. The Silver section below (S1-S3) has also since been
+> implemented in full — see `CLAUDE.md`'s "Current Status" →
+> "Silver Hardening (S1-S3)". Only S4 (merchant normalization) remains
+> deferred, per this doc's own recommendation. The rest of this document is
 > left as originally written, for history/rationale.
 
 ## Why this doc exists

@@ -5,6 +5,8 @@ wrappers (e.g. ISA and Personal Pension), each with its own holdings table
 and its own activity section - these fixtures mirror that structure.
 """
 
+from datetime import datetime
+
 import pytest
 
 from adapters.vanguard_pdf_adapter import VanguardPdfAdapter
@@ -164,6 +166,35 @@ class TestVanguardMultiWrapper:
         assert len(pension_txns) == 1
         assert pension_txns[0]["amount"] == 500.00
         assert pension_txns[0]["cash_balance"] == 500.00
+
+
+class TestVanguardStatementPeriod:
+    def test_extracts_period(self, adapter):
+        period = adapter._extract_statement_period(SAMPLE_TEXT)
+        assert period == (datetime(2026, 4, 1), datetime(2026, 7, 1))
+
+    def test_returns_none_when_period_missing(self, adapter):
+        assert adapter._extract_statement_period("Vanguard\nNo activity here") is None
+
+    def test_sets_last_statement_period(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+        assert adapter.last_statement_period.from_date == datetime(2026, 4, 1)
+        assert adapter.last_statement_period.to_date == datetime(2026, 7, 1)
+
+    def test_no_period_leaves_last_statement_period_none(self, adapter):
+        adapter.parse_transactions("Vanguard\nNo activity here")
+        assert adapter.last_statement_period is None
+
+    def test_statement_period_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        period-bearing file must not leak into a later file with no period
+        header of its own."""
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_statement_period is not None
+
+        adapter.parse_transactions("Vanguard\nNo activity here")
+        assert adapter.last_statement_period is None
 
 
 class TestVanguardSourceKey:
