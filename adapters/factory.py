@@ -9,6 +9,7 @@ from adapters.natwest_adapter import NatwestAdapter
 from adapters.vanguard_adapter import VanguardAdapter
 from adapters.kroo_pdf_adapter import KrooPdfAdapter
 from adapters.natwest_pdf_adapter import NatwestPdfAdapter
+from adapters.natwest_statement_pdf_adapter import NatwestStatementPdfAdapter
 from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
 from adapters.amex_pdf_adapter import AmexPdfAdapter
 from adapters.vanguard_pdf_adapter import VanguardPdfAdapter
@@ -23,6 +24,7 @@ class AdapterFactory:
     PDF_SOURCE_TYPES: Set[str] = {
         "kroo",
         "natwest-pdf",
+        "natwest-statement",
         "firstdirect",
         "amex",
         "vanguard-pdf",
@@ -57,6 +59,7 @@ class AdapterFactory:
         all_pdf_adapters: List[DataSourceAdapter] = [
             KrooPdfAdapter(),
             NatwestPdfAdapter(),
+            NatwestStatementPdfAdapter(),
             FirstDirectPdfAdapter(),
             AmexPdfAdapter(),
             VanguardPdfAdapter(),

@@ -26,15 +26,25 @@ from transformers.account_config import (
 
 logger = logging.getLogger(__name__)
 
-# source_types that already retain a running balance in raw_data.
-# PDF adapters discard balance during parsing, so they're excluded here.
-LEDGER_SOURCE_TYPES = {"natwest", "vanguard"}
+# source_types with a "balance" in raw_data usable for account_ledger.
+# "natwest-pdf" (online export) and "vanguard-pdf" (cash_balance is a
+# different metric from Portfolio Value) are deliberately excluded - see
+# CLAUDE.md gotchas.
+LEDGER_SOURCE_TYPES = {
+    "natwest",
+    "vanguard",
+    "kroo",
+    "amex",
+    "firstdirect",
+    "natwest-statement",
+}
 
 TRANSACTION_SOURCE_TYPES = {
     "monzo",
     "natwest",
     "kroo",
     "natwest-pdf",
+    "natwest-statement",
     "firstdirect",
     "amex",
     "vanguard-pdf",
@@ -178,11 +188,26 @@ def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, 
     }
 
 
+def _normalize_natwest_statement(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    """Natwest quarterly Statement PDF: 'DD Mmm' (all-caps month), no year in
+    source text - same as natwest-pdf/amex."""
+    return {
+        "transaction_date": _infer_dated_with_year(
+            raw.get("date", ""), "%d %b", reference
+        ),
+        "description": raw.get("description", ""),
+        "amount": float(raw.get("amount") or 0),
+        "currency": "GBP",
+        "category": None,
+    }
+
+
 _TRANSACTION_NORMALIZERS = {
     "monzo": _normalize_monzo,
     "natwest": _normalize_natwest_csv,
     "kroo": _normalize_pdf_full_month_year,
     "natwest-pdf": _normalize_pdf_no_year,
+    "natwest-statement": _normalize_natwest_statement,
     "firstdirect": _normalize_pdf_short_year,
     "amex": _normalize_pdf_no_year,
     "vanguard-pdf": _normalize_pdf_slash_date,
@@ -233,9 +258,43 @@ def _ledger_from_vanguard(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]
     }
 
 
+def _ledger_from_kroo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _parse_date(raw.get("date", ""), "%d %B %Y"),
+    }
+
+
+def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _infer_dated_with_year(raw.get("date", ""), "%d %b", reference),
+    }
+
+
+def _ledger_from_firstdirect(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _parse_date(raw.get("date", ""), "%d %b %y"),
+    }
+
+
+def _ledger_from_natwest_statement(
+    raw: Dict[str, Any], reference: Any
+) -> Dict[str, Any]:
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _infer_dated_with_year(raw.get("date", ""), "%d %b", reference),
+    }
+
+
 _LEDGER_NORMALIZERS = {
     "natwest": _ledger_from_natwest,
     "vanguard": _ledger_from_vanguard,
+    "kroo": _ledger_from_kroo,
+    "amex": _ledger_from_amex,
+    "firstdirect": _ledger_from_firstdirect,
+    "natwest-statement": _ledger_from_natwest_statement,
 }
 
 _TRANSACTIONS_COLUMNS = [
@@ -319,6 +378,7 @@ class SilverTransformer:
 
         result = pd.DataFrame(rows)
         result["transaction_date"] = pd.to_datetime(result["transaction_date"])
+        result = _dedupe_natwest_cross_format(result)
         return result
 
     def normalize_holdings(
@@ -390,6 +450,56 @@ class SilverTransformer:
         result = pd.DataFrame(rows)
         result["as_of_date"] = pd.to_datetime(result["as_of_date"])
         return result
+
+
+_NATWEST_CROSS_FORMAT_TYPES = {"natwest-pdf", "natwest-statement"}
+
+
+def _dedupe_natwest_cross_format(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop duplicate transactions between the two Natwest PDF formats.
+
+    "natwest-pdf" (the online "Transactions" export) and "natwest-statement"
+    (the quarterly Statement PDF) can cover overlapping date ranges - if a
+    user uploads both, the same real-world transaction appears under two
+    different source_types with two different bronze_source_keys, so the
+    usual bronze_source_key-based dedup (`_dedupe_with_existing`) can't
+    catch it, since that key differs by construction across adapters.
+
+    Matched by (account_id, transaction_date, amount) - description text
+    differs materially between the two formats for the same transaction
+    (e.g. "KROO ACCOUNT Mobile/Online Transaction" vs "OnLine Transaction
+    KROO ACCOUNT SALARY VIA MOBILE - PYMT FP ..."), so it isn't usable as a
+    matching key. Prefers keeping the natwest-statement row (carries real
+    balance data) over the natwest-pdf one. Uses count-based (multiset)
+    removal, not a blanket drop-duplicates, so genuinely repeated same-day/
+    same-amount transactions within a single format aren't mistakenly
+    dropped.
+    """
+    is_cross_format = df["source_type"].isin(_NATWEST_CROSS_FORMAT_TYPES)
+    if not is_cross_format.any():
+        return df
+
+    subset = df[is_cross_format]
+    rest = df[~is_cross_format]
+
+    pdf_rows = subset[subset["source_type"] == "natwest-pdf"]
+    statement_rows = subset[subset["source_type"] == "natwest-statement"]
+
+    key_cols = ["account_id", "transaction_date", "amount"]
+    remaining_statement_matches = dict(statement_rows.groupby(key_cols).size())
+
+    drop_indices = []
+    for idx, row in pdf_rows.iterrows():
+        key = (row["account_id"], row["transaction_date"], row["amount"])
+        if remaining_statement_matches.get(key, 0) > 0:
+            drop_indices.append(idx)
+            remaining_statement_matches[key] -= 1
+
+    deduped_pdf_rows = pdf_rows.drop(index=drop_indices)
+
+    return pd.concat(
+        [rest, deduped_pdf_rows, statement_rows], ignore_index=False
+    ).sort_index()
 
 
 def _dedupe_with_existing(

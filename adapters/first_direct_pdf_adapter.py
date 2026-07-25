@@ -1,9 +1,16 @@
 """First Direct credit card PDF statement adapter."""
 
+import logging
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 from adapters.pdf_adapter import PdfAdapter
+
+logger = logging.getLogger(__name__)
+
+_PREVIOUS_BALANCE_RE = re.compile(r"Previous Balance\s*\n\s*([\d,]+\.\d{2})")
+_NEW_BALANCE_RE = re.compile(r"New Balance\s*\n\s*([\d,]+\.\d{2})")
 
 
 class FirstDirectPdfAdapter(PdfAdapter):
@@ -88,7 +95,54 @@ class FirstDirectPdfAdapter(PdfAdapter):
             for txn in transactions:
                 txn["_account_identifier_raw"] = account_identifier
 
+        self._attach_derived_balances(text, transactions)
+
         return transactions
+
+    @staticmethod
+    def _attach_derived_balances(text: str, transactions: List[Dict[str, Any]]) -> None:
+        """Roll a "Previous Balance" anchor forward through transactions.
+
+        First Direct statements don't print a per-transaction running
+        balance - only a single "Previous Balance" / "New Balance" pair in
+        the Account Summary block. Unlike Amex, that block isn't
+        column-flattened, so it can be read straight from the same text
+        used for transaction parsing.
+        """
+        if not transactions:
+            return
+
+        previous_match = _PREVIOUS_BALANCE_RE.search(text)
+        if not previous_match:
+            return
+
+        try:
+            running = Decimal(previous_match.group(1).replace(",", ""))
+        except InvalidOperation:
+            return
+
+        for txn in transactions:
+            # `amount` follows a cash-received convention (spend negative,
+            # payments/credits positive), but the statement balance is a
+            # liability that moves the opposite way - subtract, don't add.
+            running -= Decimal(str(txn["amount"]))
+            txn["balance"] = float(running.quantize(Decimal("0.01")))
+
+        new_balance_match = _NEW_BALANCE_RE.search(text)
+        if new_balance_match:
+            try:
+                expected = Decimal(new_balance_match.group(1).replace(",", ""))
+            except InvalidOperation:
+                expected = None
+            if expected is not None and running.quantize(Decimal("0.01")) != expected:
+                logger.warning(
+                    "First Direct statement: derived closing balance %.2f "
+                    "does not match statement's printed New Balance %.2f - "
+                    "transaction amounts don't fully reconcile with the "
+                    "Account Summary block. Balance fields may be inaccurate.",
+                    running,
+                    expected,
+                )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """

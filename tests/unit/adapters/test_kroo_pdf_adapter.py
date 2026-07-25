@@ -76,6 +76,15 @@ class TestKrooParsing:
         salary = next(t for t in txns if "SALARY" in t["description"])
         assert salary["amount"] == 500.00
 
+    def test_running_balance_captured(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_TEXT)
+        interest = next(t for t in txns if "interest" in t["description"].lower())
+        payment = next(t for t in txns if "Test Merchant" in t["description"])
+        salary = next(t for t in txns if "SALARY" in t["description"])
+        assert interest["balance"] == 101.23
+        assert payment["balance"] == 76.23
+        assert salary["balance"] == 576.23
+
 
 class TestKrooSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):

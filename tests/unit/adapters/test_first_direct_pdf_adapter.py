@@ -8,6 +8,21 @@ SAMPLE_TEXT = """first direct
 Card number
 Sheet number 1 of 1
 1234 5678 9012 3456
+Account Summary
+Credit Limit
+£ 5,000.00
+APR
+24.9%
+Previous Balance
+1000.00
+Debits
+15.50
+Credits
+47.22
+New Balance
+968.28
+Principal Balance
+968.28
 Your Transaction Details
 Received By Us
 Transaction Date
@@ -64,3 +79,31 @@ class TestFirstDirectParsing:
 
     def test_detect_source_type(self, adapter):
         assert adapter.detect_source_type() == "firstdirect"
+
+
+class TestFirstDirectDerivedBalance:
+    def test_balance_rolls_forward_from_previous_balance_anchor(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_TEXT)
+        payment = next(t for t in txns if "PAYMENT RECEIVED" in t["description"])
+        purchase = next(t for t in txns if "TEST MERCHANT" in t["description"])
+        # Previous Balance 1000.00; payment (credit) reduces what's owed,
+        # purchase (debit) increases it.
+        assert payment["balance"] == 952.78
+        assert purchase["balance"] == 968.28
+
+    def test_no_account_summary_block_skips_balance_silently(self, adapter):
+        text_without_summary = """first direct
+Your Transaction Details
+Received By Us
+Transaction Date
+Details
+Amount
+01 May 26
+01 May 26
+PAYMENT RECEIVED - THANK YOU
+47.22CR
+Outstanding Balance
+"""
+        txns = adapter.parse_transactions(text_without_summary)
+        assert len(txns) == 1
+        assert "balance" not in txns[0]

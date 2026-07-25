@@ -4,7 +4,11 @@ import pandas as pd
 import pytest
 
 from transformers.account_config import get_account_id
-from transformers.silver_transformer import SilverTransformer, _dedupe_with_existing
+from transformers.silver_transformer import (
+    SilverTransformer,
+    _dedupe_natwest_cross_format,
+    _dedupe_with_existing,
+)
 
 # Real (test-only) entries so get_account_id resolves without hitting the fallback.
 _KROO_ID = "fd7a2651d39e"
@@ -140,6 +144,26 @@ class TestNormalizeTransactionsPdfSources:
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-01-15")
         assert row["account_id"] == get_account_id(_NATWEST_PDF_ID, "natwest-pdf")
+
+    def test_natwest_statement_infers_year_and_captures_balance(self, transformer):
+        raw = {
+            "date": "26 FEB",
+            "description": "Automated Credit 3305 JPMCB",
+            "amount": 2728.54,
+            "balance": 3738.54,
+        }
+        bronze = _bronze_frame(
+            "natwest-statement",
+            [raw],
+            upload_timestamp=pd.Timestamp("2026-05-13"),
+            account_identifier=_NATWEST_PDF_ID,
+        )
+        df = transformer.normalize_transactions({"natwest-statement": bronze})
+
+        row = df.iloc[0]
+        assert row["transaction_date"] == pd.Timestamp("2026-02-26")
+        assert row["amount"] == 2728.54
+        assert row["account_id"] == get_account_id(_NATWEST_PDF_ID, "natwest-statement")
 
     def test_amex_infers_year_from_upload_timestamp(self, transformer):
         raw = {"date": "28 Apr", "description": "Amazon", "amount": -99.99}
@@ -323,11 +347,111 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         assert df.iloc[0]["balance"] == 50000.00
 
-    def test_pdf_sources_excluded_from_ledger(self, transformer):
-        """PDF adapters discard balance data; they must not appear in the ledger."""
-        raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount": -4.50}
+    def test_kroo_balance_captured(self, transformer):
+        raw = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount": -4.50,
+            "balance": 495.50,
+        }
         df = transformer.normalize_account_ledger(
-            {"kroo": _bronze_frame("kroo", [raw])}
+            {"kroo": _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)}
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_kroo_current"
+        assert row["balance"] == 495.50
+        assert row["as_of_date"] == pd.Timestamp("2026-01-12")
+
+    def test_amex_balance_captured(self, transformer):
+        raw = {
+            "date": "31 Jan",
+            "description": "PAYMENT RECEIVED - THANK YOU",
+            "amount": 769.58,
+            "balance": 0.0,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "amex": _bronze_frame(
+                    "amex",
+                    [raw],
+                    upload_timestamp=pd.Timestamp("2026-02-19"),
+                    account_identifier=_AMEX_ID,
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_amex_credit_1"
+        assert row["balance"] == 0.0
+        assert row["as_of_date"] == pd.Timestamp("2026-01-31")
+
+    def test_firstdirect_balance_captured(self, transformer):
+        raw = {
+            "date": "30 Apr 26",
+            "description": "PAYMENT RECEIVED - THANK YOU",
+            "amount": 47.22,
+            "balance": 1526.77,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "firstdirect": _bronze_frame(
+                    "firstdirect", [raw], account_identifier=_FIRSTDIRECT_ID
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_firstdirect_credit"
+        assert row["balance"] == 1526.77
+        assert row["as_of_date"] == pd.Timestamp("2026-04-30")
+
+    def test_natwest_statement_balance_captured(self, transformer):
+        raw = {
+            "date": "26 FEB",
+            "description": "Automated Credit 3305 JPMCB",
+            "amount": 2728.54,
+            "balance": 3738.54,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "natwest-statement": _bronze_frame(
+                    "natwest-statement",
+                    [raw],
+                    upload_timestamp=pd.Timestamp("2026-05-13"),
+                    account_identifier=_NATWEST_PDF_ID,
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_natwest_current"
+        assert row["balance"] == 3738.54
+        assert row["as_of_date"] == pd.Timestamp("2026-02-26")
+
+    def test_pdf_sources_without_real_balance_excluded_from_ledger(self, transformer):
+        """natwest-pdf (no balance data at all) and vanguard-pdf (cash_balance is a
+        different metric from Portfolio Value) must not appear in the ledger."""
+        natwest_pdf_raw = {
+            "date": "26 May",
+            "description": "KROO ACCOUNT",
+            "amount": -2745.33,
+        }
+        vanguard_pdf_raw = {
+            "date": "21/04/2026",
+            "description": "Regular Deposit",
+            "amount": 150.0,
+            "cash_balance": 50.15,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "natwest-pdf": _bronze_frame("natwest-pdf", [natwest_pdf_raw]),
+                "vanguard-pdf": _bronze_frame("vanguard-pdf", [vanguard_pdf_raw]),
+            }
         )
         assert df.empty
 
@@ -335,6 +459,100 @@ class TestNormalizeAccountLedger:
         df = transformer.normalize_account_ledger({})
         assert df.empty
         assert "balance" in df.columns
+
+
+class TestDedupeNatwestCrossFormat:
+    """natwest-pdf (online export) and natwest-statement (quarterly PDF) can
+    describe the same real transaction if both get uploaded for overlapping
+    periods - matched by (account_id, transaction_date, amount), not
+    bronze_source_key, which differs by construction across the two."""
+
+    def test_drops_matching_pdf_row_keeps_statement_row(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "source_type": "natwest-pdf",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-02-26"),
+                    "amount": 2728.54,
+                    "description": "3305 JPMCB Automated Credit",
+                },
+                {
+                    "source_type": "natwest-statement",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-02-26"),
+                    "amount": 2728.54,
+                    "description": "Automated Credit 3305 JPMCB",
+                },
+            ]
+        )
+        result = _dedupe_natwest_cross_format(df)
+        assert len(result) == 1
+        assert result.iloc[0]["source_type"] == "natwest-statement"
+
+    def test_unmatched_pdf_row_kept(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "source_type": "natwest-pdf",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-06-15"),
+                    "amount": -50.0,
+                    "description": "No statement coverage for this date",
+                },
+            ]
+        )
+        result = _dedupe_natwest_cross_format(df)
+        assert len(result) == 1
+        assert result.iloc[0]["source_type"] == "natwest-pdf"
+
+    def test_other_source_types_untouched(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "source_type": "kroo",
+                    "account_id": "acc2",
+                    "transaction_date": pd.Timestamp("2026-02-26"),
+                    "amount": 2728.54,
+                    "description": "unrelated source_type",
+                },
+            ]
+        )
+        result = _dedupe_natwest_cross_format(df)
+        assert len(result) == 1
+
+    def test_count_based_removal_preserves_genuine_repeats(self):
+        """Two identical same-day/same-amount pdf rows with only one statement
+        match should only drop one of them, not both."""
+        df = pd.DataFrame(
+            [
+                {
+                    "source_type": "natwest-pdf",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-03-01"),
+                    "amount": 10.0,
+                    "description": "first",
+                },
+                {
+                    "source_type": "natwest-pdf",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-03-01"),
+                    "amount": 10.0,
+                    "description": "second",
+                },
+                {
+                    "source_type": "natwest-statement",
+                    "account_id": "acc1",
+                    "transaction_date": pd.Timestamp("2026-03-01"),
+                    "amount": 10.0,
+                    "description": "statement version",
+                },
+            ]
+        )
+        result = _dedupe_natwest_cross_format(df)
+        assert len(result) == 2
+        assert (result["source_type"] == "natwest-pdf").sum() == 1
+        assert (result["source_type"] == "natwest-statement").sum() == 1
 
 
 class _FakeDatalake:

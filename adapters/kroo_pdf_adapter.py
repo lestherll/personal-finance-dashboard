@@ -215,6 +215,7 @@ class KrooPdfAdapter(PdfAdapter):
             "date": date_str,
             "description": description,
             "amount": amount,
+            "balance": balance,
         }
 
     def generate_source_key(

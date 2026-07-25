@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Personal finance dashboard using a **medallion data lake architecture**. Ingests bank statements (CSV + PDF) from 8 financial sources, normalizes them through Bronze→Silver→Gold layers, and enables SQL analytics via DuckDB.
+Personal finance dashboard using a **medallion data lake architecture**. Ingests bank statements (CSV + PDF) from 9 source_types across 8 financial institutions, normalizes them through Bronze→Silver→Gold layers, and enables SQL analytics via DuckDB.
 
 - **Storage:** File-based Parquet files (not a database)
 - **Query Engine:** DuckDB (in-process, no server)
@@ -98,11 +98,12 @@ Located in `adapters/`:
 - Parse string content (CSV text)
 - Handle format variations (e.g., Monzo has both "full export" and "search export" formats)
 
-**PDF Adapters:** Kroo, Natwest, First Direct, AmEx, Vanguard (`*_pdf_adapter.py`)
+**PDF Adapters:** Kroo, Natwest, Natwest Statement, First Direct, AmEx, Vanguard (`*_pdf_adapter.py`)
 - Inherit from `PdfAdapter` base (handles PyMuPDF text extraction)
 - Parse bytes content (PDF files)
 - Implement bank-specific regex patterns to extract transactions from extracted text
 - Handle multi-line transactions (PDF text extraction breaks table cells into separate lines)
+- Natwest has **two** unrelated PDF adapters: `natwest_pdf_adapter.py` (source_type `"natwest-pdf"`) for the online "Transactions" export, and `natwest_statement_pdf_adapter.py` (source_type `"natwest-statement"`) for the quarterly Statement PDF. They share almost no structure (different section markers, different column layout, masked vs full account number) — see Gotcha #10.
 
 **Factory:** `factory.py` auto-detects + routes:
 - Branches on content type: `str` → try CSV adapters, `bytes` → try PDF adapters
@@ -211,12 +212,13 @@ Pattern to follow:
 | `adapters/base.py` | `DataSourceAdapter` ABC; all adapters inherit from this |
 | `adapters/factory.py` | `AdapterFactory.detect_adapter()` + `ingest()` — main entry point |
 | `adapters/*_adapter.py` | Concrete adapters for each bank/format |
-| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction) |
+| `adapters/natwest_statement_pdf_adapter.py` | Natwest quarterly Statement PDF (`"natwest-statement"`) — distinct from `natwest_pdf_adapter.py`'s online export; see Gotcha #10 |
+| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `_parse_decimal()` helper) |
 | `models/datalake.py` | `DataLake` singleton for Parquet I/O + DuckDB queries |
 | `config.py` | Paths, logging level, Celery/Redis config (read-only at runtime) |
 | `logging_config.py` | Structured logging setup (dictConfig-based) |
 | `tests/conftest.py` | Shared pytest fixtures (sample CSV strings) |
-| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 5 PDF adapters have coverage) |
+| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 6 PDF adapters have coverage) |
 | `cli.py` | `accounts list-unmapped/register/register-fallback` — CLI for the account map |
 | `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization (Phase 2) |
 | `transformers/account_config.py` | `get_account_id()`/`find_unmapped_accounts()`/`register_account()` — resolves against `data/account_map.json` (user data, not code) |
@@ -229,17 +231,18 @@ Pattern to follow:
 ## Current Status
 
 **Phase 1 ✅ DONE:** Adapters (CSV + PDF parsing)
-- 8 bank sources working: Monzo, Natwest, Vanguard (CSV); Kroo, Natwest, First Direct, AmEx, Vanguard (PDF)
+- 9 source_types working: Monzo, Natwest, Vanguard (CSV); Kroo, Natwest, Natwest Statement, First Direct, AmEx, Vanguard (PDF)
 - CSV adapters are currently disabled by default (`AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)`) — real exports are PDF-only for this user; CSV code still works and is tested, just not in the default routing path
 - ⚠️ AmEx and Vanguard PDF adapters were rewritten after validating against real statements — the original implementations didn't actually work against real exports despite being marked "tested manually". See Gotcha #8 before trusting a "tested manually" claim on a PDF adapter
+- ⚠️ Amex's `_select_amount_block` has a known pre-existing bug: when no contiguous amount-run matches the expected transaction count, its fallback (`runs[-1]`) can silently mispair amounts and drop transactions. Verified against every real statement for this user — reconciliation against the statement's own "Closing Balance" fails on all of them, by amounts ranging from a few pence to over £1,000. Not yet fixed; `AmexPdfAdapter.parse()` logs a non-blocking warning when this happens (see Gotcha #11) so it's visible instead of silent, but the root cause in `_select_amount_block` needs its own investigation.
 
 **Phase 2 ✅ DONE: Silver Transformations**
 - Account linking via hashed statement identifiers resolved against `data/account_map.json` (`transformers/account_config.py`) — distinguishes multiple accounts of the same source_type (e.g. two Amex cards, Natwest current vs credit), not just cross-source dedup
-- Schema normalization for all 8 source_types → `transactions`, `holdings`, `account_ledger` (`transformers/silver_transformer.py`)
-- Deduplication by `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`)
+- Schema normalization for all 9 source_types → `transactions`, `holdings`, `account_ledger` (`transformers/silver_transformer.py`)
+- Deduplication by `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`); Natwest's two PDF formats additionally get cross-format dedup by `(account_id, transaction_date, amount)` since they can cover overlapping periods (`_dedupe_natwest_cross_format`, see Gotcha #10)
 - New accounts registered via `cli.py accounts register`, not hand-edited into `account_map.json`
-- ⚠️ `account_ledger` only covers Natwest CSV + Vanguard CSV — PDF adapters discard balance data during Phase 1 parsing, so they're excluded (see Gotcha below)
-- ⚠️ Natwest PDF / AmEx transaction dates have no year in source text; year is inferred from upload time, not fixed at the source
+- `account_ledger` now covers Natwest CSV, Vanguard CSV, Kroo, AmEx, First Direct, and Natwest Statement. Still excluded: `natwest-pdf` (the online export has no balance data in the source document at all) and `vanguard-pdf` (its per-line `cash_balance` is a different metric from Portfolio Value — kept in `raw_data` but not wired into the ledger). See Gotcha #6.
+- ⚠️ Natwest PDF / Natwest Statement / AmEx transaction dates have no year in source text; year is inferred from upload time, not fixed at the source
 
 **Phase 3 (Next): Celery Orchestration** (configured but not wired up)
 - Bronze→Silver transformation job — should just wrap `run_bronze_to_silver()`
@@ -261,6 +264,7 @@ Pattern to follow:
 - **CLI (`cli.py`) tests** live in `tests/unit/test_cli.py`, using `click.testing.CliRunner`
 - **No integration tests yet** (disk-backed Bronze→Silver→Gold pipeline)
 - Dev dependencies require `uv sync --extra dev` (pytest, black, ruff not auto-installed with base `uv sync`)
+- **A fresh git worktree has no `data/account_map.json`:** it's gitignored user data, so `tests/unit/transformers/test_silver_transformer.py` (whose fixtures resolve real account IDs, not just source_type fallbacks) will fail with `KeyError: No account mapping for ...` until it's copied in from another checkout that already has one. Safe to copy — it's just hashed-identifier → account_id/display_name/type mappings, no financial figures.
 
 ---
 
@@ -292,11 +296,21 @@ Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`, `
 
 5. **Account linking:** PDF adapters extract a real identifier from the statement (sort code+account number, masked card number, Vanguard account+wrapper), hash it (`adapters/base.py::hash_account_identifier` — SHA256 truncated, never stores the raw number), and resolve it against `data/account_map.json`. That file is a data store, not code — it's user data and deliberately kept out of source control/hardcoding. New accounts go through `uv run python cli.py accounts register`, not hand-editing JSON. `run_bronze_to_silver()` pre-flight-checks every account is mapped and raises `UnmappedAccountsError` listing *all* unmapped accounts at once (not just the first) before writing anything.
 
-6. **`account_ledger` balance coverage is partial:** PDF adapters (Kroo, Natwest PDF, First Direct, AmEx, Vanguard PDF) already discard running-balance data during Phase 1 parsing — only `date`/`description`/`amount` survive. `normalize_account_ledger()` can therefore only populate the ledger from Natwest CSV (`Balance`/`Balance Date`) and Vanguard CSV (`Portfolio Value`). Extending balance history to PDF sources requires going back and modifying those Phase 1 adapters, not just the transformer.
+6. **`account_ledger` balance coverage (mostly resolved):** Kroo, AmEx, First Direct, and Natwest Statement (`natwest-statement`) all now capture a `balance` field in `raw_data` and are wired into `LEDGER_SOURCE_TYPES`/`_LEDGER_NORMALIZERS`. Two PDF sources are still excluded, for different reasons:
+   - `natwest-pdf` (the online "Transactions" export): verified against a real download — this document genuinely has **no balance data anywhere**, not even an opening balance. Nothing to capture; this isn't fixable without a different export format from Natwest.
+   - `vanguard-pdf`: its per-line "Cash balance" (captured as `raw_data["cash_balance"]`) is uninvested cash sitting in a wrapper (ISA/pension), not the wrapper's total value — a different metric from "Portfolio Value" (what the Vanguard CSV ledger normalizer uses). Deliberately kept separate rather than mixed into `account_ledger.balance`.
 
-7. **PDF date-year inference:** Natwest PDF and AmEx statement text never includes a year (e.g. `"15 Jan"`). `_infer_dated_with_year()` in `silver_transformer.py` guesses the year from the Bronze `upload_timestamp`, preferring the most recent year that doesn't land after the upload time (handles Dec/Jan boundaries). This is a best-effort workaround, not a fix — the correct fix is extracting the statement period from the PDF itself at the adapter level.
+   Kroo and Vanguard PDF's balance capture is a direct read (the adapter already parsed it, just wasn't returning it). AmEx and First Direct don't print a per-transaction balance at all — only a single "Previous Closing Balance"/"Previous Balance" anchor in an Account Summary block — so their `balance` is *derived*: roll a `Decimal` accumulator forward through transactions from that anchor (`balance -= amount`, not `+=` — the anchor is a liability that moves opposite to the signed cash-received `amount` convention used elsewhere). Both log a non-blocking warning if the derived final balance doesn't reconcile with the statement's own printed closing figure — this is what surfaced the AmEx bug in Phase 1 status above.
+
+7. **PDF date-year inference:** Natwest PDF, Natwest Statement, and AmEx statement text never includes a year (e.g. `"15 Jan"`, `"26 FEB"`). `_infer_dated_with_year()` in `silver_transformer.py` guesses the year from the Bronze `upload_timestamp`, preferring the most recent year that doesn't land after the upload time (handles Dec/Jan boundaries). This is a best-effort workaround, not a fix — the correct fix is extracting the statement period from the PDF itself at the adapter level. (Natwest Statement's own text actually prints a "Period Covered" range with explicit years, which could give more precise inference than the upload-timestamp guess — not currently used, since the existing helper was reused for consistency.)
 
 8. **"Tested manually" isn't proof a PDF adapter works:** AmEx and Vanguard's Phase 1 adapters looked reasonable but silently didn't work against real statements. AmEx: PyMuPDF extracts real tables column-by-column (all dates, then all descriptions, then all amounts as one block at the end) — one-line-per-transaction regex can't parse that; rows must be reconstructed by zipping the blocks back together positionally, and boilerplate text (e.g. an interest-rate worked example) can contain decoy numbers that must be filtered by matching the expected transaction count. Vanguard: real statements cover multiple product wrappers (e.g. ISA + Personal Pension) under one account, each with its own holdings table and activity section — a single flat "Activity" assumption merges them. Validate PDF adapter regex against an actual downloaded statement, not just a hand-written fixture, especially for table-heavy layouts.
 
 9. **`PdfAdapter._extract_text()` page boundaries:** pages are joined with `"\n\x0c\n"` (form-feed), not just `"\n"`, so adapters needing per-page structure (e.g. Amex's column reconstruction) can `text.split("\x0c")`. Existing line-based adapters are unaffected — `\x0c` strips to `""` and gets skipped by their blank-line checks.
+
+10. **Two unrelated Natwest PDF formats:** `natwest_pdf_adapter.py` (`"natwest-pdf"`) and `natwest_statement_pdf_adapter.py` (`"natwest-statement"`) both parse Natwest PDFs but target structurally different real documents — the online "Transactions" export vs. the quarterly Statement. Confirmed by testing the *old* adapter's `validate_text` against a real quarterly Statement file: it returned `True` (its old check was just `"NatWest" in text and "Transaction" in text`, both of which happen to appear in the Statement's footer/transaction descriptions too), producing an exact-confidence tie with the new adapter that would make `AdapterFactory.detect_adapter()` raise an ambiguous-match error. Fixed by narrowing `natwest_pdf_adapter.py`'s check to `"Your transactions"`, a section heading unique to the online export. If you add a third Natwest document type, verify `validate_text` against real files from *all* existing Natwest adapters, not just the new one — a validator that looks reasonable in isolation can still collide.
+
+    Because the two formats can cover overlapping date ranges, uploading both risks double-counting the same real transaction under two different `bronze_source_key`s (they differ by construction across adapters, so the usual `bronze_source_key`-based dedup can't catch it). `transformers/silver_transformer.py::_dedupe_natwest_cross_format()` handles this separately, matching by `(account_id, transaction_date, amount)` — not description, which differs materially in wording between the two formats for the same real transaction — and preferring the `natwest-statement` row (has balance data) via count-based (multiset) removal, so genuinely repeated same-day/same-amount transactions within one format aren't mistakenly dropped.
+
+11. **Natwest Statement's amount is *derived from* balance, not the other way round:** its transaction table has separate `Paid In(£)`/`Withdrawn(£)`/`Balance(£)` columns, but plain-text PDF extraction loses column position — a lone number after a description could be either Paid In or Withdrawn. Rather than guess, `natwest_statement_pdf_adapter.py` treats the trailing (unambiguous) `Balance(£)` figure as the primary parsed value and derives the signed `amount` as `balance − previous_balance`. This is the opposite of every other adapter (which derive balance from amount, when they derive anything at all) and is correct by construction rather than a heuristic. The date is also only printed once per calendar day in this format — a second same-day transaction omits the date line entirely, so parsing carries the last-seen date forward rather than requiring one per row.
 

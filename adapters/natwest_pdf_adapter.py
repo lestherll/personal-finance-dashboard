@@ -10,10 +10,17 @@ class NatwestPdfAdapter(PdfAdapter):
     """Parse Natwest PDF statements."""
 
     def validate_text(self, text: str) -> bool:
-        """Check if text is from Natwest statement."""
-        return "NatWest" in text and (
-            "Your transactions" in text or "Transaction" in text
-        )
+        """Check if text is from the Natwest online "Transactions" export.
+
+        Deliberately narrow: the generic "NatWest" + "Transaction" check
+        this used to use also matched the quarterly Statement PDF (a
+        structurally different document handled by
+        `NatwestStatementPdfAdapter`), which produced an exact-confidence
+        validation tie between the two adapters. "Your transactions" is the
+        online export's section heading and doesn't appear in the Statement
+        PDF.
+        """
+        return "NatWest" in text and "Your transactions" in text
 
     def _extract_account_identifier(self, text: str) -> Optional[str]:
         """Extract masked account + sort code, e.g. '*****227 · 54-10-04'."""

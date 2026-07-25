@@ -1,12 +1,16 @@
 """Base class for PDF statement adapters."""
 
+import re
 from abc import abstractmethod
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Union
 
 import fitz
 
 from adapters.base import DataSourceAdapter, RawRecord, hash_account_identifier
+
+_DECIMAL_RE = re.compile(r"[-+]?[\d,]+\.\d{2}")
 
 
 class PdfAdapter(DataSourceAdapter):
@@ -106,6 +110,26 @@ class PdfAdapter(DataSourceAdapter):
             text += page.get_text() + "\n\x0c\n"
         doc.close()
         return text
+
+    @staticmethod
+    def _parse_decimal(text: str) -> Optional[Decimal]:
+        """Parse a £/comma-formatted amount to Decimal, e.g. "£1,234.56", "-£47.22".
+
+        Strips "£" and thousands-commas and keeps an optional leading sign.
+        Any trailing marker such as "CR" is stripped and ignored - direction
+        (credit vs debit) is context-specific and left to the caller, the
+        same way existing float-based amount parsing already handles it.
+        """
+        stripped = (
+            text.upper().replace("CR", "").replace("£", "").replace(",", "").strip()
+        )
+        match = _DECIMAL_RE.search(stripped)
+        if not match:
+            return None
+        try:
+            return Decimal(match.group(0))
+        except InvalidOperation:
+            return None
 
     @abstractmethod
     def validate_text(self, text: str) -> bool:

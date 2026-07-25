@@ -145,8 +145,10 @@ class TestVanguardMultiWrapper:
         assert len(isa_txns) == 2
         deposit = next(t for t in isa_txns if "Regular Deposit" in t["description"])
         assert deposit["amount"] == 50.00
+        assert deposit["cash_balance"] == 50.15
         bought = next(t for t in isa_txns if "Bought" in t["description"])
         assert bought["amount"] == -50.00
+        assert bought["cash_balance"] == 0.15
         # Boilerplate must not have leaked into the wrapped description.
         assert "Walbrook" not in bought["description"]
         assert "Financial Conduct" not in bought["description"]
@@ -161,6 +163,7 @@ class TestVanguardMultiWrapper:
         ]
         assert len(pension_txns) == 1
         assert pension_txns[0]["amount"] == 500.00
+        assert pension_txns[0]["cash_balance"] == 500.00
 
 
 class TestVanguardSourceKey:

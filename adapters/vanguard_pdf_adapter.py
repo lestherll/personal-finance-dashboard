@@ -225,13 +225,19 @@ class VanguardPdfAdapter(PdfAdapter):
             return None
 
         account_identifier = f"{account_number}_{wrapper}" if account_number else None
-        return {
+        record = {
             "record_type": "transaction",
             "date": date_str,
             "description": " ".join(description_parts),
-            "amount": amounts[0],  # cash amount; cash balance discarded (as before)
+            "amount": amounts[0],  # cash amount
             "_account_identifier_raw": account_identifier,
         }
+        if len(amounts) >= 2:
+            # Cash balance within this wrapper - distinct from "Portfolio
+            # Value" (the CSV ledger's balance metric), so kept as its own
+            # field rather than fed into account_ledger.
+            record["cash_balance"] = amounts[1]
+        return record
 
     def generate_source_key(
         self,
