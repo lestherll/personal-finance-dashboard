@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import pandas as pd
 
-from transformers.balance import get_current_balances, get_net_worth
+from transformers.balance import get_current_balances, get_net_worth, get_net_worth_breakdown
 
 
 class _FakeDatalakeForBalance:
@@ -427,3 +427,163 @@ class TestGetNetWorth:
         net_worth = get_net_worth(datalake, path=path)
 
         assert net_worth == Decimal("3500.0")
+
+
+class TestGetNetWorthBreakdown:
+    def test_breakdown_includes_ledger_and_holdings(self, tmp_path):
+        """Breakdown shows both ledger balances and holdings with their
+        contributions to net worth."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_amex": {
+                    "account_id": "acc_amex",
+                    "display_name": "Amex",
+                    "account_type": "credit",
+                },
+                "hash_vanguard": {
+                    "account_id": "acc_vanguard",
+                    "display_name": "Vanguard",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    1000.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_amex",
+                    300.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_vanguard",
+                    200.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        holdings = pd.DataFrame(
+            [
+                _holdings_row("acc_vanguard", 1500.0, "Fund A"),
+                _holdings_row("acc_vanguard", 500.0, "Fund B"),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": ledger, "holdings": holdings}
+        )
+
+        breakdown = get_net_worth_breakdown(datalake, path=path)
+
+        assert len(breakdown) == 5
+        assert "contribution_to_net_worth" in breakdown.columns
+        # Kroo 1000 + Vanguard 200 - Amex 300 + Fund A 1500 + Fund B 500 = 2900
+        assert breakdown["contribution_to_net_worth"].sum() == Decimal("2900.0")
+
+        kroo_row = breakdown[breakdown["account_id"] == "acc_kroo"].iloc[0]
+        assert kroo_row["contribution_to_net_worth"] == Decimal("1000.0")
+
+        amex_row = breakdown[breakdown["account_id"] == "acc_amex"].iloc[0]
+        assert amex_row["contribution_to_net_worth"] == Decimal("-300.0")
+
+        fund_rows = breakdown[
+            (breakdown["account_id"] == "acc_vanguard")
+            & (breakdown["source"].isin(["Fund A", "Fund B"]))
+        ]
+        assert len(fund_rows) == 2
+        assert fund_rows["contribution_to_net_worth"].sum() == Decimal("2000.0")
+
+    def test_breakdown_credit_accounts_negative_contribution(self, tmp_path):
+        """Credit account balances show negative contribution to net worth."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_amex": {
+                    "account_id": "acc_amex",
+                    "display_name": "Amex",
+                    "account_type": "credit",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_amex",
+                    500.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        breakdown = get_net_worth_breakdown(datalake, path=path)
+
+        assert len(breakdown) == 1
+        assert breakdown.iloc[0]["balance_or_value"] == 500.0
+        assert breakdown.iloc[0]["contribution_to_net_worth"] == Decimal("-500.0")
+
+    def test_breakdown_sorted_by_as_of_date_then_contribution(self, tmp_path):
+        """Breakdown is sorted by as_of_date (descending) then contribution
+        (descending)."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    100.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_kroo",
+                    200.0,
+                    pd.Timestamp("2026-06-02"),
+                    pd.Timestamp("2026-06-02"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        breakdown = get_net_worth_breakdown(datalake, path=path)
+
+        assert breakdown.iloc[0]["as_of_date"] == pd.Timestamp("2026-06-02")
+        assert breakdown.iloc[0]["balance_or_value"] == 200.0
+
+    def test_breakdown_empty_when_no_data(self, tmp_path):
+        """Breakdown returns empty DataFrame with correct columns when
+        there's no ledger or holdings data."""
+        path = _account_map_path(tmp_path)
+        datalake = _FakeDatalakeForBalance({})
+
+        breakdown = get_net_worth_breakdown(datalake, path=path)
+
+        assert breakdown.empty
+        assert list(breakdown.columns) == [
+            "account_id",
+            "source",
+            "balance_or_value",
+            "as_of_date",
+            "contribution_to_net_worth",
+        ]

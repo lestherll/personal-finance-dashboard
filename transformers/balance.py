@@ -32,6 +32,13 @@ from transformers.account_config import build_accounts_table
 PathLike = Union[str, Path]
 
 _BALANCES_COLUMNS = ["account_id", "balance", "as_of_date"]
+_BREAKDOWN_COLUMNS = [
+    "account_id",
+    "source",
+    "balance_or_value",
+    "as_of_date",
+    "contribution_to_net_worth",
+]
 
 # Confirmed forward-chronological (ascending line_number = ascending time)
 # via each source's own reconciliation logic depending on that order to
@@ -107,3 +114,65 @@ def get_net_worth(
             total += Decimal(str(value))
 
     return total
+
+
+def get_net_worth_breakdown(
+    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+) -> pd.DataFrame:
+    """Detailed breakdown of net worth by account/holding, including as_of_date
+    and contribution to total net worth.
+
+    Returns a DataFrame with columns: account_id, source, balance_or_value,
+    as_of_date, contribution_to_net_worth. Each row is either a ledger balance
+    or a holding fund. Rows are sorted by as_of_date (descending), then by
+    contribution (descending for assets, ascending for liabilities).
+    """
+    datalake = datalake or get_datalake()
+    rows = []
+
+    # Add ledger-based rows (account balances)
+    balances = get_current_balances(datalake)
+    if not balances.empty:
+        accounts = build_accounts_table(path=path)
+        merged = balances.merge(
+            accounts[["account_id", "account_type"]], on="account_id", how="left"
+        )
+
+        for row in merged.itertuples():
+            amount = Decimal(str(row.balance))
+            contribution = -amount if row.account_type == "credit" else amount
+            rows.append(
+                {
+                    "account_id": row.account_id,
+                    "source": row.account_id,
+                    "balance_or_value": row.balance,
+                    "as_of_date": row.as_of_date,
+                    "contribution_to_net_worth": contribution,
+                }
+            )
+
+    # Add holdings-based rows
+    holdings = datalake.read_silver("holdings")
+    if holdings is not None and not holdings.empty:
+        for holding_row in holdings.itertuples():
+            value = Decimal(str(holding_row.total_value))
+            rows.append(
+                {
+                    "account_id": holding_row.account_id,
+                    "source": holding_row.fund_name,
+                    "balance_or_value": holding_row.total_value,
+                    "as_of_date": None,
+                    "contribution_to_net_worth": value,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=_BREAKDOWN_COLUMNS)
+
+    df = pd.DataFrame(rows)
+    df = df[_BREAKDOWN_COLUMNS].sort_values(
+        ["as_of_date", "contribution_to_net_worth"],
+        ascending=[False, False],
+        na_position="last",
+    )
+    return df.reset_index(drop=True)
