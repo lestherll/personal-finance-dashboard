@@ -249,7 +249,8 @@ def reconciliation():
     if statuses.empty:
         click.echo(
             "No reconciliation data found yet (only amex, firstdirect, kroo, "
-            "natwest-statement, and chase sources self-check a balance anchor)."
+            "natwest-statement, chase, and monzo-flex sources self-check a "
+            "balance anchor)."
         )
         return
 

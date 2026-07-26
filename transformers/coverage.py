@@ -37,6 +37,7 @@ _PERIOD_SOURCE_TYPES: Set[str] = {
     "vanguard-pdf",
     "kroo",
     "firstdirect",
+    "monzo-flex",
 }
 
 _PERIODS_COLUMNS = ["account_id", "source_type", "filename", "period_from", "period_to"]

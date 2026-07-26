@@ -33,6 +33,7 @@ _RECONCILIATION_SOURCE_TYPES: Set[str] = {
     "natwest-statement",
     "kroo",
     "chase",
+    "monzo-flex",
 }
 
 _STATUS_COLUMNS = [
