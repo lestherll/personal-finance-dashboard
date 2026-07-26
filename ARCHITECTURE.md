@@ -32,8 +32,6 @@ CSVs from Banks
 
 **CSV Adapters:**
 - `MonzoAdapter` — Monzo export format
-- `NatwestAdapter` — Natwest export format
-- `VanguardAdapter` — Vanguard holdings export
 
 **PDF Adapters (PyMuPDF-based text extraction):**
 - `KrooPdfAdapter` — Kroo current account statements
@@ -87,7 +85,7 @@ CSVs from Banks
 1. USER UPLOADS CSV
    ↓
 2. ADAPTER DETECTS FORMAT
-   (CSV: Monzo/Natwest/Vanguard; PDF: Kroo/Natwest/First Direct/Amex/Vanguard)
+   (CSV: Monzo; PDF: Kroo/Natwest/First Direct/Amex/Vanguard)
    ↓
 3. PARSE TO RAWRECORDS
    (source_key, source_type, raw_data, filename, file_hash)
@@ -122,11 +120,11 @@ data/
 │   ├── monzo/
 │   │   ├── export_20240115.parquet
 │   │   └── export_20240116.parquet
-│   ├── natwest/
-│   │   ├── export_20240115.parquet
+│   ├── natwest-transactions/
+│   │   └── export_20240115.parquet
+│   ├── natwest-statement/
 │   │   └── statement_20260501.pdf.parquet
-│   ├── vanguard/
-│   │   ├── holdings_20240115.parquet
+│   ├── vanguard-pdf/
 │   │   └── statement_20260708.pdf.parquet
 │   ├── kroo/
 │   │   └── statement_20260501.pdf.parquet
@@ -177,7 +175,7 @@ data/
 ## V0 Scope
 
 ✅ **Phase 1:** Adapter pattern + factory (DONE)
-- CSV adapters: Monzo, Natwest, Vanguard
+- CSV adapters: Monzo
 - PDF adapters: Kroo, Natwest, First Direct, AmEx, Vanguard
 - Auto-detection by confidence scoring (95%+ confidence validates adapter match)
 - Error handling for ambiguous formats
@@ -187,7 +185,7 @@ data/
 - Account linking via a static `source_type → account_id` mapping (`transformers/account_config.py`) — deliberately not runtime heuristics, since the account set is small and known in advance
 - Silver transformer (`transformers/silver_transformer.py`) — normalizes all 8 adapters' `RawRecord.raw_data` fields to a common schema across `transactions`, `holdings`, `account_ledger`
 - Deduplication via `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`)
-- ⚠️ `account_ledger` only covers Natwest CSV + Vanguard CSV (PDF adapters discard balance in Phase 1); Natwest PDF/AmEx dates need year inference since source text omits the year
+- ⚠️ `account_ledger` coverage and PDF date-year inference have since evolved significantly past this Phase 1/2 planning doc — see CLAUDE.md's "Current Status" for what's actually implemented
 - Subscription/transfer detection deferred to Phase 3 (Silver→Gold enrichment, not Silver normalization)
 
 **Phase 3 (Next):** Celery orchestration
