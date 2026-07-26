@@ -227,10 +227,89 @@ class TestIngestCommand:
         )
 
         result = runner.invoke(cli, ["ingest", str(pdf_path)])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "balance mismatch" in result.output
         assert "£678.04" in result.output
         assert "£863.04" in result.output
+
+    def test_matches_none_does_not_fail_exit_code(self, runner, tmp_path, monkeypatch):
+        """matches=None means inconclusive (no anchor found) - not a known
+        mismatch, so it must not set the exit code to non-zero (see
+        Gotcha #17)."""
+        pdf_path = tmp_path / "statement.pdf"
+        pdf_path.write_bytes(b"%PDF-fake")
+
+        outcome = IngestResult(
+            records=[_make_record()],
+            reconciliation=ReconciliationResult(
+                check_name="amex_closing_balance",
+                expected_closing=None,
+                derived_closing=None,
+                matches=None,
+            ),
+            statement_period=None,
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"statement.pdf": outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(pdf_path)])
+        assert result.exit_code == 0
+
+    def test_continues_after_reconciliation_mismatch(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A reconciliation mismatch must not stop the rest of the batch -
+        only the final exit code reflects it (mirrors
+        test_continues_after_one_bad_file for parse/detection failures)."""
+        mismatched_path = tmp_path / "mismatched.pdf"
+        mismatched_path.write_bytes(b"%PDF-fake")
+        good_path = tmp_path / "good.pdf"
+        good_path.write_bytes(b"%PDF-fake")
+
+        mismatched_outcome = IngestResult(
+            records=[_make_record(filename="mismatched.pdf")],
+            reconciliation=ReconciliationResult(
+                check_name="amex_closing_balance",
+                expected_closing=Decimal("863.04"),
+                derived_closing=Decimal("678.04"),
+                matches=False,
+            ),
+            statement_period=None,
+        )
+        good_outcome = IngestResult(
+            records=[_make_record(filename="good.pdf")],
+            reconciliation=None,
+            statement_period=None,
+        )
+        outcomes = {
+            "mismatched.pdf": mismatched_outcome,
+            "good.pdf": good_outcome,
+        }
+        fake_datalake = _FakeDatalake()
+        monkeypatch.setattr(
+            cli_module, "AdapterFactory", lambda: _FakeFactory(outcomes)
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+        monkeypatch.setattr(
+            cli_module,
+            "_archive_raw_file",
+            lambda path, source_type, file_hash: "/fake/raw/file.pdf",
+        )
+
+        result = runner.invoke(cli, ["ingest", str(mismatched_path), str(good_path)])
+        assert result.exit_code == 1
+        assert "mismatched.pdf: 1 record(s)" in result.output
+        assert "good.pdf: 1 record(s)" in result.output
+        assert len(fake_datalake.write_calls) == 2
 
     def test_unrecognized_format_message_and_exit_code(
         self, runner, tmp_path, monkeypatch

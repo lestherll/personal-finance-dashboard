@@ -20,6 +20,7 @@ function didn't account for this and silently picked the oldest same-day
 Monzo transaction instead of the newest.
 """
 
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Union
@@ -29,15 +30,18 @@ import pandas as pd
 from models.datalake import DataLake, get_datalake
 from transformers.account_config import build_accounts_table
 
+logger = logging.getLogger(__name__)
+
 PathLike = Union[str, Path]
 
-_BALANCES_COLUMNS = ["account_id", "balance", "as_of_date"]
+_BALANCES_COLUMNS = ["account_id", "balance", "as_of_date", "balance_may_be_stale"]
 _BREAKDOWN_COLUMNS = [
     "account_id",
     "source",
     "balance_or_value",
     "as_of_date",
     "contribution_to_net_worth",
+    "balance_may_be_stale",
 ]
 
 # Confirmed forward-chronological (ascending line_number = ascending time)
@@ -65,11 +69,26 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     held through day 28, not just day 1). Without this, an inactive
     account's "current balance" looks stale by however many days were left
     in its last statement, even though it's the true up-to-date figure.
+
+    Rows whose statement failed reconciliation (`reconciled is False`, see
+    Gotcha #17/silver_transformer.py::_reconciled_flag) are excluded before
+    the latest-row selection above, so a mismatched file's balance is never
+    picked - the next-latest *reconciling* row wins instead ("stale but
+    correct, rather than current but wrong"). If literally every row for an
+    account has failed reconciliation, that account is silently absent from
+    the result (logged via `logger.warning`, never fabricated). Any
+    surviving row is flagged `balance_may_be_stale=True` when a newer,
+    excluded statement exists for that account - i.e. the shown balance is
+    real but not as current as what's actually on file.
     """
     datalake = datalake or get_datalake()
     ledger = datalake.read_silver("account_ledger")
     if ledger is None or ledger.empty:
         return pd.DataFrame(columns=_BALANCES_COLUMNS)
+
+    full_ledger = ledger
+    if "reconciled" in ledger.columns:
+        ledger = ledger[ledger["reconciled"] != False]  # noqa: E712
 
     sort_key = ledger["statement_period_to"].fillna(ledger["upload_timestamp"])
     is_reverse = ledger["source_type"].isin(_REVERSE_CHRONOLOGICAL_SOURCE_TYPES)
@@ -84,6 +103,26 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     as_of = pd.to_datetime(latest["as_of_date"])
     period_to = pd.to_datetime(latest["statement_period_to"])
     latest["as_of_date"] = as_of.where(as_of >= period_to.fillna(as_of), period_to)
+
+    latest["balance_may_be_stale"] = False
+    if "reconciled" in full_ledger.columns:
+        excluded_accounts = set(full_ledger["account_id"]) - set(latest["account_id"])
+        if excluded_accounts:
+            logger.warning(
+                "get_current_balances: %d account(s) have zero reconciled "
+                "rows and are excluded entirely: %s",
+                len(excluded_accounts),
+                sorted(excluded_accounts),
+            )
+
+        mismatched = full_ledger[full_ledger["reconciled"] == False]  # noqa: E712
+        if not mismatched.empty:
+            latest_mismatched = mismatched.groupby("account_id")["as_of_date"].max()
+            newer_mismatch = latest["account_id"].map(latest_mismatched)
+            latest["balance_may_be_stale"] = newer_mismatch.notna() & (
+                newer_mismatch > latest["as_of_date"]
+            )
+
     return latest[_BALANCES_COLUMNS].reset_index(drop=True)
 
 
@@ -137,9 +176,11 @@ def get_net_worth_breakdown(
     and contribution to total net worth.
 
     Returns a DataFrame with columns: account_id, source, balance_or_value,
-    as_of_date, contribution_to_net_worth. Each row is either a ledger balance
-    or a holding fund. Rows are sorted by as_of_date (descending), then by
-    contribution (descending for assets, ascending for liabilities).
+    as_of_date, contribution_to_net_worth, balance_may_be_stale. Each row is
+    either a ledger balance or a holding fund. Rows are sorted by as_of_date
+    (descending), then by contribution (descending for assets, ascending for
+    liabilities). Holdings have no reconciliation concept, so their
+    balance_may_be_stale is always False - see get_current_balances().
     """
     datalake = datalake or get_datalake()
     rows = []
@@ -162,6 +203,7 @@ def get_net_worth_breakdown(
                     "balance_or_value": row.balance,
                     "as_of_date": row.as_of_date,
                     "contribution_to_net_worth": contribution,
+                    "balance_may_be_stale": row.balance_may_be_stale,
                 }
             )
 
@@ -177,6 +219,7 @@ def get_net_worth_breakdown(
                     "balance_or_value": holding_row.total_value,
                     "as_of_date": None,
                     "contribution_to_net_worth": value,
+                    "balance_may_be_stale": False,
                 }
             )
 

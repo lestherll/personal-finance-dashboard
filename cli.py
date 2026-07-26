@@ -207,6 +207,9 @@ def ingest(files):
         _echo_reconciliation(result.reconciliation)
         _echo_statement_period(result.statement_period)
 
+        if result.reconciliation is not None and result.reconciliation.matches is False:
+            had_failure = True
+
     if had_failure:
         sys.exit(1)
 

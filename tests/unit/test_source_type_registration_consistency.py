@@ -96,6 +96,22 @@ class TestNormalizerSetConsistency:
         assert LEDGER_SOURCE_TYPES == set(_LEDGER_NORMALIZERS)
 
 
+class TestLedgerSourcesHaveReconciliationSignal:
+    """See Gotcha #17: get_current_balances() filters mismatched ledger rows
+    via the `reconciled` column, which silver_transformer.py's
+    normalize_account_ledger() can only populate from a Bronze row's
+    reconciliation_matches - itself only ever set for source_types in
+    _RECONCILIATION_SOURCE_TYPES. A ledger-contributing source_type outside
+    that set would have no way to ever be excluded/flagged on a mismatch."""
+
+    def test_ledger_sources_are_subset_of_reconciliation_sources(self):
+        assert LEDGER_SOURCE_TYPES <= _RECONCILIATION_SOURCE_TYPES, (
+            "every ledger-contributing source_type must also self-check via "
+            "reconciliation, or its mismatched balances can never be "
+            "filtered by transformers/balance.py::get_current_balances()"
+        )
+
+
 class TestReverseChronologicalRegistration:
     """Whether an adapter's own parse order is newest-first is a genuine
     runtime/data property (see commit 419c097 - the original Monzo PDF bug),

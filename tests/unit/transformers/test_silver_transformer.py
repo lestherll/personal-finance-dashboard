@@ -29,6 +29,7 @@ def _bronze_frame(
     statement_period_to=None,
     filename="test_upload",
     line_number_start=1,
+    reconciliation_matches=None,
 ):
     """Build a Bronze-shaped DataFrame matching what datalake.read_bronze() returns.
 
@@ -36,6 +37,10 @@ def _bronze_frame(
     they are on a real Bronze write - see models/datalake.py::write_bronze),
     applied identically to every row in one call; line_number increments per
     row within the call, mirroring one real ingested file's row sequence.
+    reconciliation_matches mirrors the same per-file broadcast (write_bronze
+    only adds the column when the adapter set a ReconciliationResult) -
+    defaults to None (no reconciliation info), matching a source/statement
+    with no anchor to check, or Bronze data predating the column.
     """
     upload_timestamp = upload_timestamp or pd.Timestamp("2026-06-01")
     return pd.DataFrame(
@@ -50,6 +55,7 @@ def _bronze_frame(
                 "record_type": record_type,
                 "statement_period_to": statement_period_to,
                 "line_number": line_number_start + i,
+                "reconciliation_matches": reconciliation_matches,
             }
             for i, raw in enumerate(raw_rows)
         ]
@@ -613,6 +619,69 @@ class TestNormalizeAccountLedger:
         assert row["account_id"] == "acc_natwest_current"
         assert row["balance"] == 3738.54
         assert row["as_of_date"] == pd.Timestamp("2026-02-26")
+
+    def test_reconciled_true_captured_on_ledger_row(self, transformer):
+        raw = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount": -4.50,
+            "balance": 495.50,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "kroo": _bronze_frame(
+                    "kroo",
+                    [raw],
+                    account_identifier=_KROO_ID,
+                    reconciliation_matches=True,
+                )
+            }
+        )
+
+        assert len(df) == 1
+        assert df.iloc[0]["reconciled"] == True  # noqa: E712 - may be numpy bool
+
+    def test_reconciled_false_captured_but_row_not_excluded(self, transformer):
+        """A mismatched file's balance must still land in the ledger (see
+        Gotcha #17) - filtering it out of "current balance" selection is
+        transformers/balance.py::get_current_balances()'s job, not this
+        function's. Excluding it here would strand the row if a later
+        re-ingest of the same file un-mismatches it (_dedupe_with_existing
+        only adds/replaces by bronze_source_key, never removes)."""
+        raw = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount": -4.50,
+            "balance": 495.50,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "kroo": _bronze_frame(
+                    "kroo",
+                    [raw],
+                    account_identifier=_KROO_ID,
+                    reconciliation_matches=False,
+                )
+            }
+        )
+
+        assert len(df) == 1
+        assert df.iloc[0]["reconciled"] == False  # noqa: E712 - may be numpy bool
+        assert df.iloc[0]["balance"] == 495.50
+
+    def test_reconciled_none_captured_when_no_reconciliation_column(self, transformer):
+        raw = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount": -4.50,
+            "balance": 495.50,
+        }
+        df = transformer.normalize_account_ledger(
+            {"kroo": _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)}
+        )
+
+        assert len(df) == 1
+        assert df.iloc[0]["reconciled"] is None
 
     def test_pdf_sources_without_real_balance_excluded_from_ledger(self, transformer):
         """natwest-transactions (no balance data at all) and vanguard-pdf (cash_balance is a

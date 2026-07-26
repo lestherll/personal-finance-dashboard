@@ -81,6 +81,19 @@ def _parse_date(value: Any, fmt: Optional[str] = None) -> Optional[pd.Timestamp]
     return result
 
 
+def _reconciled_flag(bronze_row: Any) -> Optional[bool]:
+    """Read a Bronze row's per-file reconciliation verdict (Gotcha #14/#17).
+
+    `None` means "not disproven" (no anchor found, or this source/row
+    predates the reconciliation_matches column) and is treated as
+    includable downstream - only an explicit `False` means a known mismatch.
+    """
+    raw = bronze_row.get("reconciliation_matches")
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+        return None
+    return bool(raw)
+
+
 def _infer_dated_with_year(
     date_str: str, fmt_no_year: str, reference: Any
 ) -> Optional[pd.Timestamp]:
@@ -380,6 +393,7 @@ _LEDGER_COLUMNS = [
     "upload_timestamp",
     "statement_period_to",
     "line_number",
+    "reconciled",
 ]
 
 _PLAN_IT_INSTALMENTS_COLUMNS = [
@@ -551,6 +565,7 @@ class SilverTransformer:
                         "upload_timestamp": bronze_row.get("upload_timestamp"),
                         "statement_period_to": bronze_row.get("statement_period_to"),
                         "line_number": bronze_row.get("line_number"),
+                        "reconciled": _reconciled_flag(bronze_row),
                         **normalized,
                     }
                 )

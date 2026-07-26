@@ -34,6 +34,7 @@ def _ledger_row(
     statement_period_to=None,
     line_number=1,
     source_type="kroo",
+    reconciled=None,
 ):
     return {
         "account_id": account_id,
@@ -43,6 +44,7 @@ def _ledger_row(
         "statement_period_to": statement_period_to,
         "line_number": line_number,
         "source_type": source_type,
+        "reconciled": reconciled,
     }
 
 
@@ -308,6 +310,137 @@ class TestGetCurrentBalances:
         datalake = _FakeDatalakeForBalance({})
         result = get_current_balances(datalake)
         assert result.empty
+
+    def test_mismatched_row_excluded_falls_back_to_last_known_good(self):
+        """See Gotcha #17: a file that fails reconciliation must not win
+        "current balance" selection - the last reconciling row should be
+        used instead ("stale but correct, rather than current but wrong")."""
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_firstdirect",
+                    1526.77,
+                    pd.Timestamp("2026-05-05"),
+                    pd.Timestamp("2026-05-05"),
+                    statement_period_to=pd.Timestamp("2026-05-05"),
+                    reconciled=True,
+                ),
+                _ledger_row(
+                    "acc_firstdirect",
+                    1936.54,
+                    pd.Timestamp("2026-07-05"),
+                    pd.Timestamp("2026-07-05"),
+                    statement_period_to=pd.Timestamp("2026-07-05"),
+                    reconciled=False,
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance"] == 1526.77
+        assert result.iloc[0]["as_of_date"] == pd.Timestamp("2026-05-05")
+        assert result.iloc[0]["balance_may_be_stale"] == True  # noqa: E712
+
+    def test_all_rows_mismatched_account_excluded_entirely(self, caplog):
+        """If literally every statement for an account fails reconciliation,
+        there is no known-good balance to fall back to - the account is
+        absent from the result (not zero/NaN), logged rather than raised."""
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_amex",
+                    678.04,
+                    pd.Timestamp("2026-01-31"),
+                    pd.Timestamp("2026-02-01"),
+                    reconciled=False,
+                ),
+                _ledger_row(
+                    "acc_kroo",
+                    495.50,
+                    pd.Timestamp("2026-01-12"),
+                    pd.Timestamp("2026-01-13"),
+                    reconciled=True,
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = get_current_balances(datalake)
+
+        assert list(result["account_id"]) == ["acc_kroo"]
+        assert "acc_amex" in caplog.text
+
+    def test_reconciled_none_treated_as_included(self):
+        """None (no anchor found/inconclusive, or predates the reconciled
+        column) must not be excluded - only an explicit False is a known
+        mismatch."""
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    495.50,
+                    pd.Timestamp("2026-01-12"),
+                    pd.Timestamp("2026-01-13"),
+                    reconciled=None,
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance"] == 495.50
+        assert result.iloc[0]["balance_may_be_stale"] == False  # noqa: E712
+
+    def test_balance_may_be_stale_true_when_newer_mismatch_exists(self):
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_firstdirect",
+                    1526.77,
+                    pd.Timestamp("2026-05-05"),
+                    pd.Timestamp("2026-05-05"),
+                    reconciled=True,
+                ),
+                _ledger_row(
+                    "acc_firstdirect",
+                    1936.54,
+                    pd.Timestamp("2026-07-05"),
+                    pd.Timestamp("2026-07-05"),
+                    reconciled=False,
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert result.iloc[0]["balance_may_be_stale"] == True  # noqa: E712
+
+    def test_balance_may_be_stale_false_when_no_newer_mismatch(self):
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    495.50,
+                    pd.Timestamp("2026-01-12"),
+                    pd.Timestamp("2026-01-13"),
+                    reconciled=True,
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert result.iloc[0]["balance_may_be_stale"] == False  # noqa: E712
 
 
 class TestGetNetWorth:
@@ -651,4 +784,5 @@ class TestGetNetWorthBreakdown:
             "balance_or_value",
             "as_of_date",
             "contribution_to_net_worth",
+            "balance_may_be_stale",
         ]
