@@ -33,7 +33,7 @@ class DataLake:
         Write raw records to Bronze layer (immutable).
 
         Args:
-            source_type: 'monzo', 'natwest', 'vanguard'
+            source_type: 'monzo', 'kroo', 'amex'
             filename: Original filename
             df: DataFrame with raw data
             reconciliation: whole-file balance self-check result, if the
@@ -126,7 +126,7 @@ class DataLake:
         Read all Bronze records for a source type.
 
         Args:
-            source_type: 'monzo', 'natwest', 'vanguard'
+            source_type: 'monzo', 'kroo', 'amex'
 
         Returns:
             DataFrame or None if not found

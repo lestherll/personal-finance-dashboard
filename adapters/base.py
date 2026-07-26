@@ -25,7 +25,7 @@ class RawRecord:
     """Minimal wrapper for raw data from a file."""
 
     source_key: str  # Deterministic ID: "monzo_txn_abc123"
-    source_type: str  # "monzo", "natwest", "amex", "vanguard"
+    source_type: str  # "monzo", "kroo", "amex", "chase"
     raw_data: Dict[str, Any]  # Entire row as dict
     filename: str
     file_hash: str  # SHA256 of uploaded file
@@ -89,7 +89,7 @@ class DataSourceAdapter(ABC):
 
     @abstractmethod
     def detect_source_type(self) -> str:
-        """Return: 'monzo', 'natwest', 'amex', 'vanguard'"""
+        """Return: 'monzo', 'kroo', 'amex', 'chase'"""
 
     @abstractmethod
     def generate_source_key(

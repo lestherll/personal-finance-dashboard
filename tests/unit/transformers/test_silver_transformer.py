@@ -109,30 +109,6 @@ class TestNormalizeTransactionsMonzo:
         assert row["transaction_date"] == pd.Timestamp("2024-01-15 14:30:00")
 
 
-class TestNormalizeTransactionsNatwestCsv:
-    def test_normalizes_signed_amount_and_narrative(self, transformer):
-        raw = {
-            "Transaction Type": "DEBIT",
-            "Transaction Date": "15/01/2024",
-            "Transaction Amount": "-50.00",
-            "Transaction Narrative": "FUEL SHELL PETROL STATION",
-            "Balance": "450.00",
-            "Balance Date": "15/01/2024",
-        }
-        df = transformer.normalize_transactions(
-            {"natwest": _bronze_frame("natwest", [raw])}
-        )
-
-        assert len(df) == 1
-        row = df.iloc[0]
-        assert (
-            row["account_id"] == "acc_natwest_current"
-        )  # no identifier -> source_type fallback
-        assert row["amount"] == -50.00
-        assert row["description"] == "FUEL SHELL PETROL STATION"
-        assert row["transaction_date"] == pd.Timestamp("2024-01-15")
-
-
 class TestNormalizeTransactionsPdfSources:
     def test_kroo_full_date_and_identifier(self, transformer):
         raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount": -4.50}
@@ -445,42 +421,6 @@ class TestNormalizePlanItInstalments:
 
 
 class TestNormalizeAccountLedger:
-    def test_natwest_balance_captured(self, transformer):
-        raw = {
-            "Transaction Type": "DEBIT",
-            "Transaction Date": "15/01/2024",
-            "Transaction Amount": "-50.00",
-            "Transaction Narrative": "FUEL",
-            "Balance": "450.00",
-            "Balance Date": "15/01/2024",
-        }
-        df = transformer.normalize_account_ledger(
-            {"natwest": _bronze_frame("natwest", [raw])}
-        )
-
-        assert len(df) == 1
-        row = df.iloc[0]
-        assert row["account_id"] == "acc_natwest_current"
-        assert row["balance"] == 450.00
-        assert row["as_of_date"] == pd.Timestamp("2024-01-15")
-
-    def test_vanguard_csv_portfolio_value_captured(self, transformer):
-        raw = {
-            "ISIN": "GB0009374884",
-            "Fund Name": "Vanguard FTSE All-World UCITS ETF",
-            "Quantity": "50.00",
-            "Price": "150.25",
-            "Value": "7512.50",
-            "Portfolio Value": "50000.00",
-            "Time": "15/01/2024",
-        }
-        df = transformer.normalize_account_ledger(
-            {"vanguard": _bronze_frame("vanguard", [raw])}
-        )
-
-        assert len(df) == 1
-        assert df.iloc[0]["balance"] == 50000.00
-
     def test_kroo_balance_captured(self, transformer):
         raw = {
             "date": "12 January 2026",

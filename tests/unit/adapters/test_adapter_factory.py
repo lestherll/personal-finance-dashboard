@@ -21,16 +21,6 @@ class TestAdapterDetection:
         adapter = factory.detect_adapter(sample_monzo_csv)
         assert adapter.detect_source_type() == "monzo"
 
-    def test_detect_natwest(self, factory, sample_natwest_csv):
-        """Natwest adapter detected and selected."""
-        adapter = factory.detect_adapter(sample_natwest_csv)
-        assert adapter.detect_source_type() == "natwest"
-
-    def test_detect_vanguard(self, factory, sample_vanguard_csv):
-        """Vanguard adapter detected and selected."""
-        adapter = factory.detect_adapter(sample_vanguard_csv)
-        assert adapter.detect_source_type() == "vanguard"
-
     def test_detect_unknown_format(self, factory, invalid_csv):
         """Unknown format raises error."""
         with pytest.raises(UnrecognizedFormatError, match="File format not recognized"):
@@ -43,14 +33,14 @@ class TestAdapterDetection:
 
     def test_detect_ambiguous_format(self, factory, monkeypatch):
         """Two adapters tying at the top raises AmbiguousFormatError."""
-        adapter_a, adapter_b = factory.csv_adapters[0], factory.csv_adapters[1]
+        adapter_a, adapter_b = factory.pdf_adapters[0], factory.pdf_adapters[1]
         monkeypatch.setattr(adapter_a, "validate", lambda content: (True, 0.95))
         monkeypatch.setattr(adapter_b, "validate", lambda content: (True, 0.95))
-        for other in factory.csv_adapters[2:]:
+        for other in factory.pdf_adapters[2:]:
             monkeypatch.setattr(other, "validate", lambda content: (False, 0.0))
 
         with pytest.raises(AmbiguousFormatError, match="File format ambiguous"):
-            factory.detect_adapter("some content")
+            factory.detect_adapter(b"some content")
 
 
 class TestAdapterIngest:
@@ -62,20 +52,6 @@ class TestAdapterIngest:
 
         assert len(records) == 3
         assert all(r.source_type == "monzo" for r in records)
-
-    def test_ingest_natwest(self, factory, sample_natwest_csv):
-        """Ingest Natwest CSV end-to-end."""
-        records = factory.ingest(sample_natwest_csv, "test.csv", "abc123").records
-
-        assert len(records) == 3
-        assert all(r.source_type == "natwest" for r in records)
-
-    def test_ingest_vanguard(self, factory, sample_vanguard_csv):
-        """Ingest Vanguard CSV end-to-end."""
-        records = factory.ingest(sample_vanguard_csv, "test.csv", "abc123").records
-
-        assert len(records) == 2
-        assert all(r.source_type == "vanguard" for r in records)
 
     def test_ingest_preserves_file_hash(self, factory, sample_monzo_csv):
         """File hash preserved in records."""
@@ -109,22 +85,19 @@ class TestAdapterDisabling:
         with pytest.raises(ValueError, match="File format not recognized"):
             factory.detect_adapter(sample_monzo_csv)
 
-    def test_disable_all_csv(
-        self, sample_monzo_csv, sample_natwest_csv, sample_vanguard_csv
-    ):
+    def test_disable_all_csv(self, sample_monzo_csv):
         """Disabling all CSV source types leaves csv_adapters empty."""
         factory = AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)
         assert factory.csv_adapters == []
         assert len(factory.pdf_adapters) == 9
 
-        for content in (sample_monzo_csv, sample_natwest_csv, sample_vanguard_csv):
-            with pytest.raises(ValueError, match="File format not recognized"):
-                factory.detect_adapter(content)
+        with pytest.raises(ValueError, match="File format not recognized"):
+            factory.detect_adapter(sample_monzo_csv)
 
     def test_no_disabling_by_default(self):
         """Default constructor enables every adapter."""
         factory = AdapterFactory()
-        assert len(factory.csv_adapters) == 3
+        assert len(factory.csv_adapters) == 1
         assert len(factory.pdf_adapters) == 9
 
     def test_unknown_disabled_source_type_raises(self):

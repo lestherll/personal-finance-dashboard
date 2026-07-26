@@ -11,8 +11,6 @@ from adapters.base import (
     StatementPeriod,
 )
 from adapters.monzo_adapter import MonzoAdapter
-from adapters.natwest_adapter import NatwestAdapter
-from adapters.vanguard_adapter import VanguardAdapter
 from adapters.kroo_pdf_adapter import KrooPdfAdapter
 from adapters.natwest_transactions_pdf_adapter import NatwestTransactionsPdfAdapter
 from adapters.natwest_statement_pdf_adapter import NatwestStatementPdfAdapter
@@ -74,7 +72,7 @@ class IngestResult:
 class AdapterFactory:
     """Auto-detect and route to the right adapter (CSV and PDF)."""
 
-    CSV_SOURCE_TYPES: Set[str] = {"monzo", "natwest", "vanguard"}
+    CSV_SOURCE_TYPES: Set[str] = {"monzo"}
     PDF_SOURCE_TYPES: Set[str] = {
         "kroo",
         "natwest-transactions",
@@ -108,8 +106,6 @@ class AdapterFactory:
         # CSV adapters (handle string content)
         all_csv_adapters: List[DataSourceAdapter] = [
             MonzoAdapter(),
-            NatwestAdapter(),
-            VanguardAdapter(),
         ]
 
         # PDF adapters (handle bytes content)

@@ -33,8 +33,6 @@ logger = logging.getLogger(__name__)
 # a different metric from Portfolio Value) are deliberately excluded - see
 # CLAUDE.md gotchas.
 LEDGER_SOURCE_TYPES = {
-    "natwest",
-    "vanguard",
     "kroo",
     "amex",
     "firstdirect",
@@ -46,7 +44,6 @@ LEDGER_SOURCE_TYPES = {
 
 TRANSACTION_SOURCE_TYPES = {
     "monzo",
-    "natwest",
     "kroo",
     "natwest-transactions",
     "natwest-statement",
@@ -138,16 +135,6 @@ def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     }
 
 
-def _normalize_natwest_csv(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    return {
-        "transaction_date": _parse_date(raw.get("Transaction Date", ""), "%d/%m/%Y"),
-        "description": raw.get("Transaction Narrative", ""),
-        "amount": float(raw.get("Transaction Amount") or 0),
-        "currency": "GBP",
-        "category": None,
-    }
-
-
 def _normalize_pdf_full_month_year(
     raw: Dict[str, Any], reference: Any
 ) -> Dict[str, Any]:
@@ -211,7 +198,6 @@ def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, 
 
 _TRANSACTION_NORMALIZERS = {
     "monzo": _normalize_monzo,
-    "natwest": _normalize_natwest_csv,
     "kroo": _normalize_pdf_full_month_year,
     "natwest-transactions": _normalize_pdf_no_year,
     "natwest-statement": _normalize_pdf_no_year,
@@ -240,8 +226,7 @@ def _normalize_vanguard_pdf_holding(
 ) -> Dict[str, Any]:
     """Vanguard PDF statement's 'Your X investments at DATE' table.
 
-    No ISIN in this format (unlike the Vanguard CSV holdings export) -
-    only a fund name.
+    No ISIN in this format - only a fund name.
     """
     return {
         "isin": None,
@@ -274,20 +259,6 @@ def _normalize_amex_plan_it_instalment(
         "due_this_month_total": _parse_money(raw.get("due_this_month_total")),
         "instalment_progress": raw.get("instalment_progress"),
         "as_of_date": _parse_date(raw.get("as_of_date") or "", "%d %b %Y") or reference,
-    }
-
-
-def _ledger_from_natwest(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    return {
-        "balance": float(raw.get("Balance") or 0),
-        "as_of_date": _parse_date(raw.get("Balance Date", ""), "%d/%m/%Y"),
-    }
-
-
-def _ledger_from_vanguard(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    return {
-        "balance": float(raw.get("Portfolio Value") or raw.get("Value") or 0),
-        "as_of_date": _parse_date(raw.get("Time", ""), "%d/%m/%Y") or reference,
     }
 
 
@@ -364,8 +335,6 @@ def _ledger_from_chase(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
 
 
 _LEDGER_NORMALIZERS = {
-    "natwest": _ledger_from_natwest,
-    "vanguard": _ledger_from_vanguard,
     "kroo": _ledger_from_kroo,
     "amex": _ledger_from_amex,
     "firstdirect": _ledger_from_firstdirect,
@@ -486,12 +455,7 @@ class SilverTransformer:
     def normalize_holdings(
         self, bronze_frames: Dict[str, pd.DataFrame]
     ) -> pd.DataFrame:
-        """Holdings come from Vanguard PDF statements' investment tables.
-
-        (Superseded the old Vanguard CSV holdings export - CSV adapters are
-        disabled, and the PDF statement already carries this per product
-        wrapper, so there's no need for a separate CSV source anymore.)
-        """
+        """Holdings come from Vanguard PDF statements' investment tables."""
         df = bronze_frames.get("vanguard-pdf")
         if df is None or df.empty or "record_type" not in df.columns:
             return pd.DataFrame(columns=_HOLDINGS_COLUMNS)
