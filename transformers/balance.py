@@ -54,7 +54,18 @@ _REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf"}
 
 def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     """One row per account_id: its balance as of the most recent
-    (as_of_date, statement_period_to-or-upload_timestamp, line_number)."""
+    (as_of_date, statement_period_to-or-upload_timestamp, line_number).
+
+    The returned `as_of_date` is bumped up to the winning row's
+    `statement_period_to` when that's later than the row's own transaction
+    date - a balance is still accurate through the end of the statement
+    that reported it, even if the last real transaction happened earlier
+    in the period (e.g. an account with a single transaction on day 1 of a
+    28-day statement: nothing else was reported, so the balance genuinely
+    held through day 28, not just day 1). Without this, an inactive
+    account's "current balance" looks stale by however many days were left
+    in its last statement, even though it's the true up-to-date figure.
+    """
     datalake = datalake or get_datalake()
     ledger = datalake.read_silver("account_ledger")
     if ledger is None or ledger.empty:
@@ -69,7 +80,10 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     ordered = ledger.assign(
         _sort_key=sort_key, _line=effective_line_number
     ).sort_values(["as_of_date", "_sort_key", "_line"])
-    latest = ordered.groupby("account_id", as_index=False).tail(1)
+    latest = ordered.groupby("account_id", as_index=False).tail(1).copy()
+    as_of = pd.to_datetime(latest["as_of_date"])
+    period_to = pd.to_datetime(latest["statement_period_to"])
+    latest["as_of_date"] = as_of.where(as_of >= period_to.fillna(as_of), period_to)
     return latest[_BALANCES_COLUMNS].reset_index(drop=True)
 
 

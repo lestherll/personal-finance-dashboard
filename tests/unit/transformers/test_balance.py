@@ -201,6 +201,32 @@ class TestGetCurrentBalances:
         assert len(result) == 1
         assert result.iloc[0]["balance"] == 150.00
 
+    def test_as_of_date_bumped_up_to_statement_period_end(self):
+        """An account whose only transaction fell early in its statement
+        (e.g. Chase: a single transaction on day 1 of a 28-day statement)
+        still has its balance confirmed accurate through the statement's
+        own printed closing date - as_of_date should reflect that, not
+        just the last transaction's own (earlier) date."""
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_chase",
+                    2750.0,
+                    pd.Timestamp("2026-06-02"),
+                    upload_timestamp=pd.Timestamp("2026-07-25"),
+                    statement_period_to=pd.Timestamp("2026-06-30"),
+                    source_type="chase",
+                )
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance"] == 2750.0
+        assert result.iloc[0]["as_of_date"] == pd.Timestamp("2026-06-30")
+
     def test_multiple_accounts_each_get_their_own_latest_row(self):
         ledger = pd.DataFrame(
             [
