@@ -34,3 +34,16 @@ markers = [
     "e2e: end-to-end tests",
     "performance: performance tests",
 ]
+
+[tool.coverage.run]
+source = ["adapters", "models", "transformers", "cli"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 85
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
