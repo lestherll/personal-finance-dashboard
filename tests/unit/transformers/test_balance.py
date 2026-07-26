@@ -33,6 +33,7 @@ def _ledger_row(
     upload_timestamp,
     statement_period_to=None,
     line_number=1,
+    source_type="kroo",
 ):
     return {
         "account_id": account_id,
@@ -41,6 +42,7 @@ def _ledger_row(
         "upload_timestamp": upload_timestamp,
         "statement_period_to": statement_period_to,
         "line_number": line_number,
+        "source_type": source_type,
     }
 
 
@@ -96,6 +98,72 @@ class TestGetCurrentBalances:
 
         assert len(result) == 1
         assert result.iloc[0]["balance"] == 863.04
+
+    def test_monzo_pdf_same_day_tie_picks_newest_not_last_parsed(self):
+        """Monzo PDF prints transactions newest-first within a file (verified
+        against a real statement - see transformers/balance.py's module
+        docstring) - the opposite of every other ledger source. An earlier
+        version of this function assumed ascending line_number was always
+        ascending time and picked line_number=5 (the *oldest* of these 5,
+        balance 95.59) instead of line_number=1 (the newest, balance
+        2255.37). Values here are the real ones that surfaced the bug."""
+        same_day = pd.Timestamp("2026-06-30")
+        period_to = pd.Timestamp("2026-06-30")
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_monzo",
+                    2255.37,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=1,
+                    source_type="monzo-pdf",
+                ),
+                _ledger_row(
+                    "acc_monzo",
+                    2355.37,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=2,
+                    source_type="monzo-pdf",
+                ),
+                _ledger_row(
+                    "acc_monzo",
+                    5.37,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=3,
+                    source_type="monzo-pdf",
+                ),
+                _ledger_row(
+                    "acc_monzo",
+                    49.8,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=4,
+                    source_type="monzo-pdf",
+                ),
+                _ledger_row(
+                    "acc_monzo",
+                    95.59,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=5,
+                    source_type="monzo-pdf",
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance"] == 2255.37
 
     def test_falls_back_to_upload_timestamp_when_no_period(self):
         """Periodless sources (e.g. CSV) have no statement_period_to at all -

@@ -9,6 +9,15 @@ normalize_account_ledger() now threads onto every row:
 statement_period_to (the statement's own printed cycle end) wins when
 present since it reflects real-world recency better than upload_timestamp,
 which only reflects when the user happened to upload a file.
+
+`line_number` is only a valid same-day tiebreaker if ascending line_number
+means ascending time within the file - true for most adapters, but NOT
+Monzo PDF, which prints transactions newest-first (verified against a real
+statement: balance_after_line_N - amount_N == balance_after_line_(N+1) for
+every consecutive pair, i.e. line 1 is chronologically *last*, not first).
+See _REVERSE_CHRONOLOGICAL_SOURCE_TYPES below - an earlier version of this
+function didn't account for this and silently picked the oldest same-day
+Monzo transaction instead of the newest.
 """
 
 from decimal import Decimal
@@ -24,6 +33,17 @@ PathLike = Union[str, Path]
 
 _BALANCES_COLUMNS = ["account_id", "balance", "as_of_date"]
 
+# Confirmed forward-chronological (ascending line_number = ascending time)
+# via each source's own reconciliation logic depending on that order to
+# pass against real statements: kroo (last transaction's balance must match
+# the closing anchor), amex/natwest-statement (rolling the balance forward
+# through transactions in parse order must land on the printed closing
+# figure). Monzo PDF is confirmed reverse-chronological the same rigorous
+# way (see module docstring). First Direct has only ever been seen with a
+# single real transaction per statement, so its direction is unverified -
+# revisit if a multi-transaction statement ever produces a wrong balance.
+_REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf"}
+
 
 def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     """One row per account_id: its balance as of the most recent
@@ -34,9 +54,14 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
         return pd.DataFrame(columns=_BALANCES_COLUMNS)
 
     sort_key = ledger["statement_period_to"].fillna(ledger["upload_timestamp"])
-    ordered = ledger.assign(_sort_key=sort_key).sort_values(
-        ["as_of_date", "_sort_key", "line_number"]
+    is_reverse = ledger["source_type"].isin(_REVERSE_CHRONOLOGICAL_SOURCE_TYPES)
+    effective_line_number = ledger["line_number"].where(
+        ~is_reverse, -ledger["line_number"]
     )
+
+    ordered = ledger.assign(
+        _sort_key=sort_key, _line=effective_line_number
+    ).sort_values(["as_of_date", "_sort_key", "_line"])
     latest = ordered.groupby("account_id", as_index=False).tail(1)
     return latest[_BALANCES_COLUMNS].reset_index(drop=True)
 
