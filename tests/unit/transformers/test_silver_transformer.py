@@ -392,6 +392,58 @@ class TestNormalizeHoldings:
         assert "isin" in df.columns
 
 
+class TestNormalizePlanItInstalments:
+    def test_amex_plan_it_instalment_normalized(self, transformer):
+        raw = {
+            "start_date": "Apr 12 2026",
+            "description": "MALAYSIA AIRLINES KUALA KUALA LUMPUR",
+            "plan_total": "1,656.39",
+            "plan_lifetime_fee": "51.68",
+            "remaining_balance": "1,104.26",
+            "due_this_month_plan": "552.13",
+            "due_this_month_fee": "17.23",
+            "due_this_month_total": "569.36",
+            "instalment_progress": "1 OF 3",
+            "as_of_date": "19 Apr 2026",
+        }
+        bronze = _bronze_frame(
+            "amex",
+            [raw],
+            account_identifier=_AMEX_ID,
+            record_type="plan_it_instalment",
+        )
+        df = transformer.normalize_plan_it_instalments({"amex": bronze})
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == get_account_id(_AMEX_ID, "amex")
+        assert row["start_date"] == pd.Timestamp("2026-04-12")
+        assert row["description"] == "MALAYSIA AIRLINES KUALA KUALA LUMPUR"
+        assert row["plan_total"] == 1656.39
+        assert row["plan_lifetime_fee"] == 51.68
+        assert row["remaining_balance"] == 1104.26
+        assert row["due_this_month_plan"] == 552.13
+        assert row["due_this_month_fee"] == 17.23
+        assert row["due_this_month_total"] == 569.36
+        assert row["instalment_progress"] == "1 OF 3"
+        assert row["as_of_date"] == pd.Timestamp("2026-04-19")
+
+    def test_amex_transactions_excluded_from_plan_it_instalments(self, transformer):
+        """A transaction-record_type row must not leak into
+        normalize_plan_it_instalments."""
+        txn_raw = {"date": "19 Apr 2026", "description": "COFFEE SHOP", "amount": -3.85}
+        bronze = _bronze_frame(
+            "amex", [txn_raw], account_identifier=_AMEX_ID, record_type="transaction"
+        )
+        df = transformer.normalize_plan_it_instalments({"amex": bronze})
+        assert df.empty
+
+    def test_no_data_returns_empty_frame_with_schema(self, transformer):
+        df = transformer.normalize_plan_it_instalments({})
+        assert df.empty
+        assert "instalment_progress" in df.columns
+
+
 class TestNormalizeAccountLedger:
     def test_natwest_balance_captured(self, transformer):
         raw = {
@@ -496,6 +548,44 @@ class TestNormalizeAccountLedger:
         row = df.iloc[0]
         assert row["balance"] == 0.0
         assert row["as_of_date"] == pd.Timestamp("2026-01-31")
+
+    def test_amex_plan_it_instalment_rows_excluded_from_ledger(self, transformer):
+        """Amex now also emits "plan_it_instalment" rows (see
+        normalize_plan_it_instalments) alongside its transactions - those
+        have no `date`/`amount` shape, so _ledger_from_amex (built for
+        transaction rows) must never see them."""
+        txn_raw = {
+            "date": "31 Jan",
+            "description": "PAYMENT RECEIVED - THANK YOU",
+            "amount": 769.58,
+            "balance": 0.0,
+        }
+        plan_it_raw = {
+            "start_date": "Apr 12 2026",
+            "description": "MALAYSIA AIRLINES KUALA KUALA LUMPUR",
+            "as_of_date": "19 Apr 2026",
+        }
+        txn_frame = _bronze_frame(
+            "amex",
+            [txn_raw],
+            upload_timestamp=pd.Timestamp("2026-02-19"),
+            account_identifier=_AMEX_ID,
+            record_type="transaction",
+        )
+        plan_it_frame = _bronze_frame(
+            "amex",
+            [plan_it_raw],
+            upload_timestamp=pd.Timestamp("2026-02-19"),
+            account_identifier=_AMEX_ID,
+            record_type="plan_it_instalment",
+            filename="test_upload_2",
+        )
+        bronze = pd.concat([txn_frame, plan_it_frame], ignore_index=True)
+
+        df = transformer.normalize_account_ledger({"amex": bronze})
+
+        assert len(df) == 1
+        assert df.iloc[0]["balance"] == 0.0
 
     def test_monzo_pdf_balance_captured(self, transformer):
         raw = {

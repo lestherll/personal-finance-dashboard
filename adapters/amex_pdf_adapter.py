@@ -41,6 +41,17 @@ _SUMMARY_AMOUNT_RE = re.compile(r"£\s*([\d,]+\.\d{2})")
 _PERIOD_RE = re.compile(
     r"From\s+(\d{1,2}\s+[A-Za-z]+)\s+to\s+(\d{1,2}\s+[A-Za-z]+)\s+(\d{4})"
 )
+# "Plan It Instalments Summary" table rows - see _parse_plan_it_summary.
+# Each plan spans 3 physical lines once flattened by sort=True:
+#   "Apr 12 2026   MALAYSIA AIRLINES KUALA KUALA LUMPUR"
+#   "1,656.39   1,104.26   552.13   17.23   569.36   1 OF 3"
+#   "51.68"
+_PLAN_IT_SUMMARY_START_RE = re.compile(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{4})\s+(.+)$")
+_PLAN_IT_SUMMARY_VALUES_RE = re.compile(
+    r"^([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+"
+    r"([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(\d+\s+OF\s+\d+)$"
+)
+_PLAN_IT_SUMMARY_FEE_RE = re.compile(r"^([\d,]+\.\d{2})$")
 
 
 class AmexPdfAdapter(PdfAdapter):
@@ -96,8 +107,15 @@ class AmexPdfAdapter(PdfAdapter):
             return records
         previous_balance, statement_closing_balance, plan_it_instalments_due = anchors
 
+        # Balance rolls forward through actual transactions only - the
+        # "Plan It Instalments Summary" table (see _parse_plan_it_summary)
+        # produces its own record_type ("plan_it_instalment") with no
+        # `amount` field at all, since it's a per-plan snapshot, not a
+        # cash-flow event.
+        transaction_records = [r for r in records if r.record_type == "transaction"]
+
         running = previous_balance
-        for record in records:
+        for record in transaction_records:
             # Amex's `amount` follows a cash-received convention (spend
             # negative, payments/credits positive), but Closing Balance is
             # a liability that moves the opposite way - spend increases what
@@ -105,16 +123,29 @@ class AmexPdfAdapter(PdfAdapter):
             running -= Decimal(str(record.raw_data["amount"]))
             record.raw_data["balance"] = float(running.quantize(Decimal("0.01")))
 
-        if plan_it_instalments_due is not None:
+        if plan_it_instalments_due is not None and transaction_records:
             # Months with an active Plan It installment plan add a further
-            # "Plan It Instalments Due" component to what's owed that never
-            # appears as a line in the transaction table at all (it lives in
-            # a separate "Plan It Instalments Summary" table, not parsed
-            # here) - Closing = Previous - Credits + Debits + Plan It Due.
-            # Not tied to any specific transaction, so it's folded into the
-            # last record's balance rather than left unaccounted for.
-            running += plan_it_instalments_due
-            records[-1].raw_data["balance"] = float(running.quantize(Decimal("0.01")))
+            # "Plan It Instalments Due" component to what's owed - Closing =
+            # Previous - Credits + Debits + Plan It Due. Part of that lump is
+            # a dated "INSTALMENT PLAN FEE" line, already parsed by
+            # _parse_plan_it_fees() and folded into `running` through the
+            # normal per-record loop above like any other debit - subtract it
+            # back out here so it isn't counted twice. What's left (the
+            # month's principal-only portion) has no transaction of its own
+            # anywhere on the statement, so it's folded into the last
+            # transaction record's balance rather than left unaccounted for.
+            fees_already_captured = sum(
+                (
+                    -Decimal(str(record.raw_data["amount"]))
+                    for record in transaction_records
+                    if record.raw_data.get("description") == "INSTALMENT PLAN FEE"
+                ),
+                Decimal("0"),
+            )
+            running += plan_it_instalments_due - fees_already_captured
+            transaction_records[-1].raw_data["balance"] = float(
+                running.quantize(Decimal("0.01"))
+            )
 
         derived_closing = running.quantize(Decimal("0.01"))
         matches = derived_closing == statement_closing_balance
@@ -230,15 +261,21 @@ class AmexPdfAdapter(PdfAdapter):
         self.last_statement_period = None
         account_identifier = self._extract_account_identifier(text)
         period = self._extract_statement_period(text)
+        # The "Plan It Instalments Summary" table (_parse_plan_it_summary)
+        # has no dated transaction of its own to anchor "as of" - it's a
+        # snapshot, so it borrows the statement's own closing date.
+        closing_date = period[1].strftime("%d %b %Y") if period else None
 
         transactions = []
         for page_text in text.split("\x0c"):
-            transactions.extend(self._parse_page(page_text))
+            transactions.extend(self._parse_page(page_text, closing_date))
 
         if period:
             from_date, to_date = period
             self.last_statement_period = StatementPeriod(from_date, to_date)
             for txn in transactions:
+                if "date" not in txn:
+                    continue  # e.g. plan_it_instalment records - see above
                 dated = resolve_year_in_period(txn["date"], from_date, to_date)
                 if dated:
                     txn["date"] = dated
@@ -249,7 +286,9 @@ class AmexPdfAdapter(PdfAdapter):
 
         return transactions
 
-    def _parse_page(self, page_text: str) -> List[Dict[str, Any]]:
+    def _parse_page(
+        self, page_text: str, closing_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Extract transactions from one page's `sort=True` text.
 
         Skips anything that isn't a "date  date  description  amount" line -
@@ -263,6 +302,8 @@ class AmexPdfAdapter(PdfAdapter):
 
         transactions = self._parse_main_table(lines)
         transactions.extend(self._parse_plan_it_created(lines))
+        transactions.extend(self._parse_plan_it_fees(lines))
+        transactions.extend(self._parse_plan_it_summary(lines, closing_date))
         return transactions
 
     @staticmethod
@@ -355,6 +396,127 @@ class AmexPdfAdapter(PdfAdapter):
 
         return transactions
 
+    def _parse_plan_it_fees(self, lines: List[str]) -> List[Dict[str, Any]]:
+        """Parse "INSTALMENT PLAN FEE" rows from a distinct, later section,
+        "New Plan It Instalments and Fees", as debits.
+
+        This is a different section from "New Plan It Instalments Created"
+        (see _parse_plan_it_created above) - it's part of "TRANSACTION
+        DETAILS", not the earlier spend table, and appears every month an
+        Plan It plan is active (not just the month it's created). It also
+        restates the instalment plan itself whenever a new plan was created
+        that month (a bare "INSTALMENT PLAN" line, no "FEE" suffix) - that's
+        not a new transaction, just a reference back to the credit already
+        parsed by _parse_plan_it_created, so only rows whose description is
+        exactly "INSTALMENT PLAN FEE" are kept here. Stops at the section's
+        own "Total of New Instalment Plans and Fees" line, which doesn't
+        match the row pattern either (no amount immediately follows a date).
+        """
+        try:
+            start = lines.index("New Plan It Instalments and Fees") + 1
+        except ValueError:
+            return []
+
+        transactions = []
+        for line in lines[start:]:
+            if line.startswith("Total of New Instalment Plans and Fees"):
+                break
+            match = _PLAN_IT_CREATED_LINE_RE.match(line)
+            if not match:
+                continue
+            txn_date, description, amount_str = match.groups()
+            if description != "INSTALMENT PLAN FEE":
+                continue
+            month, day = txn_date.split()
+            try:
+                amount = float(amount_str.replace(",", ""))
+            except ValueError:
+                continue
+            transactions.append(
+                {
+                    "date": f"{day} {month}",
+                    "description": description,
+                    "amount": -amount,  # a fee is always a debit
+                }
+            )
+
+        return transactions
+
+    def _parse_plan_it_summary(
+        self, lines: List[str], closing_date: Optional[str]
+    ) -> List[Dict[str, Any]]:
+        """Parse the "Plan It Instalments Summary" table: one row per active
+        instalment plan (start date, merchant, lifetime plan amount/fee,
+        remaining balance, this month's plan/fee/total split, "N OF M"
+        progress).
+
+        Not tied to the aggregate "Plan It Instalments Due" figure used for
+        balance reconciliation in parse() - this is purely for per-plan
+        visibility (e.g. tracking a specific purchase's payoff progress),
+        tagged with its own "plan_it_instalment" record_type the same way
+        VanguardPdfAdapter tags "holding" records alongside "transaction"
+        ones.
+
+        Each plan prints across 3 physical lines once flattened by
+        sort=True (the "Plan Amount / Total Fee £" column header wraps
+        across two rows, so the lifetime fee total prints on its own line
+        below the rest of that row's values) - see the module-level regex
+        comments. Stops at the first "Total"/"Total Fees" aggregate row.
+        Only a single-active-plan statement has been seen in practice across
+        the 3 real statements validated against - if a real statement with
+        two concurrent plans surfaces, re-verify this 3-line-per-plan
+        grouping still holds back-to-back (see Gotcha #8/#15 in CLAUDE.md).
+        """
+        try:
+            start = lines.index("Plan It Instalments Summary") + 1
+        except ValueError:
+            return []
+
+        plans = []
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("Total"):
+                break
+            start_match = _PLAN_IT_SUMMARY_START_RE.match(line)
+            if not start_match or i + 2 >= len(lines):
+                i += 1
+                continue
+            values_match = _PLAN_IT_SUMMARY_VALUES_RE.match(lines[i + 1])
+            fee_match = _PLAN_IT_SUMMARY_FEE_RE.match(lines[i + 2])
+            if not values_match or not fee_match:
+                i += 1
+                continue
+
+            start_date, description = start_match.groups()
+            (
+                plan_total,
+                remaining_balance,
+                due_plan,
+                due_fee,
+                due_total,
+                instalment_progress,
+            ) = values_match.groups()
+
+            plans.append(
+                {
+                    "record_type": "plan_it_instalment",
+                    "start_date": start_date,
+                    "description": description,
+                    "plan_total": plan_total,
+                    "plan_lifetime_fee": fee_match.group(1),
+                    "remaining_balance": remaining_balance,
+                    "due_this_month_plan": due_plan,
+                    "due_this_month_fee": due_fee,
+                    "due_this_month_total": due_total,
+                    "instalment_progress": instalment_progress,
+                    "as_of_date": closing_date,
+                }
+            )
+            i += 3
+
+        return plans
+
     def generate_source_key(
         self,
         txn: Dict[str, Any],
@@ -362,10 +524,22 @@ class AmexPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + date + description + amount."""
+        account_part = f"{account_identifier}_" if account_identifier else ""
+
+        if txn.get("record_type") == "plan_it_instalment":
+            # Distinguished from other months' rows for the same plan by
+            # as_of_date (the statement's own closing date) - mirrors
+            # VanguardPdfAdapter's holding key (account + fund_name +
+            # as_of_date), since each month's statement re-prints the same
+            # plan with updated progress.
+            start_date = txn.get("start_date", "").replace(" ", "_")
+            description = txn.get("description", "")[:15].replace(" ", "_")
+            as_of = (txn.get("as_of_date") or "").replace(" ", "_")
+            return f"amex_planit_{account_part}{start_date}_{description}_{as_of}"
+
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
         amount = str(abs(txn.get("amount", 0))).replace(".", "_")
-        account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"amex_txn_{account_part}{date_str}_{description}_{amount}"
 

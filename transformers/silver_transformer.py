@@ -254,6 +254,29 @@ def _normalize_vanguard_pdf_holding(
     }
 
 
+def _normalize_amex_plan_it_instalment(
+    raw: Dict[str, Any], reference: Any
+) -> Dict[str, Any]:
+    """Amex's "Plan It Instalments Summary" table: one row per active
+    instalment plan, re-printed (with updated progress) on every statement
+    while the plan remains active. Separate from account_ledger's
+    aggregate "Plan It Instalments Due" figure (_ledger_from_amex) - this
+    is per-plan detail for analysis, not a balance input.
+    """
+    return {
+        "start_date": _parse_date(raw.get("start_date", ""), "%b %d %Y"),
+        "description": raw.get("description"),
+        "plan_total": _parse_money(raw.get("plan_total")),
+        "plan_lifetime_fee": _parse_money(raw.get("plan_lifetime_fee")),
+        "remaining_balance": _parse_money(raw.get("remaining_balance")),
+        "due_this_month_plan": _parse_money(raw.get("due_this_month_plan")),
+        "due_this_month_fee": _parse_money(raw.get("due_this_month_fee")),
+        "due_this_month_total": _parse_money(raw.get("due_this_month_total")),
+        "instalment_progress": raw.get("instalment_progress"),
+        "as_of_date": _parse_date(raw.get("as_of_date") or "", "%d %b %Y") or reference,
+    }
+
+
 def _ledger_from_natwest(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance": float(raw.get("Balance") or 0),
@@ -390,6 +413,21 @@ _LEDGER_COLUMNS = [
     "line_number",
 ]
 
+_PLAN_IT_INSTALMENTS_COLUMNS = [
+    "bronze_source_key",
+    "account_id",
+    "start_date",
+    "description",
+    "plan_total",
+    "plan_lifetime_fee",
+    "remaining_balance",
+    "due_this_month_plan",
+    "due_this_month_fee",
+    "due_this_month_total",
+    "instalment_progress",
+    "as_of_date",
+]
+
 
 class SilverTransformer:
     """Normalizes Bronze RawRecord data into common Silver schemas."""
@@ -483,6 +521,40 @@ class SilverTransformer:
         result["as_of_date"] = pd.to_datetime(result["as_of_date"])
         return result
 
+    def normalize_plan_it_instalments(
+        self, bronze_frames: Dict[str, pd.DataFrame]
+    ) -> pd.DataFrame:
+        """Amex's "Plan It Instalments Summary" table - per-plan detail
+        alongside the aggregate "Plan It Instalments Due" figure already
+        folded into account_ledger's balance (_ledger_from_amex)."""
+        df = bronze_frames.get("amex")
+        if df is None or df.empty or "record_type" not in df.columns:
+            return pd.DataFrame(columns=_PLAN_IT_INSTALMENTS_COLUMNS)
+
+        plan_it_df = df[df["record_type"] == "plan_it_instalment"]
+        rows = []
+        for _, bronze_row in plan_it_df.iterrows():
+            raw = bronze_row.get("raw_data") or {}
+            normalized = _normalize_amex_plan_it_instalment(
+                raw, bronze_row.get("upload_timestamp")
+            )
+            account_id = get_account_id(bronze_row.get("account_identifier"), "amex")
+            rows.append(
+                {
+                    "bronze_source_key": bronze_row.get("bronze_source_key"),
+                    "account_id": account_id,
+                    **normalized,
+                }
+            )
+
+        if not rows:
+            return pd.DataFrame(columns=_PLAN_IT_INSTALMENTS_COLUMNS)
+
+        result = pd.DataFrame(rows)
+        result["start_date"] = pd.to_datetime(result["start_date"])
+        result["as_of_date"] = pd.to_datetime(result["as_of_date"])
+        return result
+
     def normalize_account_ledger(
         self, bronze_frames: Dict[str, pd.DataFrame]
     ) -> pd.DataFrame:
@@ -490,6 +562,14 @@ class SilverTransformer:
         for source_type in LEDGER_SOURCE_TYPES:
             df = bronze_frames.get(source_type)
             if df is None or df.empty:
+                continue
+            if "record_type" in df.columns:
+                # Amex now also carries "plan_it_instalment" rows (see
+                # normalize_plan_it_instalments) alongside its transactions -
+                # those have no `date`/`amount` shape and must not reach a
+                # ledger normalizer built for transaction rows.
+                df = df[df["record_type"] == "transaction"]
+            if df.empty:
                 continue
 
             normalizer = _LEDGER_NORMALIZERS[source_type]
@@ -614,6 +694,7 @@ def run_bronze_to_silver(
     transactions_df = transformer.normalize_transactions(bronze_frames)
     holdings_df = transformer.normalize_holdings(bronze_frames)
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
+    plan_it_df = transformer.normalize_plan_it_instalments(bronze_frames)
 
     accounts_df = _dedupe_with_existing(
         datalake, "accounts", accounts_df, ["account_id"]
@@ -627,18 +708,24 @@ def run_bronze_to_silver(
     ledger_df = _dedupe_with_existing(
         datalake, "account_ledger", ledger_df, ["bronze_source_key"]
     )
+    plan_it_df = _dedupe_with_existing(
+        datalake, "plan_it_instalments", plan_it_df, ["bronze_source_key"]
+    )
 
     datalake.write_silver("accounts", accounts_df)
     datalake.write_silver("transactions", transactions_df)
     datalake.write_silver("holdings", holdings_df)
     datalake.write_silver("account_ledger", ledger_df)
+    datalake.write_silver("plan_it_instalments", plan_it_df)
 
     logger.info(
-        "Bronze->Silver complete: %d accounts, %d transactions, %d holdings, %d ledger entries",
+        "Bronze->Silver complete: %d accounts, %d transactions, %d holdings, "
+        "%d ledger entries, %d plan-it instalments",
         len(accounts_df),
         len(transactions_df),
         len(holdings_df),
         len(ledger_df),
+        len(plan_it_df),
     )
 
     return {
@@ -646,4 +733,5 @@ def run_bronze_to_silver(
         "transactions": transactions_df,
         "holdings": holdings_df,
         "account_ledger": ledger_df,
+        "plan_it_instalments": plan_it_df,
     }

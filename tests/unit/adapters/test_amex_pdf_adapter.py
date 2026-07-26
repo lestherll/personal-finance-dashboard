@@ -147,6 +147,104 @@ Statement of Account
         txns = adapter.parse_transactions(page)
         assert len(txns) == 1
 
+    def test_instalment_plan_fee_parsed_as_debit(self, adapter):
+        """A "New Plan It Instalments and Fees" section is distinct from
+        "New Plan It Instalments Created" - it restates the plan (a bare
+        "INSTALMENT PLAN" line, no new transaction) and adds a genuine new
+        "INSTALMENT PLAN FEE" debit, charged every month the plan is
+        active."""
+        page = """xxxx-xxxxxx-12345
+New Plan It Instalments and Fees
+Apr 12         INSTALMENT PLAN                                            1656.39
+Apr 19         INSTALMENT PLAN FEE                                              17.23
+Total of New Instalment Plans and Fees                                       1673.62
+"""
+        txns = adapter.parse_transactions(page)
+        assert len(txns) == 1
+        fee = txns[0]
+        assert fee["description"] == "INSTALMENT PLAN FEE"
+        assert fee["date"] == "19 Apr"
+        assert fee["amount"] == -17.23
+
+    def test_instalment_plan_fee_parsed_without_new_plan_created(self, adapter):
+        """An ongoing plan (no new plan created this month) still bills a
+        fee - matches the real May-Jun 2026 statement, which has only a fee
+        line in this section, no restated "INSTALMENT PLAN" row."""
+        page = """xxxx-xxxxxx-12345
+New Plan It Instalments and Fees
+Jun 19         INSTALMENT PLAN FEE                                              17.22
+Total of New Instalment Plans and Fees                                          17.22
+"""
+        txns = adapter.parse_transactions(page)
+        assert len(txns) == 1
+        assert txns[0]["amount"] == -17.22
+
+    def test_stops_plan_it_fees_parsing_at_total_line(self, adapter):
+        page = """xxxx-xxxxxx-12345
+New Plan It Instalments and Fees
+Jun 19         INSTALMENT PLAN FEE                                              17.22
+Total of New Instalment Plans and Fees                                          17.22
+Statement of Account
+"""
+        txns = adapter.parse_transactions(page)
+        assert len(txns) == 1
+
+
+class TestAmexPlanItSummary:
+    """The "Plan It Instalments Summary" table: per-plan detail, separate
+    from the aggregate "Plan It Instalments Due" figure used for balance
+    reconciliation. Fixture mirrors the real Mar-Apr 2026 statement."""
+
+    PAGE = """xxxx-xxxxxx-12345
+Plan It Instalments Summary
+Instalments due this month are included in your Minimum Payment.
+Plan Amount /    Remaining Plan               Instalments Due This Month
+Start Date    Details                  Total Fee £         Balance £        Plan £     Fee £      Total Amount £     Instalment
+Apr 12 2026   MALAYSIA AIRLINES KUALA KUALA LUMPUR
+1,656.39             1,104.26        552.13      17.23            569.36           1 OF 3
+51.68
+Total                                   1,656.39            1,104.26       552.13      17.23           569.36
+Total Fees                                 51.68
+"""
+
+    def test_parses_single_plan(self, adapter):
+        txns = adapter.parse_transactions(self.PAGE)
+        plans = [t for t in txns if t.get("record_type") == "plan_it_instalment"]
+        assert len(plans) == 1
+        plan = plans[0]
+        assert plan["start_date"] == "Apr 12 2026"
+        assert plan["description"] == "MALAYSIA AIRLINES KUALA KUALA LUMPUR"
+        assert plan["plan_total"] == "1,656.39"
+        assert plan["remaining_balance"] == "1,104.26"
+        assert plan["due_this_month_plan"] == "552.13"
+        assert plan["due_this_month_fee"] == "17.23"
+        assert plan["due_this_month_total"] == "569.36"
+        assert plan["instalment_progress"] == "1 OF 3"
+        assert plan["plan_lifetime_fee"] == "51.68"
+
+    def test_as_of_date_uses_statement_period_closing_date(self, adapter):
+        page = "From  20 March to 19 April 2026\n" + self.PAGE
+        txns = adapter.parse_transactions(page)
+        plan = next(t for t in txns if t.get("record_type") == "plan_it_instalment")
+        assert plan["as_of_date"] == "19 Apr 2026"
+
+    def test_no_summary_section_yields_no_plan_records(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_PAGE)
+        assert not [t for t in txns if t.get("record_type") == "plan_it_instalment"]
+
+    def test_stops_at_total_line(self, adapter):
+        txns = adapter.parse_transactions(self.PAGE)
+        plans = [t for t in txns if t.get("record_type") == "plan_it_instalment"]
+        assert len(plans) == 1  # the two "Total"/"Total Fees" rows are not plans
+
+    def test_plan_it_summary_records_excluded_from_balance_roll(self, adapter):
+        """plan_it_instalment dicts have no `amount` field - parse_transactions
+        must not choke iterating them alongside real transactions."""
+        page = SAMPLE_PAGE + "\n" + self.PAGE
+        txns = adapter.parse_transactions(page)
+        assert any(t.get("record_type") == "plan_it_instalment" for t in txns)
+        assert any("amount" in t for t in txns if t.get("record_type") is None)
+
 
 class TestAmexMultiPage:
     def test_splits_on_page_boundary_sentinel(self, adapter):
@@ -253,6 +351,44 @@ class TestAmexDerivedBalance:
         records = adapter.parse(content, "test.pdf", "fakehash")
         assert len(records) == 1
         assert "balance" not in records[0].raw_data
+
+    def test_plan_it_due_not_double_counted_with_parsed_fee(self, adapter):
+        """The "Plan It Instalments Due" lump (£30.00) includes the same
+        £10.00 fee that's now also parsed as its own dated transaction from
+        "New Plan It Instalments and Fees" - the derived closing balance
+        must still land on the printed Closing Balance (£130.00), not
+        £140.00 from counting the fee twice."""
+        content = _build_pdf_bytes(
+            [
+                ("American Express", 50),
+                ("Preferred Rewards Gold Credit Card", 70),
+                ("xxxx-xxxxxx-12345", 100),
+                ("Account Summary", 120),
+                (
+                    "Previous Closing Balance New Credits New Debits "
+                    "Plan It Instalments Due Closing Balance",
+                    140,
+                ),
+                ("£100.00 - £0.00 + £0.00 + £30.00 = £130.00", 160),
+                ("New Plan It Instalments and Fees", 200),
+                (
+                    "Apr 19         INSTALMENT PLAN FEE                17.23",
+                    220,
+                ),
+                ("Total of New Instalment Plans and Fees        17.23", 240),
+            ]
+        )
+        records = adapter.parse(content, "test.pdf", "fakehash")
+        fee = next(
+            r for r in records if r.raw_data["description"] == "INSTALMENT PLAN FEE"
+        )
+        assert fee.raw_data["amount"] == -17.23
+        # Previous 100.00 - fee (a debit, +17.23 owed) then + remaining Plan
+        # It Due (30.00 - 17.23 = 12.77 principal-only) = 130.00, matching
+        # the printed Closing Balance exactly - not 100 + 17.23 + 30 = 147.23.
+        assert fee.raw_data["balance"] == 130.00
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.derived_closing == Decimal("130.00")
 
 
 class TestAmexReconciliation:
@@ -426,3 +562,32 @@ class TestAmexSourceKey:
 
     def test_detect_source_type(self, adapter):
         assert adapter.detect_source_type() == "amex"
+
+    def test_plan_it_instalment_key_distinguishes_by_as_of_date(self, adapter):
+        """The same plan re-appears every month it's active, with the same
+        start_date/description - only as_of_date (the statement's own
+        closing date) tells two months' rows apart, mirroring Vanguard
+        holdings' account + fund_name + as_of_date key."""
+        base = {
+            "record_type": "plan_it_instalment",
+            "start_date": "Apr 12 2026",
+            "description": "MALAYSIA AIRLINES KUALA KUALA LUMPUR",
+        }
+        month_one = adapter.generate_source_key(
+            {**base, "as_of_date": "19 Apr 2026"}, 1, "xxxx-xxxxxx-12345"
+        )
+        month_two = adapter.generate_source_key(
+            {**base, "as_of_date": "19 May 2026"}, 1, "xxxx-xxxxxx-12345"
+        )
+        assert month_one != month_two
+
+    def test_plan_it_instalment_key_stable_on_reingest(self, adapter):
+        txn = {
+            "record_type": "plan_it_instalment",
+            "start_date": "Apr 12 2026",
+            "description": "MALAYSIA AIRLINES KUALA KUALA LUMPUR",
+            "as_of_date": "19 Apr 2026",
+        }
+        first = adapter.generate_source_key(txn, 1, "xxxx-xxxxxx-12345")
+        second = adapter.generate_source_key(dict(txn), 7, "xxxx-xxxxxx-12345")
+        assert first == second
