@@ -2,9 +2,10 @@
 
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.base import StatementPeriod
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
 
 # e.g. "01/04/2026 - 30/06/2026" - printed once right under the "Personal
@@ -13,6 +14,16 @@ from adapters.pdf_adapter import PdfAdapter
 # whole line (not searched across the full text with re.DOTALL-style \s+)
 # so it can't accidentally span across newlines onto unrelated text.
 _PERIOD_RE = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}/\d{2}/\d{4})$")
+
+# "£2,255.37\nPersonal Account balance" - amount precedes its own label
+# (same order as Monzo Flex's "Balance at end", opposite Kroo's
+# "Closing balance\n£..."). Requires the literal "Personal Account
+# balance" text, not just "balance" - the summary block also prints a
+# "Total balance" a few lines above (includes Pots/Cashback, which this
+# adapter's transaction table excludes) that must not match instead.
+_PERSONAL_ACCOUNT_BALANCE_RE = re.compile(
+    r"£\s*([\d,]+\.\d{2})\s*\n\s*Personal Account balance\b"
+)
 
 
 class MonzoPdfAdapter(PdfAdapter):
@@ -69,6 +80,7 @@ class MonzoPdfAdapter(PdfAdapter):
         page - skipped explicitly rather than left to pollute the
         transaction either side of it.
         """
+        self.last_reconciliation = None
         self.last_statement_period = None
         period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
@@ -121,7 +133,39 @@ class MonzoPdfAdapter(PdfAdapter):
             for txn in transactions:
                 txn["_account_identifier_raw"] = account_identifier
 
+        self._check_reconciliation(text, transactions)
+
         return transactions
+
+    def _check_reconciliation(
+        self, text: str, transactions: List[Dict[str, Any]]
+    ) -> None:
+        """Mirror of KrooPdfAdapter._check_reconciliation / MonzoFlexPdfAdapter.
+        _check_reconciliation - this table is newest-first (like Flex, unlike
+        Kroo), so the FIRST parsed transaction's own printed balance is the
+        one that should equal the summary block's "Personal Account balance"
+        (not "Total balance", which also includes Pots/Cashback and isn't
+        covered by this adapter's transaction table). Like Kroo/Flex, this
+        only confirms the table was read through to its most recent row, not
+        that the arithmetic itself reconciles (direct-read balance, nothing
+        rolled forward) - see silver_transformer Gotcha #6."""
+        if not transactions:
+            return
+        match = _PERSONAL_ACCOUNT_BALANCE_RE.search(text)
+        if not match:
+            return
+        try:
+            expected = Decimal(match.group(1).replace(",", ""))
+            derived = Decimal(str(transactions[0]["balance"]))
+        except InvalidOperation:
+            return
+
+        self.last_reconciliation = ReconciliationResult(
+            check_name="monzo_pdf_personal_account_balance",
+            expected_closing=expected,
+            derived_closing=derived,
+            matches=derived == expected,
+        )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """Parse a transaction that spans multiple lines.

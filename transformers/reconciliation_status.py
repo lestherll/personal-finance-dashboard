@@ -22,11 +22,13 @@ from transformers.account_config import get_account_id
 
 PathLike = Union[str, Path]
 
-# Sources that self-check a rolled-forward/derived balance against a
-# printed anchor - see CLAUDE.md "What Bronze guarantees" (B1). Vanguard/
-# Monzo PDF have a direct-read balance with no anchor to check against, so
-# they're deliberately excluded here, same rationale as coverage.py's CSV
-# exclusion.
+# Sources that self-check a balance anchor - either a rolled-forward/
+# derived balance (Amex, First Direct, Natwest Statement, Chase), or a
+# lighter check confirming a direct-read balance matches a separately
+# printed closing anchor (Kroo, Monzo Flex, Monzo PDF) - see CLAUDE.md
+# "What Bronze guarantees" (B1). Vanguard PDF has a direct-read balance
+# with no anchor to check against at all, so it's deliberately excluded
+# here, same rationale as coverage.py's CSV exclusion.
 _RECONCILIATION_SOURCE_TYPES: Set[str] = {
     "amex",
     "firstdirect",
@@ -34,6 +36,7 @@ _RECONCILIATION_SOURCE_TYPES: Set[str] = {
     "kroo",
     "chase",
     "monzo-flex",
+    "monzo-pdf",
 }
 
 _STATUS_COLUMNS = [

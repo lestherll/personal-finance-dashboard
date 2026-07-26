@@ -61,6 +61,14 @@ Monzo Bank Limited (https://monzo.com) is a company registered in England No. 94
 """
 
 
+TEXT_MISMATCHED_PERSONAL_ACCOUNT_BALANCE = SAMPLE_TEXT.replace(
+    "£2,255.37\nPersonal Account balance", "£999.99\nPersonal Account balance"
+)
+TEXT_WITHOUT_PERSONAL_ACCOUNT_BALANCE = SAMPLE_TEXT.replace(
+    "£2,255.37\nPersonal Account balance\n(Excluding all Pots)\n", ""
+)
+
+
 @pytest.fixture
 def adapter():
     return MonzoPdfAdapter()
@@ -166,6 +174,43 @@ class TestMonzoStatementPeriod:
 
         adapter.parse_transactions("Personal Account statement\nMonzo\n(GBP) Balance")
         assert adapter.last_statement_period is None
+
+
+class TestMonzoReconciliation:
+    """This table is newest-first (like Monzo Flex, unlike Kroo), so the
+    FIRST parsed transaction's own printed balance is the one that should
+    match the statement's "Personal Account balance" anchor - this only
+    confirms the table was read through to its most recent row, not that
+    the transaction arithmetic itself reconciles (direct-read balance,
+    nothing rolled forward)."""
+
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert (
+            adapter.last_reconciliation.check_name
+            == "monzo_pdf_personal_account_balance"
+        )
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        adapter.parse_transactions(TEXT_MISMATCHED_PERSONAL_ACCOUNT_BALANCE)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_personal_account_balance_leaves_last_reconciliation_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_PERSONAL_ACCOUNT_BALANCE)
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching file must not leak its result into a later file with no
+        anchor of its own."""
+        adapter.parse_transactions(TEXT_MISMATCHED_PERSONAL_ACCOUNT_BALANCE)
+        assert adapter.last_reconciliation is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_PERSONAL_ACCOUNT_BALANCE)
+        assert adapter.last_reconciliation is None
 
 
 class TestMonzoSourceKey:
