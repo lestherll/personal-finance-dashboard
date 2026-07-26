@@ -41,6 +41,7 @@ LEDGER_SOURCE_TYPES = {
     "natwest-statement",
     "monzo-pdf",
     "chase",
+    "monzo-flex",
 }
 
 TRANSACTION_SOURCE_TYPES = {
@@ -54,6 +55,7 @@ TRANSACTION_SOURCE_TYPES = {
     "vanguard-pdf",
     "monzo-pdf",
     "chase",
+    "monzo-flex",
 }
 
 
@@ -218,6 +220,7 @@ _TRANSACTION_NORMALIZERS = {
     "vanguard-pdf": _normalize_pdf_slash_date,
     "monzo-pdf": _normalize_pdf_slash_date,
     "chase": _normalize_pdf_no_year,
+    "monzo-flex": _normalize_pdf_slash_date,
 }
 
 
@@ -346,6 +349,7 @@ _LEDGER_NORMALIZERS = {
     "natwest-statement": _ledger_from_natwest_statement,
     "monzo-pdf": _ledger_from_monzo_pdf,
     "chase": _ledger_from_chase,
+    "monzo-flex": _ledger_from_monzo_pdf,
 }
 
 _TRANSACTIONS_COLUMNS = [

@@ -173,6 +173,45 @@ class TestGetCurrentBalances:
         assert len(result) == 1
         assert result.iloc[0]["balance"] == 2255.37
 
+    def test_monzo_flex_same_day_tie_picks_newest_not_last_parsed(self):
+        """Monzo Flex prints transactions newest-first within a file too
+        (same layout convention as Monzo PDF, see
+        transformers/balance.py's module docstring) - verified against a
+        real statement, where two same-day rows (Selecta U.K, line_number=1,
+        balance 1101.37; Greggs, line_number=2, balance 1099.07) resolved to
+        the wrong (older) balance before "monzo-flex" was added to
+        _REVERSE_CHRONOLOGICAL_SOURCE_TYPES."""
+        same_day = pd.Timestamp("2026-06-30")
+        period_to = pd.Timestamp("2026-06-30")
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_monzo_flex",
+                    1101.37,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=1,
+                    source_type="monzo-flex",
+                ),
+                _ledger_row(
+                    "acc_monzo_flex",
+                    1099.07,
+                    same_day,
+                    same_day,
+                    statement_period_to=period_to,
+                    line_number=2,
+                    source_type="monzo-flex",
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance"] == 1101.37
+
     def test_falls_back_to_upload_timestamp_when_no_period(self):
         """Periodless sources (e.g. CSV) have no statement_period_to at all -
         upload_timestamp is the only available tiebreaker."""

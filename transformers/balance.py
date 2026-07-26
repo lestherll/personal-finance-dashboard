@@ -49,7 +49,7 @@ _BREAKDOWN_COLUMNS = [
 # way (see module docstring). First Direct has only ever been seen with a
 # single real transaction per statement, so its direction is unverified -
 # revisit if a multi-transaction statement ever produces a wrong balance.
-_REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf"}
+_REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf", "monzo-flex"}
 
 
 def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
