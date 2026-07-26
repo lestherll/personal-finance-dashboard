@@ -217,7 +217,7 @@ def get_net_worth_breakdown(
                     "account_id": holding_row.account_id,
                     "source": holding_row.fund_name,
                     "balance_or_value": holding_row.total_value,
-                    "as_of_date": None,
+                    "as_of_date": holding_row.as_of_date,
                     "contribution_to_net_worth": value,
                     "balance_may_be_stale": False,
                 }

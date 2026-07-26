@@ -101,6 +101,51 @@ class TestFindStatementPeriods:
         result = find_statement_periods(datalake, path=path)
         assert len(result) == 1
 
+    def test_multi_wrapper_statement_keeps_both_accounts(self, tmp_path):
+        """A single Vanguard statement file legitimately bundles two accounts
+        (ISA + Pension), each with its own account_identifier - both must
+        survive dedup, not just whichever sorts first by filename alone."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_vanguard_isa": {
+                    "account_id": "acc_vanguard_isa",
+                    "display_name": "Vanguard ISA",
+                    "account_type": "investment",
+                },
+                "hash_vanguard_pension": {
+                    "account_id": "acc_vanguard_pension",
+                    "display_name": "Vanguard Pension",
+                    "account_type": "investment",
+                },
+            },
+        )
+        bronze_df = pd.DataFrame(
+            [
+                _bronze_row(
+                    "hash_vanguard_isa",
+                    "Vanguard_Statement.pdf",
+                    pd.Timestamp("2026-04-09"),
+                    pd.Timestamp("2026-07-08"),
+                ),
+                _bronze_row(
+                    "hash_vanguard_pension",
+                    "Vanguard_Statement.pdf",
+                    pd.Timestamp("2026-04-09"),
+                    pd.Timestamp("2026-07-08"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForCoverage({"vanguard-pdf": bronze_df})
+
+        result = find_statement_periods(datalake, path=path)
+
+        assert len(result) == 2
+        assert set(result["account_id"]) == {
+            "acc_vanguard_isa",
+            "acc_vanguard_pension",
+        }
+
     def test_missing_period_columns_returns_empty(self, tmp_path):
         """A period-tracked source_type present in Bronze, but from a file
         ingested before B4's period capture existed for it - no

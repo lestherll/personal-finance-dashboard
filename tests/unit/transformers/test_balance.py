@@ -48,11 +48,12 @@ def _ledger_row(
     }
 
 
-def _holdings_row(account_id, total_value, fund_name="Test Fund"):
+def _holdings_row(account_id, total_value, fund_name="Test Fund", as_of_date=None):
     return {
         "account_id": account_id,
         "fund_name": fund_name,
         "total_value": total_value,
+        "as_of_date": as_of_date,
     }
 
 
@@ -768,6 +769,58 @@ class TestGetNetWorthBreakdown:
 
         assert breakdown.iloc[0]["as_of_date"] == pd.Timestamp("2026-06-02")
         assert breakdown.iloc[0]["balance_or_value"] == 200.0
+
+    def test_holdings_as_of_date_is_populated_not_blank(self, tmp_path):
+        """A holding's as_of_date (populated by normalize_holdings() in
+        Silver) must be surfaced in the breakdown, not hardcoded to None -
+        otherwise every holdings row sinks to the bottom of the
+        as_of_date-descending sort regardless of how current it is."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard_isa": {
+                    "account_id": "acc_vanguard_isa",
+                    "display_name": "Vanguard ISA",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    100.0,
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-01"),
+                ),
+            ]
+        )
+        holdings = pd.DataFrame(
+            [
+                _holdings_row(
+                    "acc_vanguard_isa",
+                    1500.0,
+                    "Fund A",
+                    as_of_date=pd.Timestamp("2026-07-08"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": ledger, "holdings": holdings}
+        )
+
+        breakdown = get_net_worth_breakdown(datalake, path=path)
+
+        holding_row = breakdown[breakdown["source"] == "Fund A"].iloc[0]
+        assert holding_row["as_of_date"] == pd.Timestamp("2026-07-08")
+        # The more recent holding sorts ahead of the older ledger balance,
+        # instead of always sinking to the bottom via a hardcoded None.
+        assert breakdown.iloc[0]["source"] == "Fund A"
 
     def test_breakdown_empty_when_no_data(self, tmp_path):
         """Breakdown returns empty DataFrame with correct columns when

@@ -65,7 +65,7 @@ def find_statement_periods(
 
         per_file = df.dropna(
             subset=["statement_period_from", "statement_period_to"]
-        ).drop_duplicates("filename")
+        ).drop_duplicates(["filename", "account_identifier"])
 
         for row in per_file.itertuples():
             try:
