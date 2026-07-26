@@ -40,6 +40,7 @@ LEDGER_SOURCE_TYPES = {
     "firstdirect",
     "natwest-statement",
     "monzo-pdf",
+    "chase",
 }
 
 TRANSACTION_SOURCE_TYPES = {
@@ -325,6 +326,17 @@ def _ledger_from_monzo_pdf(raw: Dict[str, Any], reference: Any) -> Dict[str, Any
     }
 
 
+def _ledger_from_chase(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
+    """Chase's `date` always carries a native year ('DD Mon YYYY') - no
+    dual-path/_infer_dated_with_year check needed here, unlike
+    _ledger_from_amex/_ledger_from_natwest_statement (Gotcha #6/#7's
+    date-year trap doesn't apply to Chase)."""
+    return {
+        "balance": float(raw.get("balance") or 0),
+        "as_of_date": _parse_date(raw.get("date", ""), "%d %b %Y"),
+    }
+
+
 _LEDGER_NORMALIZERS = {
     "natwest": _ledger_from_natwest,
     "vanguard": _ledger_from_vanguard,
@@ -333,6 +345,7 @@ _LEDGER_NORMALIZERS = {
     "firstdirect": _ledger_from_firstdirect,
     "natwest-statement": _ledger_from_natwest_statement,
     "monzo-pdf": _ledger_from_monzo_pdf,
+    "chase": _ledger_from_chase,
 }
 
 _TRANSACTIONS_COLUMNS = [

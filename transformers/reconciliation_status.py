@@ -32,6 +32,7 @@ _RECONCILIATION_SOURCE_TYPES: Set[str] = {
     "firstdirect",
     "natwest-statement",
     "kroo",
+    "chase",
 }
 
 _STATUS_COLUMNS = [

@@ -6,12 +6,16 @@ only by account_identifier (sort code + account number), same pattern as
 two Amex cards under one source_type (see CLAUDE.md Gotcha #5).
 """
 
+import logging
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.base import StatementPeriod
+from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+
+logger = logging.getLogger(__name__)
 
 _AMOUNT_RE = re.compile(r"^[+-]?£[\d,]+\.\d{2}$")
 _DATE_RE = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})$")
@@ -23,6 +27,12 @@ _DATE_RE = re.compile(r"^(\d{1,2}\s+[A-Za-z]{3}\s+\d{4})$")
 _PERIOD_RE = re.compile(
     r"^(\d{1,2}\s+[A-Za-z]+\s+\d{4})\s*-\s*(\d{1,2}\s+[A-Za-z]+\s+\d{4})$"
 )
+# Both labels also appear a second time, later, as a filtered-out single-
+# amount summary row in the transaction table - but the anchor block always
+# comes first in reading order, so the leftmost .search() match is always
+# the real anchor.
+_OPENING_BALANCE_RE = re.compile(r"Opening balance\s*\n\s*£\s*([\d,]+\.\d{2})")
+_CLOSING_BALANCE_RE = re.compile(r"Closing balance\s*\n\s*£\s*([\d,]+\.\d{2})")
 
 
 class ChasePdfAdapter(PdfAdapter):
@@ -78,6 +88,7 @@ class ChasePdfAdapter(PdfAdapter):
         opening-balance and closing-balance rows without special-casing
         each one.
         """
+        self.last_reconciliation = None
         self.last_statement_period = None
         period = self._extract_statement_period(text)
         account_identifier = self._extract_account_identifier(text)
@@ -127,13 +138,71 @@ class ChasePdfAdapter(PdfAdapter):
             for txn in transactions:
                 txn["_account_identifier_raw"] = account_identifier
 
+        self._check_reconciliation(text, transactions)
+
         return transactions
+
+    def _check_reconciliation(
+        self, text: str, transactions: List[Dict[str, Any]]
+    ) -> None:
+        """Roll the statement's own "Opening balance" anchor forward through
+        parsed transactions and compare against the printed "Closing balance".
+
+        Chase prints a genuine Opening/Money in/Money out/Closing balance
+        block once per statement - same B1 anchor class as Amex/First
+        Direct/Natwest Statement/Kroo (CLAUDE.md). Unlike those, Chase is a
+        cash/asset account, not a credit card liability, so its balance
+        moves the SAME direction as the signed, cash-received `amount`
+        convention used elsewhere (spend/transfer-out negative, in
+        positive): `running += amount`, not `-=`. Verified against both real
+        statements (Current: 0.00 + 200 - 200 = 0.00; Saver: 0.00 + 2,550 +
+        200 = 2,750.00).
+        """
+        if not transactions:
+            return
+        opening_match = _OPENING_BALANCE_RE.search(text)
+        closing_match = _CLOSING_BALANCE_RE.search(text)
+        if not opening_match or not closing_match:
+            return
+        try:
+            running = Decimal(opening_match.group(1).replace(",", ""))
+            expected_closing = Decimal(closing_match.group(1).replace(",", ""))
+        except InvalidOperation:
+            return
+
+        for txn in transactions:
+            running += Decimal(str(txn["amount"]))
+
+        derived_closing = running.quantize(Decimal("0.01"))
+        matches = derived_closing == expected_closing
+        self.last_reconciliation = ReconciliationResult(
+            check_name="chase_closing_balance",
+            expected_closing=expected_closing,
+            derived_closing=derived_closing,
+            matches=matches,
+        )
+        if not matches:
+            logger.warning(
+                "Chase statement: derived closing balance %.2f does not "
+                "match statement's printed Closing balance %.2f - "
+                "transaction amounts don't fully reconcile with the "
+                "Opening/Closing balance block. Balance fields may be "
+                "inaccurate.",
+                running,
+                expected_closing,
+            )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """Parse a transaction that spans multiple lines.
 
-        Balance is dropped (see silver_transformer Gotcha #6 - PDF adapters
-        don't carry balance history into account_ledger).
+        Captures both `amount` (signed) and `balance` (unsigned, a direct
+        read of the statement's own Balance column, not derived). `balance`
+        feeds transformers/silver_transformer.py::_ledger_from_chase - Chase
+        was the one PDF source of 8 that had a printed balance column with
+        no account_ledger wiring at all. Not used by this adapter's own
+        `_check_reconciliation` above, which independently verifies against
+        the statement's separate Opening/Closing balance anchor by summing
+        `amount` - two complementary checks, not a redundant one.
         """
         if not lines:
             return None
@@ -159,6 +228,7 @@ class ChasePdfAdapter(PdfAdapter):
             "date": date_str,
             "description": " ".join(description_parts),
             "amount": amounts[0],
+            "balance": amounts[1],
         }
 
     def generate_source_key(

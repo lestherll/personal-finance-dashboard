@@ -17,6 +17,7 @@ _FIRSTDIRECT_ID = "8765efc92b23"
 _AMEX_ID = "63e97de2060d"
 _VANGUARD_ISA_ID = "992add198186"
 _MONZO_PDF_ID = "4fa9c17f5f09"
+_CHASE_CURRENT_ID = "263b465ff6a8"
 
 
 def _bronze_frame(
@@ -516,6 +517,27 @@ class TestNormalizeAccountLedger:
         assert row["account_id"] == "acc_monzo_current"
         assert row["balance"] == 2255.37
         assert row["as_of_date"] == pd.Timestamp("2026-06-30")
+
+    def test_chase_balance_captured(self, transformer):
+        raw = {
+            "date": "02 Jun 2026",
+            "description": "From LLACUNA L - Lesther NW Payment",
+            "amount": 200.0,
+            "balance": 200.0,
+        }
+        df = transformer.normalize_account_ledger(
+            {
+                "chase": _bronze_frame(
+                    "chase", [raw], account_identifier=_CHASE_CURRENT_ID
+                )
+            }
+        )
+
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["account_id"] == "acc_chase_current"
+        assert row["balance"] == 200.0
+        assert row["as_of_date"] == pd.Timestamp("2026-06-02")
 
     def test_firstdirect_balance_captured(self, transformer):
         raw = {

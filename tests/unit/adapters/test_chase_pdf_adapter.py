@@ -1,6 +1,7 @@
 """Tests for Chase PDF adapter."""
 
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 
@@ -51,6 +52,63 @@ Page 1 of 2
 Lesther Jr's Account statement
 02 June 2026 - 30 June 2026
 Account number:   18492643
+Sort code:   60-84-07
+Date
+Transaction details
+Amount
+Balance
+Some useful information
+Some transactions may take a few days to finalise.
+Chase is a registered trademark and trading name of J.P. Morgan Europe Limited. It is authorised by the Prudential
+Regulation Authority.
+Page 2 of 2
+"""
+
+# Mirrors the real Chase Saver statement for the same period - different
+# account, different real transactions (a Kroo-originated deposit and the
+# receiving side of the Current account's outgoing transfer above).
+SAMPLE_SAVER_TEXT = """Chase Saver statement
+Account number:   53932015
+Sort code:   60-84-07
+02 June 2026 - 30 June 2026
+Opening balance
+£0.00
++
+Money in
+£2,750.00
+−
+Money out
+£0.00
+=
+Closing balance
+£2,750.00
+Date
+Transaction details
+Amount
+Balance
+02 Jun 2026
+You opened your account
+21:00
+02 Jun 2026
+Opening balance
+£0.00
+02 Jun 2026
+From LESTHER JR LLACUNA - Sent from Kroo
+Payment
++£2,550.00
+£2,550.00
+02 Jun 2026
+From Lesther Jr's Account
+Transfer
++£200.00
+£2,750.00
+30 Jun 2026
+Closing balance
+£2,750.00
+Page 1 of 2
+Chase Saver statement
+02 June 2026 - 30 June 2026
+Account number:   53932015
 Sort code:   60-84-07
 Date
 Transaction details
@@ -117,6 +175,33 @@ class TestChaseParsing:
         transfer = next(t for t in txns if "Chase Saver" in t["description"])
         assert transfer["amount"] == -200.00
 
+    def test_balance_captured(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_TEXT)
+        payment = next(t for t in txns if "Lesther NW" in t["description"])
+        transfer = next(t for t in txns if "Chase Saver" in t["description"])
+        assert payment["balance"] == 200.00
+        assert transfer["balance"] == 0.00
+
+    def test_saver_statement_parses(self, adapter):
+        """Genuinely Saver-shaped content (different account, different
+        real transactions) - previously only exercised by string-replacing
+        the header on the Current fixture, never parsed for real."""
+        txns = adapter.parse_transactions(SAMPLE_SAVER_TEXT)
+        assert len(txns) == 2
+        assert all(
+            t["_account_identifier_raw"] == "53932015_60-84-07" for t in txns
+        )
+
+        kroo_deposit = next(t for t in txns if "Sent from Kroo" in t["description"])
+        assert kroo_deposit["amount"] == 2550.00
+        assert kroo_deposit["balance"] == 2550.00
+
+        transfer_in = next(
+            t for t in txns if "From Lesther Jr's Account" in t["description"]
+        )
+        assert transfer_in["amount"] == 200.00
+        assert transfer_in["balance"] == 2750.00
+
     def test_stops_before_footer_disclaimer(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         assert not any("FSCS" in t["description"] for t in txns)
@@ -126,6 +211,33 @@ class TestChaseParsing:
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         assert not any("Account number" in t["description"] for t in txns)
         assert not any("Sort code" in t["description"] for t in txns)
+
+
+class TestChaseTwoAccountsDisambiguation:
+    """Chase allows multiple accounts of the same or different type (e.g. a
+    Current plus a Saver) - AdapterFactory reuses one adapter instance
+    across every file in a batch, so parsing both in sequence must not
+    leak state and must produce distinguishable identifiers/source keys."""
+
+    def test_identifiers_differ_across_accounts(self, adapter):
+        current_txns = adapter.parse_transactions(SAMPLE_TEXT)
+        saver_txns = adapter.parse_transactions(SAMPLE_SAVER_TEXT)
+
+        current_ids = {t["_account_identifier_raw"] for t in current_txns}
+        saver_ids = {t["_account_identifier_raw"] for t in saver_txns}
+        assert current_ids == {"18492643_60-84-07"}
+        assert saver_ids == {"53932015_60-84-07"}
+        assert current_ids != saver_ids
+
+    def test_source_keys_differ_for_same_looking_transaction(self, adapter):
+        txn = {"date": "02 Jun 2026", "description": "Payment", "amount": 200.0}
+        current_key = adapter.generate_source_key(
+            txn, 1, account_identifier="18492643_60-84-07"
+        )
+        saver_key = adapter.generate_source_key(
+            txn, 1, account_identifier="53932015_60-84-07"
+        )
+        assert current_key != saver_key
 
 
 class TestChaseStatementPeriod:
@@ -157,6 +269,56 @@ class TestChaseStatementPeriod:
 
         adapter.parse_transactions("Lesther Jr's Account statement")
         assert adapter.last_statement_period is None
+
+
+TEXT_WITHOUT_CLOSING_BALANCE = SAMPLE_TEXT.replace("Closing balance\n£0.00\n", "")
+
+
+class TestChaseReconciliation:
+    """Chase rolls its own "Opening balance" anchor forward through
+    transactions and compares against the printed "Closing balance" - same
+    B1 pattern as Amex/First Direct/Natwest Statement/Kroo, but summed
+    (cash/asset account) rather than subtracted (credit card liability)."""
+
+    def test_sets_last_reconciliation_on_match(self, adapter):
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.check_name == "chase_closing_balance"
+        assert adapter.last_reconciliation.expected_closing == Decimal("0.00")
+        assert adapter.last_reconciliation.derived_closing == Decimal("0.00")
+
+    def test_sets_last_reconciliation_on_match_saver(self, adapter):
+        adapter.parse_transactions(SAMPLE_SAVER_TEXT)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is True
+        assert adapter.last_reconciliation.expected_closing == Decimal("2750.00")
+        assert adapter.last_reconciliation.derived_closing == Decimal("2750.00")
+
+    def test_sets_last_reconciliation_on_mismatch(self, adapter):
+        mismatched_text = SAMPLE_TEXT.replace(
+            "Closing balance\n£0.00", "Closing balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+        assert adapter.last_reconciliation.matches is False
+
+    def test_no_closing_balance_leaves_last_reconciliation_none(self, adapter):
+        adapter.parse_transactions(TEXT_WITHOUT_CLOSING_BALANCE)
+        assert adapter.last_reconciliation is None
+
+    def test_reconciliation_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        mismatching file must not leak its result into a later file with no
+        closing-balance anchor of its own."""
+        mismatched_text = SAMPLE_TEXT.replace(
+            "Closing balance\n£0.00", "Closing balance\n£999.99"
+        )
+        adapter.parse_transactions(mismatched_text)
+        assert adapter.last_reconciliation is not None
+
+        adapter.parse_transactions(TEXT_WITHOUT_CLOSING_BALANCE)
+        assert adapter.last_reconciliation is None
 
 
 class TestChaseSourceKey:
