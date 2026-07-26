@@ -46,6 +46,14 @@ def _ledger_row(
     }
 
 
+def _holdings_row(account_id, total_value, fund_name="Test Fund"):
+    return {
+        "account_id": account_id,
+        "fund_name": fund_name,
+        "total_value": total_value,
+    }
+
+
 class TestGetCurrentBalances:
     def test_single_account_single_row(self):
         ledger = pd.DataFrame(
@@ -322,3 +330,100 @@ class TestGetNetWorth:
         datalake = _FakeDatalakeForBalance({})
 
         assert get_net_worth(datalake, path=path) == Decimal("0")
+
+    def test_holdings_are_included_in_net_worth(self, tmp_path):
+        """Holdings from the holdings table (investment accounts) are always
+        assets and must be added to net worth alongside account ledger
+        balances."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard_isa": {
+                    "account_id": "acc_vanguard_isa",
+                    "display_name": "Vanguard ISA",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    1000.0,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        holdings = pd.DataFrame(
+            [
+                _holdings_row("acc_vanguard_isa", 1500.0, "UK Index Fund"),
+                _holdings_row("acc_vanguard_isa", 500.0, "Global Fund"),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": ledger, "holdings": holdings}
+        )
+
+        net_worth = get_net_worth(datalake, path=path)
+
+        assert net_worth == Decimal("3000.0")
+
+    def test_holdings_alone_included_in_net_worth(self, tmp_path):
+        """If there are only holdings and no ledger balances, net worth is
+        just the sum of holdings."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_vanguard_pension": {
+                    "account_id": "acc_vanguard_pension",
+                    "display_name": "Vanguard Pension",
+                    "account_type": "investment",
+                },
+            },
+        )
+        holdings = pd.DataFrame(
+            [
+                _holdings_row("acc_vanguard_pension", 3000.0, "Pension Fund"),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": pd.DataFrame(), "holdings": holdings}
+        )
+
+        net_worth = get_net_worth(datalake, path=path)
+
+        assert net_worth == Decimal("3000.0")
+
+    def test_holdings_grouped_by_account_id(self, tmp_path):
+        """Multiple holdings for the same account_id are grouped and summed
+        together before adding to net worth."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_vanguard_isa": {
+                    "account_id": "acc_vanguard_isa",
+                    "display_name": "Vanguard ISA",
+                    "account_type": "investment",
+                },
+            },
+        )
+        holdings = pd.DataFrame(
+            [
+                _holdings_row("acc_vanguard_isa", 1000.0, "Fund A"),
+                _holdings_row("acc_vanguard_isa", 2000.0, "Fund B"),
+                _holdings_row("acc_vanguard_isa", 500.0, "Fund C"),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": pd.DataFrame(), "holdings": holdings}
+        )
+
+        net_worth = get_net_worth(datalake, path=path)
+
+        assert net_worth == Decimal("3500.0")

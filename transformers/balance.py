@@ -71,25 +71,39 @@ def get_net_worth(
 ) -> Decimal:
     """Sum of current balances across accounts, sign-adjusted for
     account_type: credit accounts are a liability (subtracted), everything
-    else - current/savings/investment - is an asset (added).
+    else - current/savings/investment - is an asset (added). Also includes
+    holdings from the holdings table, which are always assets (never
+    liabilities).
 
     Per CLAUDE.md Gotcha #6, a credit account's `balance` is already stored
     as a positive "amount owed" figure, not a negative one.
     """
+    datalake = datalake or get_datalake()
     balances = get_current_balances(datalake)
-    if balances.empty:
-        return Decimal("0")
-
-    accounts = build_accounts_table(path=path)
-    merged = balances.merge(
-        accounts[["account_id", "account_type"]], on="account_id", how="left"
-    )
 
     total = Decimal("0")
-    for row in merged.itertuples():
-        amount = Decimal(str(row.balance))
-        if row.account_type == "credit":
-            total -= amount
-        else:
-            total += amount
+
+    # Sum account ledger balances (with sign adjustment for credit accounts)
+    if not balances.empty:
+        accounts = build_accounts_table(path=path)
+        merged = balances.merge(
+            accounts[["account_id", "account_type"]], on="account_id", how="left"
+        )
+
+        for row in merged.itertuples():
+            amount = Decimal(str(row.balance))
+            if row.account_type == "credit":
+                total -= amount
+            else:
+                total += amount
+
+    # Sum holdings (always assets, never liabilities)
+    holdings = datalake.read_silver("holdings")
+    if holdings is not None and not holdings.empty:
+        holdings_by_account = (
+            holdings.groupby("account_id")["total_value"].sum()
+        )
+        for value in holdings_by_account:
+            total += Decimal(str(value))
+
     return total
