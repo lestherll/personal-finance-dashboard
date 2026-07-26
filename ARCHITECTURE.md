@@ -37,10 +37,13 @@ CSVs from Banks
 
 **PDF Adapters (PyMuPDF-based text extraction):**
 - `KrooPdfAdapter` — Kroo current account statements
-- `NatwestPdfAdapter` — Natwest bank statements
+- `NatwestTransactionsPdfAdapter` — Natwest's on-demand online "Transactions" export (covers the gap since the last quarterly Statement)
+- `NatwestStatementPdfAdapter` — Natwest's quarterly Statement, generated automatically every ~3 months
 - `FirstDirectPdfAdapter` — First Direct credit card statements
 - `AmexPdfAdapter` — American Express statements
 - `VanguardPdfAdapter` — Vanguard investment statements
+- `MonzoPdfAdapter` — Monzo Personal Account statements
+- `ChasePdfAdapter` — Chase current account / Chase Saver statements
 - `PdfAdapter` — Shared base class (text extraction, validation template)
 
 **Factory:**

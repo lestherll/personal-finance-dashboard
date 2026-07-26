@@ -1,13 +1,25 @@
 """Natwest quarterly Statement PDF adapter.
 
-Distinct from `natwest_pdf_adapter.py`, which targets the "Transactions"
-export downloadable from online banking. Natwest issues a separate, much
-richer document every ~3 months (a proper statement, not an export dump):
-different section markers, a `Date | Description | Paid In(£) | Withdrawn(£)
-| Balance(£)` table instead of a single signed-amount-per-line format, and a
-full (unmasked) account number instead of a masked one. The two formats
-share almost nothing structurally, so this is a separate adapter/source_type
-rather than a branch inside the existing one.
+Distinct from `natwest_transactions_pdf_adapter.py` (`natwest-transactions`),
+which targets the "Transactions" export downloadable from online banking on
+demand. This adapter (`natwest-statement`) handles the real Statement:
+generated automatically by Natwest every ~3 months, covering a fixed
+historical period once. The two exist because the Statement is the
+authoritative, complete-looking document, but it lags - the transactions
+export is what covers whatever's happened *since* the last Statement was
+generated, so both are needed to have continuous coverage up to "now". See
+the fuller rationale in `natwest_transactions_pdf_adapter.py`'s module
+docstring.
+
+The two documents also share almost nothing structurally: different section
+markers, a `Date | Description | Paid In(£) | Withdrawn(£) | Balance(£)`
+table instead of a single signed-amount-per-line format, and a full
+(unmasked) account number instead of a masked one - hence a separate
+adapter/source_type rather than a branch inside the other one. Because they
+can cover overlapping dates for the same account, the same real transaction
+can appear under both source_types with two different `bronze_source_key`s -
+`transformers/silver_transformer.py::_dedupe_natwest_cross_format()` is what
+prevents that from double-counting (see CLAUDE.md Gotcha #11).
 """
 
 import logging
@@ -17,7 +29,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 from adapters.base import ReconciliationResult, StatementPeriod
-from adapters.pdf_adapter import PdfAdapter
+from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +50,10 @@ _IDENTIFIER_RE = re.compile(
 _PREVIOUS_BALANCE_RE = re.compile(r"Previous Balance\s*\n\s*£([\d,]+\.\d{2})")
 _NEW_BALANCE_RE = re.compile(r"New Balance\s*\n\s*£([\d,]+\.\d{2})")
 _FOOTER_MARKERS = ("Interest (variable)", "RETSTMT")
-# e.g. "Period Covered\n14 FEB 2026 to 13 MAY 2026" - unlike Amex/natwest-pdf,
-# this document prints an explicit year on both ends already.
+# e.g. "Period Covered\n14 FEB 2026 to 13 MAY 2026" - unlike Amex/
+# natwest-transactions, this document prints an explicit year on both ends
+# already (this range itself has a year; it's the *per-transaction* dates
+# below that don't - see resolve_year_in_period() usage in parse_transactions).
 _PERIOD_COVERED_RE = re.compile(
     r"Period Covered\s*\n\s*(\d{1,2}\s+[A-Z]{3}\s+\d{4})\s+to\s+"
     r"(\d{1,2}\s+[A-Z]{3}\s+\d{4})"
@@ -54,7 +68,7 @@ class NatwestStatementPdfAdapter(PdfAdapter):
 
         "BROUGHT FORWARD" and "Previous Balance" are specific to this
         document type - the online "Transactions" export
-        (`natwest_pdf_adapter.py`) has neither.
+        (`natwest_transactions_pdf_adapter.py`) has neither.
         """
         return "BROUGHT FORWARD" in text and "Previous Balance" in text
 
@@ -74,10 +88,14 @@ class NatwestStatementPdfAdapter(PdfAdapter):
     def _extract_period_covered(text: str) -> Optional[Tuple[datetime, datetime]]:
         """Extract the statement's own "Period Covered" range.
 
-        Unlike Amex/natwest-pdf, both dates already carry an explicit year
-        here, so no year-inference is needed - this is purely for B3
-        coverage tracking, not for dating transactions (this format's
-        per-line dates already carry years where printed).
+        Unlike Amex/natwest-transactions, both dates already carry an
+        explicit year here. This range is used for two purposes: B3
+        coverage tracking (see `self.last_statement_period` below), and -
+        despite an earlier assumption to the contrary - also for dating
+        transactions: this format's per-line dates do *not* carry a year
+        (e.g. "26 FEB"), the same ambiguity Amex/natwest-transactions have,
+        so `parse_transactions` now resolves it via
+        `resolve_year_in_period()` exactly like they do.
         """
         match = _PERIOD_COVERED_RE.search(text)
         if not match:
@@ -190,6 +208,17 @@ class NatwestStatementPdfAdapter(PdfAdapter):
             if account_identifier:
                 txn["_account_identifier_raw"] = account_identifier
             transactions.append(txn)
+
+        if period:
+            from_date, to_date = period
+            for txn in transactions:
+                if re.search(r"\d{4}", txn["date"]):
+                    # _DATE_RE's year group is optional - if a real statement
+                    # ever does print one, don't overwrite it.
+                    continue
+                dated = resolve_year_in_period(txn["date"], from_date, to_date)
+                if dated:
+                    txn["date"] = dated
 
         self._check_reconciliation(text, running_balance)
 

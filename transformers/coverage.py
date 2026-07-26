@@ -30,7 +30,7 @@ _COVERAGE_GAP_TOLERANCE = timedelta(days=3)
 
 _PERIOD_SOURCE_TYPES: Set[str] = {
     "amex",
-    "natwest-pdf",
+    "natwest-transactions",
     "natwest-statement",
     "monzo-pdf",
     "chase",
@@ -92,8 +92,8 @@ def find_coverage_gaps(
     """Flag gaps between consecutive statement periods, per account.
 
     Overlapping/adjacent periods across multiple source_types for the same
-    account_id (e.g. a natwest-pdf export and a natwest-statement covering
-    an overlapping window) are merged rather than double-flagged, by
+    account_id (e.g. a natwest-transactions export and a natwest-statement
+    covering an overlapping window) are merged rather than double-flagged, by
     tracking the furthest `period_to` seen so far instead of assuming
     periods are non-overlapping.
     """

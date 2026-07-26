@@ -12,7 +12,7 @@ from transformers.silver_transformer import (
 
 # Real (test-only) entries so get_account_id resolves without hitting the fallback.
 _KROO_ID = "fd7a2651d39e"
-_NATWEST_PDF_ID = "43ae9e53d8a2"
+_NATWEST_ID = "43ae9e53d8a2"
 _FIRSTDIRECT_ID = "8765efc92b23"
 _AMEX_ID = "63e97de2060d"
 _VANGUARD_ISA_ID = "992add198186"
@@ -143,19 +143,19 @@ class TestNormalizeTransactionsPdfSources:
         assert row["transaction_date"] == pd.Timestamp("2026-01-12")
         assert row["amount"] == -4.50
 
-    def test_natwest_pdf_infers_year_from_upload_timestamp(self, transformer):
+    def test_natwest_transactions_infers_year_from_upload_timestamp(self, transformer):
         raw = {"date": "15 Jan", "description": "Card Payment", "amount": -20.0}
         bronze = _bronze_frame(
-            "natwest-pdf",
+            "natwest-transactions",
             [raw],
             upload_timestamp=pd.Timestamp("2026-02-01"),
-            account_identifier=_NATWEST_PDF_ID,
+            account_identifier=_NATWEST_ID,
         )
-        df = transformer.normalize_transactions({"natwest-pdf": bronze})
+        df = transformer.normalize_transactions({"natwest-transactions": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-01-15")
-        assert row["account_id"] == get_account_id(_NATWEST_PDF_ID, "natwest-pdf")
+        assert row["account_id"] == get_account_id(_NATWEST_ID, "natwest-transactions")
 
     def test_natwest_statement_infers_year_and_captures_balance(self, transformer):
         raw = {
@@ -168,14 +168,14 @@ class TestNormalizeTransactionsPdfSources:
             "natwest-statement",
             [raw],
             upload_timestamp=pd.Timestamp("2026-05-13"),
-            account_identifier=_NATWEST_PDF_ID,
+            account_identifier=_NATWEST_ID,
         )
         df = transformer.normalize_transactions({"natwest-statement": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-02-26")
         assert row["amount"] == 2728.54
-        assert row["account_id"] == get_account_id(_NATWEST_PDF_ID, "natwest-statement")
+        assert row["account_id"] == get_account_id(_NATWEST_ID, "natwest-statement")
 
     def test_amex_infers_year_from_upload_timestamp(self, transformer):
         raw = {"date": "28 Apr", "description": "Amazon", "amount": -99.99}
@@ -551,7 +551,7 @@ class TestNormalizeAccountLedger:
                     "natwest-statement",
                     [raw],
                     upload_timestamp=pd.Timestamp("2026-05-13"),
-                    account_identifier=_NATWEST_PDF_ID,
+                    account_identifier=_NATWEST_ID,
                 )
             }
         )
@@ -563,9 +563,9 @@ class TestNormalizeAccountLedger:
         assert row["as_of_date"] == pd.Timestamp("2026-02-26")
 
     def test_pdf_sources_without_real_balance_excluded_from_ledger(self, transformer):
-        """natwest-pdf (no balance data at all) and vanguard-pdf (cash_balance is a
+        """natwest-transactions (no balance data at all) and vanguard-pdf (cash_balance is a
         different metric from Portfolio Value) must not appear in the ledger."""
-        natwest_pdf_raw = {
+        natwest_transactions_raw = {
             "date": "26 May",
             "description": "KROO ACCOUNT",
             "amount": -2745.33,
@@ -578,7 +578,9 @@ class TestNormalizeAccountLedger:
         }
         df = transformer.normalize_account_ledger(
             {
-                "natwest-pdf": _bronze_frame("natwest-pdf", [natwest_pdf_raw]),
+                "natwest-transactions": _bronze_frame(
+                    "natwest-transactions", [natwest_transactions_raw]
+                ),
                 "vanguard-pdf": _bronze_frame("vanguard-pdf", [vanguard_pdf_raw]),
             }
         )
@@ -647,7 +649,7 @@ class TestNormalizeAccountLedger:
 
 
 class TestDedupeNatwestCrossFormat:
-    """natwest-pdf (online export) and natwest-statement (quarterly PDF) can
+    """natwest-transactions (online export) and natwest-statement (quarterly PDF) can
     describe the same real transaction if both get uploaded for overlapping
     periods - matched by (account_id, transaction_date, amount), not
     bronze_source_key, which differs by construction across the two."""
@@ -656,7 +658,7 @@ class TestDedupeNatwestCrossFormat:
         df = pd.DataFrame(
             [
                 {
-                    "source_type": "natwest-pdf",
+                    "source_type": "natwest-transactions",
                     "account_id": "acc1",
                     "transaction_date": pd.Timestamp("2026-02-26"),
                     "amount": 2728.54,
@@ -679,7 +681,7 @@ class TestDedupeNatwestCrossFormat:
         df = pd.DataFrame(
             [
                 {
-                    "source_type": "natwest-pdf",
+                    "source_type": "natwest-transactions",
                     "account_id": "acc1",
                     "transaction_date": pd.Timestamp("2026-06-15"),
                     "amount": -50.0,
@@ -689,7 +691,7 @@ class TestDedupeNatwestCrossFormat:
         )
         result = _dedupe_natwest_cross_format(df)
         assert len(result) == 1
-        assert result.iloc[0]["source_type"] == "natwest-pdf"
+        assert result.iloc[0]["source_type"] == "natwest-transactions"
 
     def test_other_source_types_untouched(self):
         df = pd.DataFrame(
@@ -712,14 +714,14 @@ class TestDedupeNatwestCrossFormat:
         df = pd.DataFrame(
             [
                 {
-                    "source_type": "natwest-pdf",
+                    "source_type": "natwest-transactions",
                     "account_id": "acc1",
                     "transaction_date": pd.Timestamp("2026-03-01"),
                     "amount": 10.0,
                     "description": "first",
                 },
                 {
-                    "source_type": "natwest-pdf",
+                    "source_type": "natwest-transactions",
                     "account_id": "acc1",
                     "transaction_date": pd.Timestamp("2026-03-01"),
                     "amount": 10.0,
@@ -736,7 +738,7 @@ class TestDedupeNatwestCrossFormat:
         )
         result = _dedupe_natwest_cross_format(df)
         assert len(result) == 2
-        assert (result["source_type"] == "natwest-pdf").sum() == 1
+        assert (result["source_type"] == "natwest-transactions").sum() == 1
         assert (result["source_type"] == "natwest-statement").sum() == 1
 
 

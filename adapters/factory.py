@@ -14,7 +14,7 @@ from adapters.monzo_adapter import MonzoAdapter
 from adapters.natwest_adapter import NatwestAdapter
 from adapters.vanguard_adapter import VanguardAdapter
 from adapters.kroo_pdf_adapter import KrooPdfAdapter
-from adapters.natwest_pdf_adapter import NatwestPdfAdapter
+from adapters.natwest_transactions_pdf_adapter import NatwestTransactionsPdfAdapter
 from adapters.natwest_statement_pdf_adapter import NatwestStatementPdfAdapter
 from adapters.first_direct_pdf_adapter import FirstDirectPdfAdapter
 from adapters.amex_pdf_adapter import AmexPdfAdapter
@@ -76,7 +76,7 @@ class AdapterFactory:
     CSV_SOURCE_TYPES: Set[str] = {"monzo", "natwest", "vanguard"}
     PDF_SOURCE_TYPES: Set[str] = {
         "kroo",
-        "natwest-pdf",
+        "natwest-transactions",
         "natwest-statement",
         "firstdirect",
         "amex",
@@ -113,7 +113,7 @@ class AdapterFactory:
         # PDF adapters (handle bytes content)
         all_pdf_adapters: List[DataSourceAdapter] = [
             KrooPdfAdapter(),
-            NatwestPdfAdapter(),
+            NatwestTransactionsPdfAdapter(),
             NatwestStatementPdfAdapter(),
             FirstDirectPdfAdapter(),
             AmexPdfAdapter(),

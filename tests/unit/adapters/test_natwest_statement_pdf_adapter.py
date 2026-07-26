@@ -1,7 +1,7 @@
 """Tests for the Natwest quarterly Statement PDF adapter.
 
-Distinct from `test_natwest_pdf_adapter.py`, which covers the online
-"Transactions" export - a structurally unrelated document. This fixture
+Distinct from `test_natwest_transactions_pdf_adapter.py`, which covers the
+online "Transactions" export - a structurally unrelated document. This fixture
 mirrors the real quarterly statement's layout: a Date/Description/Paid
 In(£)/Withdrawn(£)/Balance(£) table (not a single signed-amount-per-line
 format), an opening "BROUGHT FORWARD" row, and a same-day continuation
@@ -121,12 +121,14 @@ class TestNatwestStatementParsing:
 
     def test_same_day_continuation_row_carries_forward_date(self, adapter):
         """The second '02 MAR' transaction omits its date line entirely -
-        the statement only prints a date once per calendar day."""
+        the statement only prints a date once per calendar day. (Date
+        carries a stamped year here since SAMPLE_TEXT has a Period Covered
+        header - see TestNatwestStatementYearInference.)"""
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         salary = next(t for t in txns if "SALARY" in t["description"])
         food = next(t for t in txns if "Food" in t["description"])
-        assert salary["date"] == "02 MAR"
-        assert food["date"] == "02 MAR"
+        assert salary["date"] == "02 MAR 2026"
+        assert food["date"] == "02 MAR 2026"
         assert salary["amount"] == -100.00
         assert salary["balance"] == 1010.00
         assert food["amount"] == -50.00
@@ -233,6 +235,30 @@ class TestNatwestStatementPeriodCovered:
         assert adapter.last_statement_period is not None
         assert adapter.last_statement_period.from_date == datetime(2026, 2, 14)
         assert adapter.last_statement_period.to_date == datetime(2026, 5, 13)
+
+
+class TestNatwestStatementYearInference:
+    """The per-transaction dates in this format never carry a year (e.g.
+    "26 FEB") - same ambiguity as Amex/natwest-transactions. An earlier
+    version of this adapter only used the extracted "Period Covered" range
+    for B3 coverage tracking, not for dating transactions, leaving this
+    adapter solely reliant on the Silver-layer upload-timestamp fallback.
+    It now resolves the real year via resolve_year_in_period(), exactly
+    like Amex/natwest-transactions already do."""
+
+    def test_all_transaction_dates_get_a_year_stamped(self, adapter):
+        txns = adapter.parse_transactions(SAMPLE_TEXT)
+        assert len(txns) == 3
+        assert all(t["date"].endswith("2026") for t in txns)
+        credit = next(t for t in txns if "Automated Credit" in t["description"])
+        assert credit["date"] == "26 FEB 2026"
+
+    def test_no_period_leaves_dates_year_less(self, adapter):
+        """Backward compatible: no Period Covered header -> date stays
+        'DD MON' and the Silver-layer upload-timestamp fallback takes over
+        instead."""
+        txns = adapter.parse_transactions(BARE_TEXT)
+        assert all(len(t["date"].split()) == 2 for t in txns)
 
 
 class TestNatwestStatementSourceKey:

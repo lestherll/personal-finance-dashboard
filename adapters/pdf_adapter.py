@@ -215,7 +215,7 @@ class PdfAdapter(DataSourceAdapter):
         """Generate deterministic source key for transaction."""
 
     def detect_source_type(self) -> str:
-        """Return source type (e.g., 'kroo', 'natwest-pdf', 'firstdirect', 'amex')."""
+        """Return source type (e.g., 'kroo', 'natwest-transactions', 'firstdirect', 'amex')."""
         # Default implementation: lowercase class name without 'Adapter'
         class_name = self.__class__.__name__
         return class_name.replace("Adapter", "").lower()

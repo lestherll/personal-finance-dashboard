@@ -3,11 +3,12 @@
 Unifies the per-adapter `raw_data` shapes (see adapters/*.py) into three
 common Silver schemas: transactions, holdings, and account_ledger.
 
-Known limitation: Natwest PDF and AmEx statements never capture a year in
-their transaction dates (e.g. "15 Jan"). Year is inferred from the Bronze
-upload_timestamp rather than fixed properly at the adapter level - see
-CLAUDE.md gotchas. Fixing this at the source belongs to a Phase 1 adapter
-follow-up, not this transformer.
+Natwest Transactions, Natwest Statement, and AmEx statements print
+transaction dates with no year (e.g. "15 Jan") - all three now stamp a real
+year onto them at the adapter level (`resolve_year_in_period()`) whenever
+the statement's own period header is found. `_infer_dated_with_year()` below
+is kept only as a fallback: for Bronze rows ingested before an adapter had
+this fix, or wherever the period header isn't present in the statement text.
 """
 
 import logging
@@ -28,8 +29,8 @@ from transformers.account_config import (
 logger = logging.getLogger(__name__)
 
 # source_types with a "balance" in raw_data usable for account_ledger.
-# "natwest-pdf" (online export) and "vanguard-pdf" (cash_balance is a
-# different metric from Portfolio Value) are deliberately excluded - see
+# "natwest-transactions" (online export) and "vanguard-pdf" (cash_balance is
+# a different metric from Portfolio Value) are deliberately excluded - see
 # CLAUDE.md gotchas.
 LEDGER_SOURCE_TYPES = {
     "natwest",
@@ -45,7 +46,7 @@ TRANSACTION_SOURCE_TYPES = {
     "monzo",
     "natwest",
     "kroo",
-    "natwest-pdf",
+    "natwest-transactions",
     "natwest-statement",
     "firstdirect",
     "amex",
@@ -158,11 +159,11 @@ def _normalize_pdf_full_month_year(
 
 
 def _normalize_pdf_no_year(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    """Natwest PDF, AmEx: 'DD Mmm', with the year attached at the adapter
-    level (resolve_year_in_period()) whenever the statement's period header
-    was found. Falls back to upload-timestamp inference (Gotcha #7) for
-    Bronze rows ingested before that existed, or where the period header
-    wasn't present in the statement text.
+    """Natwest Transactions, Natwest Statement, AmEx: 'DD Mmm', with the year
+    attached at the adapter level (resolve_year_in_period()) whenever the
+    statement's period header was found. Falls back to upload-timestamp
+    inference (Gotcha #7) for Bronze rows ingested before that existed, or
+    where the period header wasn't present in the statement text.
 
     Chase always carries the year natively ('DD Mon YYYY') so it's mapped
     to this same normalizer purely to reuse the "%d %b %Y" parse path -
@@ -205,26 +206,12 @@ def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, 
     }
 
 
-def _normalize_natwest_statement(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
-    """Natwest quarterly Statement PDF: 'DD Mmm' (all-caps month), no year in
-    source text - same as natwest-pdf/amex."""
-    return {
-        "transaction_date": _infer_dated_with_year(
-            raw.get("date", ""), "%d %b", reference
-        ),
-        "description": raw.get("description", ""),
-        "amount": float(raw.get("amount") or 0),
-        "currency": "GBP",
-        "category": None,
-    }
-
-
 _TRANSACTION_NORMALIZERS = {
     "monzo": _normalize_monzo,
     "natwest": _normalize_natwest_csv,
     "kroo": _normalize_pdf_full_month_year,
-    "natwest-pdf": _normalize_pdf_no_year,
-    "natwest-statement": _normalize_natwest_statement,
+    "natwest-transactions": _normalize_pdf_no_year,
+    "natwest-statement": _normalize_pdf_no_year,
     "firstdirect": _normalize_pdf_short_year,
     "amex": _normalize_pdf_no_year,
     "vanguard-pdf": _normalize_pdf_slash_date,
@@ -314,9 +301,20 @@ def _ledger_from_firstdirect(raw: Dict[str, Any], reference: Any) -> Dict[str, A
 def _ledger_from_natwest_statement(
     raw: Dict[str, Any], reference: Any
 ) -> Dict[str, Any]:
+    """Same dual-path date check as `_ledger_from_amex` above, needed here
+    for the same reason: the adapter now stamps a real year onto `date` via
+    resolve_year_in_period() whenever the statement's period header is
+    found, and `_infer_dated_with_year` mishandles a string that already has
+    a year appended."""
+    date_str = raw.get("date", "")
+    as_of_date = (
+        _parse_date(date_str, "%d %b %Y") if re.search(r"\d{4}", date_str) else None
+    )
+    if as_of_date is None:
+        as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance": float(raw.get("balance") or 0),
-        "as_of_date": _infer_dated_with_year(raw.get("date", ""), "%d %b", reference),
+        "as_of_date": as_of_date,
     }
 
 
@@ -504,15 +502,17 @@ class SilverTransformer:
         return result
 
 
-_NATWEST_CROSS_FORMAT_TYPES = {"natwest-pdf", "natwest-statement"}
+_NATWEST_CROSS_FORMAT_TYPES = {"natwest-transactions", "natwest-statement"}
 
 
 def _dedupe_natwest_cross_format(df: pd.DataFrame) -> pd.DataFrame:
     """Drop duplicate transactions between the two Natwest PDF formats.
 
-    "natwest-pdf" (the online "Transactions" export) and "natwest-statement"
-    (the quarterly Statement PDF) can cover overlapping date ranges - if a
-    user uploads both, the same real-world transaction appears under two
+    "natwest-transactions" (the on-demand online "Transactions" export - see
+    adapters/natwest_transactions_pdf_adapter.py's module docstring for why
+    it exists alongside the Statement) and "natwest-statement" (the
+    quarterly Statement PDF) can cover overlapping date ranges - if a user
+    uploads both, the same real-world transaction appears under two
     different source_types with two different bronze_source_keys, so the
     usual bronze_source_key-based dedup (`_dedupe_with_existing`) can't
     catch it, since that key differs by construction across adapters.
@@ -522,10 +522,10 @@ def _dedupe_natwest_cross_format(df: pd.DataFrame) -> pd.DataFrame:
     (e.g. "KROO ACCOUNT Mobile/Online Transaction" vs "OnLine Transaction
     KROO ACCOUNT SALARY VIA MOBILE - PYMT FP ..."), so it isn't usable as a
     matching key. Prefers keeping the natwest-statement row (carries real
-    balance data) over the natwest-pdf one. Uses count-based (multiset)
-    removal, not a blanket drop-duplicates, so genuinely repeated same-day/
-    same-amount transactions within a single format aren't mistakenly
-    dropped.
+    balance data) over the natwest-transactions one. Uses count-based
+    (multiset) removal, not a blanket drop-duplicates, so genuinely repeated
+    same-day/same-amount transactions within a single format aren't
+    mistakenly dropped.
     """
     is_cross_format = df["source_type"].isin(_NATWEST_CROSS_FORMAT_TYPES)
     if not is_cross_format.any():
@@ -534,7 +534,7 @@ def _dedupe_natwest_cross_format(df: pd.DataFrame) -> pd.DataFrame:
     subset = df[is_cross_format]
     rest = df[~is_cross_format]
 
-    pdf_rows = subset[subset["source_type"] == "natwest-pdf"]
+    pdf_rows = subset[subset["source_type"] == "natwest-transactions"]
     statement_rows = subset[subset["source_type"] == "natwest-statement"]
 
     key_cols = ["account_id", "transaction_date", "amount"]

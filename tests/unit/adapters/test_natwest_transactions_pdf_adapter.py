@@ -1,10 +1,11 @@
-"""Tests for Natwest PDF adapter."""
+"""Tests for the Natwest online "Transactions" export PDF adapter (not the
+quarterly Statement - see test_natwest_statement_pdf_adapter.py for that)."""
 
 from datetime import datetime
 
 import pytest
 
-from adapters.natwest_pdf_adapter import NatwestPdfAdapter
+from adapters.natwest_transactions_pdf_adapter import NatwestTransactionsPdfAdapter
 
 SAMPLE_TEXT = """NatWest
 Account details
@@ -53,10 +54,10 @@ Downloaded from the NatWest online transactions service.
 
 @pytest.fixture
 def adapter():
-    return NatwestPdfAdapter()
+    return NatwestTransactionsPdfAdapter()
 
 
-class TestNatwestPdfValidation:
+class TestNatwestTransactionsValidation:
     def test_validates_natwest_statement(self, adapter):
         assert adapter.validate_text(SAMPLE_TEXT)
 
@@ -64,7 +65,7 @@ class TestNatwestPdfValidation:
         assert not adapter.validate_text("Some other bank statement")
 
 
-class TestNatwestPdfIdentifierExtraction:
+class TestNatwestTransactionsIdentifierExtraction:
     def test_extracts_masked_account_and_sort_code(self, adapter):
         assert adapter._extract_account_identifier(SAMPLE_TEXT) == "*****123_12-34-56"
 
@@ -72,7 +73,7 @@ class TestNatwestPdfIdentifierExtraction:
         assert adapter._extract_account_identifier("no identifying info") is None
 
 
-class TestNatwestPdfParsing:
+class TestNatwestTransactionsParsing:
     def test_parses_transactions_and_stamps_identifier(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         assert len(txns) == 2
@@ -86,10 +87,10 @@ class TestNatwestPdfParsing:
         assert credit["amount"] == 1000.00
 
     def test_detect_source_type(self, adapter):
-        assert adapter.detect_source_type() == "natwest-pdf"
+        assert adapter.detect_source_type() == "natwest-transactions"
 
 
-class TestNatwestPdfStatementPeriod:
+class TestNatwestTransactionsStatementPeriod:
     def test_extracts_period(self, adapter):
         period = adapter._extract_statement_period(SAMPLE_TEXT_WITH_PERIOD)
         assert period == (datetime(2026, 1, 1), datetime(2026, 5, 31))
