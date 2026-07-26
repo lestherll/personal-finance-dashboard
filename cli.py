@@ -27,6 +27,7 @@ from transformers.account_config import (
     register_account,
     register_source_type_fallback,
 )
+from transformers.balance import get_net_worth_breakdown
 from transformers.coverage import find_coverage_gaps, find_statement_periods
 from transformers.reconciliation_status import find_reconciliation_status
 
@@ -219,7 +220,7 @@ def coverage():
     if periods.empty:
         click.echo(
             "No statement-period data found yet (PDF sources track periods; "
-            "CSV sources - monzo, natwest, vanguard - don't print one)."
+            "CSV sources - monzo - don't print one)."
         )
         return
 
@@ -249,8 +250,8 @@ def reconciliation():
     if statuses.empty:
         click.echo(
             "No reconciliation data found yet (only amex, firstdirect, kroo, "
-            "natwest-statement, chase, and monzo-flex sources self-check a "
-            "balance anchor)."
+            "natwest-statement, chase, monzo-flex, and monzo-pdf sources "
+            "self-check a balance anchor)."
         )
         return
 
@@ -266,6 +267,24 @@ def reconciliation():
                     f"  ⚠ {row.filename}: mismatch - derived £{row.derived_closing:.2f} "
                     f"vs printed £{row.expected_closing:.2f}"
                 )
+
+@accounts.command("breakdown")
+def get_breakdown():
+    dl = get_datalake()
+    breakdown = get_net_worth_breakdown(dl)
+
+    import pandas as pd
+    import numpy as np
+
+    pd.set_option("display.max_rows", None)
+    pd.set_option("display.max_columns", None)
+
+    click.echo(breakdown[["account_id", "as_of_date", "contribution_to_net_worth"]])
+
+    click.echo("\nTotal contribution to net worth:")
+    #click.echo(breakdown[["contribution_to_net_worth"]].aggregate({"contribution_to_net_worth": np.sum}, axis=0))
+    click.echo(f"£{breakdown[["contribution_to_net_worth"]].sum().values[0]}")
+
 
 
 if __name__ == "__main__":
