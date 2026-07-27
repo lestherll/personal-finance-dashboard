@@ -313,7 +313,6 @@ def get_breakdown():
     breakdown = get_net_worth_breakdown(dl)
 
     import pandas as pd
-    import numpy as np
 
     pd.set_option("display.max_rows", None)
     pd.set_option("display.max_columns", None)

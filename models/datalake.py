@@ -75,8 +75,8 @@ class DataLake:
         # Add metadata columns
         # `source_key` is a legacy semantic fingerprint. It is useful for
         # diagnosis/matching but not stable enough to identify Bronze rows.
-        df["legacy_source_key"] = df.get("source_key", "")
-        df["bronze_source_key"] = df["legacy_source_key"]
+        df["legacy_transaction_fingerprint"] = df.get("source_key", "")
+        df["bronze_source_key"] = df["legacy_transaction_fingerprint"]
         if "bronze_record_id" not in df.columns:
             df["bronze_record_id"] = [
                 make_bronze_record_id(

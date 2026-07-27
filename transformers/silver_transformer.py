@@ -25,6 +25,7 @@ from transformers.account_config import (
     find_unmapped_accounts,
     get_account_id,
 )
+from transformers.matching import match_transactions
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,13 @@ def _infer_dated_with_year(
     return min(candidates)
 
 
+def _str_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    return s or None
+
+
 def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     is_search_format = "id" in raw and "created" in raw
     if is_search_format:
@@ -129,6 +137,7 @@ def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
         amount = float(raw.get("amount") or 0)
         currency = raw.get("currency") or "GBP"
         category = raw.get("categories")
+        bank_transaction_id = _str_or_none(raw.get("id"))
     else:
         date_str = raw.get("Date", "")
         time_str = raw.get("Time", "")
@@ -139,12 +148,14 @@ def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
         amount = float(raw.get("Amount") or 0)
         currency = raw.get("Currency") or "GBP"
         category = raw.get("Category")
+        bank_transaction_id = _str_or_none(raw.get("Transaction ID"))
     return {
         "transaction_date": transaction_date,
         "description": description,
         "amount": amount,
         "currency": currency,
         "category": category,
+        "bank_transaction_id": bank_transaction_id,
     }
 
 
@@ -158,6 +169,7 @@ def _normalize_pdf_full_month_year(
         "amount": float(raw.get("amount") or 0),
         "currency": "GBP",
         "category": None,
+        "bank_transaction_id": None,
     }
 
 
@@ -184,6 +196,7 @@ def _normalize_pdf_no_year(raw: Dict[str, Any], reference: Any) -> Dict[str, Any
         "amount": float(raw.get("amount") or 0),
         "currency": "GBP",
         "category": None,
+        "bank_transaction_id": None,
     }
 
 
@@ -195,6 +208,7 @@ def _normalize_pdf_short_year(raw: Dict[str, Any], reference: Any) -> Dict[str, 
         "amount": float(raw.get("amount") or 0),
         "currency": "GBP",
         "category": None,
+        "bank_transaction_id": None,
     }
 
 
@@ -206,6 +220,7 @@ def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, 
         "amount": float(raw.get("amount") or 0),
         "currency": "GBP",
         "category": None,
+        "bank_transaction_id": None,
     }
 
 
@@ -359,6 +374,7 @@ _LEDGER_NORMALIZERS = {
 
 _TRANSACTIONS_COLUMNS = [
     "bronze_record_id",
+    "silver_transaction_id",
     "bronze_source_key",
     "source_type",
     "account_id",
@@ -367,6 +383,7 @@ _TRANSACTIONS_COLUMNS = [
     "amount",
     "currency",
     "category",
+    "bank_transaction_id",
     "ingested_at",
     "upload_timestamp",
     "statement_period_to",
@@ -415,6 +432,14 @@ _PLAN_IT_INSTALMENTS_COLUMNS = [
     "as_of_date",
 ]
 
+_TRANSACTION_SOURCES_COLUMNS = [
+    "silver_transaction_id",
+    "bronze_record_id",
+    "ingestion_id",
+    "source_type",
+    "match_policy",
+]
+
 
 class SilverTransformer:
     """Normalizes Bronze RawRecord data into common Silver schemas."""
@@ -454,6 +479,7 @@ class SilverTransformer:
                         "bronze_record_id": bronze_row.get("bronze_record_id")
                         or bronze_row.get("bronze_source_key"),
                         "bronze_source_key": bronze_row.get("bronze_source_key"),
+                        "ingestion_id": bronze_row.get("ingestion_id"),
                         "source_type": source_type,
                         "account_id": account_id,
                         "ingested_at": pd.Timestamp.now(),
@@ -465,12 +491,13 @@ class SilverTransformer:
                 )
 
         if not rows:
-            return pd.DataFrame(columns=_TRANSACTIONS_COLUMNS)
+            return pd.DataFrame(columns=_TRANSACTIONS_COLUMNS), pd.DataFrame(
+                columns=_TRANSACTION_SOURCES_COLUMNS
+            )
 
         result = pd.DataFrame(rows)
         result["transaction_date"] = pd.to_datetime(result["transaction_date"])
-        result = _dedupe_natwest_cross_format(result)
-        return result
+        return match_transactions(result)
 
     def normalize_holdings(
         self, bronze_frames: Dict[str, pd.DataFrame]
@@ -590,75 +617,6 @@ class SilverTransformer:
         return result
 
 
-_NATWEST_CROSS_FORMAT_TYPES = {"natwest-transactions", "natwest-statement"}
-
-
-def _dedupe_natwest_cross_format(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop duplicate transactions between the two Natwest PDF formats.
-
-    "natwest-transactions" (the on-demand online "Transactions" export - see
-    adapters/natwest_transactions_pdf_adapter.py's module docstring for why
-    it exists alongside the Statement) and "natwest-statement" (the
-    quarterly Statement PDF) can cover overlapping date ranges - if a user
-    uploads both, the same real-world transaction appears under two
-    different source_types with two different bronze_source_keys, so the
-    usual bronze_source_key-based dedup (`_dedupe_with_existing`) can't
-    catch it, since that key differs by construction across adapters.
-
-    Matched by (account_id, transaction_date, amount) - description text
-    differs materially between the two formats for the same transaction
-    (e.g. "KROO ACCOUNT Mobile/Online Transaction" vs "OnLine Transaction
-    KROO ACCOUNT SALARY VIA MOBILE - PYMT FP ..."), so it isn't usable as a
-    matching key. Prefers keeping the natwest-statement row (carries real
-    balance data) over the natwest-transactions one. Uses count-based
-    (multiset) removal, not a blanket drop-duplicates, so genuinely repeated
-    same-day/same-amount transactions within a single format aren't
-    mistakenly dropped.
-    """
-    is_cross_format = df["source_type"].isin(_NATWEST_CROSS_FORMAT_TYPES)
-    if not is_cross_format.any():
-        return df
-
-    subset = df[is_cross_format]
-    rest = df[~is_cross_format]
-
-    pdf_rows = subset[subset["source_type"] == "natwest-transactions"]
-    statement_rows = subset[subset["source_type"] == "natwest-statement"]
-
-    key_cols = ["account_id", "transaction_date", "amount"]
-    remaining_statement_matches = dict(statement_rows.groupby(key_cols).size())
-
-    drop_indices = []
-    for idx, row in pdf_rows.iterrows():
-        key = (row["account_id"], row["transaction_date"], row["amount"])
-        if remaining_statement_matches.get(key, 0) > 0:
-            drop_indices.append(idx)
-            remaining_statement_matches[key] -= 1
-
-    deduped_pdf_rows = pdf_rows.drop(index=drop_indices)
-
-    return pd.concat(
-        [rest, deduped_pdf_rows, statement_rows], ignore_index=False
-    ).sort_index()
-
-
-def _dedupe_with_existing(
-    datalake: DataLake, entity_type: str, new_df: pd.DataFrame, key_columns: List[str]
-) -> pd.DataFrame:
-    """Merge freshly computed rows with existing Silver data, keeping the newest."""
-    existing = datalake.read_silver(entity_type)
-    if existing is None or existing.empty:
-        combined = new_df
-    else:
-        combined = pd.concat([existing, new_df], ignore_index=True)
-
-    if combined.empty:
-        return combined
-    return combined.drop_duplicates(subset=key_columns, keep="last").reset_index(
-        drop=True
-    )
-
-
 def run_bronze_to_silver(
     datalake: Optional[DataLake] = None,
 ) -> Dict[str, pd.DataFrame]:
@@ -682,7 +640,7 @@ def run_bronze_to_silver(
     bronze_frames = transformer._read_bronze_frames()
 
     accounts_df = build_accounts_table()
-    transactions_df = transformer.normalize_transactions(bronze_frames)
+    transactions_df, sources_df = transformer.normalize_transactions(bronze_frames)
     holdings_df = transformer.normalize_holdings(bronze_frames)
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     plan_it_df = transformer.normalize_plan_it_instalments(bronze_frames)
@@ -692,23 +650,26 @@ def run_bronze_to_silver(
 
     datalake.write_silver("accounts", accounts_df)
     datalake.write_silver("transactions", transactions_df)
+    datalake.write_silver("transaction_sources", sources_df)
     datalake.write_silver("holdings", holdings_df)
     datalake.write_silver("account_ledger", ledger_df)
     datalake.write_silver("plan_it_instalments", plan_it_df)
 
     logger.info(
         "Bronze->Silver complete: %d accounts, %d transactions, %d holdings, "
-        "%d ledger entries, %d plan-it instalments",
+        "%d ledger entries, %d plan-it instalments, %d provenance rows",
         len(accounts_df),
         len(transactions_df),
         len(holdings_df),
         len(ledger_df),
         len(plan_it_df),
+        len(sources_df),
     )
 
     return {
         "accounts": accounts_df,
         "transactions": transactions_df,
+        "transaction_sources": sources_df,
         "holdings": holdings_df,
         "account_ledger": ledger_df,
         "plan_it_instalments": plan_it_df,

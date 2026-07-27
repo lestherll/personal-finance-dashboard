@@ -6,8 +6,6 @@ import pytest
 from transformers.account_config import get_account_id
 from transformers.silver_transformer import (
     SilverTransformer,
-    _dedupe_natwest_cross_format,
-    _dedupe_with_existing,
 )
 
 # Real (test-only) entries so get_account_id resolves without hitting the fallback.
@@ -78,7 +76,7 @@ class TestNormalizeTransactionsMonzo:
             "Currency": "GBP",
             "Category": "Groceries",
         }
-        df = transformer.normalize_transactions(
+        df, _ = transformer.normalize_transactions(
             {"monzo": _bronze_frame("monzo", [raw])}
         )
 
@@ -103,7 +101,7 @@ class TestNormalizeTransactionsMonzo:
             "currency": "GBP",
             "categories": "groceries",
         }
-        df = transformer.normalize_transactions(
+        df, _ = transformer.normalize_transactions(
             {"monzo": _bronze_frame("monzo", [raw])}
         )
 
@@ -119,7 +117,7 @@ class TestNormalizeTransactionsPdfSources:
     def test_kroo_full_date_and_identifier(self, transformer):
         raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount": -4.50}
         bronze = _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)
-        df = transformer.normalize_transactions({"kroo": bronze})
+        df, _ = transformer.normalize_transactions({"kroo": bronze})
 
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_KROO_ID, "kroo")
@@ -134,7 +132,7 @@ class TestNormalizeTransactionsPdfSources:
             upload_timestamp=pd.Timestamp("2026-02-01"),
             account_identifier=_NATWEST_ID,
         )
-        df = transformer.normalize_transactions({"natwest-transactions": bronze})
+        df, _ = transformer.normalize_transactions({"natwest-transactions": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-01-15")
@@ -153,7 +151,7 @@ class TestNormalizeTransactionsPdfSources:
             upload_timestamp=pd.Timestamp("2026-05-13"),
             account_identifier=_NATWEST_ID,
         )
-        df = transformer.normalize_transactions({"natwest-statement": bronze})
+        df, _ = transformer.normalize_transactions({"natwest-statement": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-02-26")
@@ -168,7 +166,7 @@ class TestNormalizeTransactionsPdfSources:
             upload_timestamp=pd.Timestamp("2026-05-10"),
             account_identifier=_AMEX_ID,
         )
-        df = transformer.normalize_transactions({"amex": bronze})
+        df, _ = transformer.normalize_transactions({"amex": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-04-28")
@@ -182,7 +180,7 @@ class TestNormalizeTransactionsPdfSources:
             upload_timestamp=pd.Timestamp("2026-01-05"),
             account_identifier=_AMEX_ID,
         )
-        df = transformer.normalize_transactions({"amex": bronze})
+        df, _ = transformer.normalize_transactions({"amex": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2025-12-20")
@@ -199,7 +197,7 @@ class TestNormalizeTransactionsPdfSources:
             upload_timestamp=pd.Timestamp("2026-05-10"),  # deliberately wrong year
             account_identifier=_AMEX_ID,
         )
-        df = transformer.normalize_transactions({"amex": bronze})
+        df, _ = transformer.normalize_transactions({"amex": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2024-04-28")
@@ -233,7 +231,7 @@ class TestNormalizeTransactionsPdfSources:
         bronze_2026["bronze_source_key"] = key_2026
         combined = pd.concat([bronze_2025, bronze_2026], ignore_index=True)
 
-        df = transformer.normalize_transactions({"amex": combined})
+        df, _ = transformer.normalize_transactions({"amex": combined})
         df = df.drop_duplicates(subset=["bronze_source_key"], keep="last")
 
         assert len(df) == 2
@@ -245,7 +243,7 @@ class TestNormalizeTransactionsPdfSources:
     def test_first_direct_two_digit_year(self, transformer):
         raw = {"date": "15 Jan 24", "description": "Restaurant", "amount": -30.0}
         bronze = _bronze_frame("firstdirect", [raw], account_identifier=_FIRSTDIRECT_ID)
-        df = transformer.normalize_transactions({"firstdirect": bronze})
+        df, _ = transformer.normalize_transactions({"firstdirect": bronze})
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2024-01-15")
@@ -255,7 +253,7 @@ class TestNormalizeTransactionsPdfSources:
         bronze = _bronze_frame(
             "vanguard-pdf", [raw], account_identifier=_VANGUARD_ISA_ID
         )
-        df = transformer.normalize_transactions({"vanguard-pdf": bronze})
+        df, _ = transformer.normalize_transactions({"vanguard-pdf": bronze})
 
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_VANGUARD_ISA_ID, "vanguard-pdf")
@@ -268,7 +266,7 @@ class TestNormalizeTransactionsPdfSources:
             "amount": -100.0,
         }
         bronze = _bronze_frame("monzo-pdf", [raw], account_identifier=_MONZO_PDF_ID)
-        df = transformer.normalize_transactions({"monzo-pdf": bronze})
+        df, _ = transformer.normalize_transactions({"monzo-pdf": bronze})
 
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_MONZO_PDF_ID, "monzo-pdf")
@@ -291,13 +289,13 @@ class TestNormalizeTransactionsPdfSources:
             account_identifier=_VANGUARD_ISA_ID,
             record_type="holding",
         )
-        df = transformer.normalize_transactions({"vanguard-pdf": bronze})
+        df, _ = transformer.normalize_transactions({"vanguard-pdf": bronze})
         assert df.empty
 
 
 class TestNormalizeTransactionsEmpty:
     def test_no_bronze_data_returns_empty_frame_with_schema(self, transformer):
-        df = transformer.normalize_transactions({})
+        df, _ = transformer.normalize_transactions({})
         assert df.empty
         assert "bronze_source_key" in df.columns
         assert "transaction_date" in df.columns
@@ -768,145 +766,3 @@ class TestNormalizeAccountLedger:
         assert first["line_number"] == 5
         assert second["line_number"] == 1
 
-
-class TestDedupeNatwestCrossFormat:
-    """natwest-transactions (online export) and natwest-statement (quarterly PDF) can
-    describe the same real transaction if both get uploaded for overlapping
-    periods - matched by (account_id, transaction_date, amount), not
-    bronze_source_key, which differs by construction across the two."""
-
-    def test_drops_matching_pdf_row_keeps_statement_row(self):
-        df = pd.DataFrame(
-            [
-                {
-                    "source_type": "natwest-transactions",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-02-26"),
-                    "amount": 2728.54,
-                    "description": "3305 JPMCB Automated Credit",
-                },
-                {
-                    "source_type": "natwest-statement",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-02-26"),
-                    "amount": 2728.54,
-                    "description": "Automated Credit 3305 JPMCB",
-                },
-            ]
-        )
-        result = _dedupe_natwest_cross_format(df)
-        assert len(result) == 1
-        assert result.iloc[0]["source_type"] == "natwest-statement"
-
-    def test_unmatched_pdf_row_kept(self):
-        df = pd.DataFrame(
-            [
-                {
-                    "source_type": "natwest-transactions",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-06-15"),
-                    "amount": -50.0,
-                    "description": "No statement coverage for this date",
-                },
-            ]
-        )
-        result = _dedupe_natwest_cross_format(df)
-        assert len(result) == 1
-        assert result.iloc[0]["source_type"] == "natwest-transactions"
-
-    def test_other_source_types_untouched(self):
-        df = pd.DataFrame(
-            [
-                {
-                    "source_type": "kroo",
-                    "account_id": "acc2",
-                    "transaction_date": pd.Timestamp("2026-02-26"),
-                    "amount": 2728.54,
-                    "description": "unrelated source_type",
-                },
-            ]
-        )
-        result = _dedupe_natwest_cross_format(df)
-        assert len(result) == 1
-
-    def test_count_based_removal_preserves_genuine_repeats(self):
-        """Two identical same-day/same-amount pdf rows with only one statement
-        match should only drop one of them, not both."""
-        df = pd.DataFrame(
-            [
-                {
-                    "source_type": "natwest-transactions",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-03-01"),
-                    "amount": 10.0,
-                    "description": "first",
-                },
-                {
-                    "source_type": "natwest-transactions",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-03-01"),
-                    "amount": 10.0,
-                    "description": "second",
-                },
-                {
-                    "source_type": "natwest-statement",
-                    "account_id": "acc1",
-                    "transaction_date": pd.Timestamp("2026-03-01"),
-                    "amount": 10.0,
-                    "description": "statement version",
-                },
-            ]
-        )
-        result = _dedupe_natwest_cross_format(df)
-        assert len(result) == 2
-        assert (result["source_type"] == "natwest-transactions").sum() == 1
-        assert (result["source_type"] == "natwest-statement").sum() == 1
-
-
-class _FakeDatalake:
-    """Minimal stand-in exposing only what _dedupe_with_existing needs."""
-
-    def __init__(self, existing=None):
-        self._existing = existing
-
-    def read_silver(self, entity_type):
-        return self._existing
-
-
-class TestDedupeWithExisting:
-    def test_merges_new_rows_with_existing(self):
-        existing = pd.DataFrame([{"bronze_source_key": "a", "amount": 1.0}])
-        new_df = pd.DataFrame(
-            [
-                {"bronze_source_key": "a", "amount": 1.0},
-                {"bronze_source_key": "b", "amount": 2.0},
-            ]
-        )
-        result = _dedupe_with_existing(
-            _FakeDatalake(existing), "transactions", new_df, ["bronze_source_key"]
-        )
-        assert len(result) == 2
-        assert set(result["bronze_source_key"]) == {"a", "b"}
-
-    def test_no_prior_silver_data(self):
-        new_df = pd.DataFrame([{"bronze_source_key": "a", "amount": 1.0}])
-        result = _dedupe_with_existing(
-            _FakeDatalake(None), "transactions", new_df, ["bronze_source_key"]
-        )
-        assert len(result) == 1
-
-    def test_rerun_with_unchanged_data_does_not_duplicate(self):
-        """Idempotency: running twice on the same Bronze data shouldn't grow the table."""
-        new_df = pd.DataFrame(
-            [
-                {"bronze_source_key": "a", "amount": 1.0},
-                {"bronze_source_key": "b", "amount": 2.0},
-            ]
-        )
-        first_run = _dedupe_with_existing(
-            _FakeDatalake(None), "transactions", new_df, ["bronze_source_key"]
-        )
-        second_run = _dedupe_with_existing(
-            _FakeDatalake(first_run), "transactions", new_df, ["bronze_source_key"]
-        )
-        assert len(second_run) == 2
