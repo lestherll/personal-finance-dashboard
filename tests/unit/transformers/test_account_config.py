@@ -6,10 +6,12 @@ the real data/account_map.json.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
+from transformers import account_config
 from transformers.account_config import (
     UnmappedAccountsError,
     build_accounts_table,
@@ -277,6 +279,29 @@ class TestFindUnmappedAccounts:
         result = find_unmapped_accounts(datalake, path=path)
         assert result.empty
 
+    def test_bronze_frames_bypasses_datalake_read(self, tmp_path):
+        """Passing bronze_frames must not touch datalake.read_bronze at all
+        (P2.2b) - same result as the datalake-driven path above."""
+        path = tmp_path / "account_map.json"
+        path.write_text(json.dumps({"identifiers": {}, "source_type_fallback": {}}))
+
+        bronze_df = pd.DataFrame(
+            [_bronze_row("brand_new_hash", {"description": "Test Merchant"})]
+        )
+        mock_dl = MagicMock()
+        mock_dl.read_bronze.side_effect = AssertionError(
+            "read_bronze should not be called when bronze_frames is provided"
+        )
+
+        result = find_unmapped_accounts(
+            mock_dl, path=path, bronze_frames={"kroo": bronze_df}
+        )
+
+        mock_dl.read_bronze.assert_not_called()
+        assert len(result) == 1
+        assert result.iloc[0]["source_type"] == "kroo"
+        assert result.iloc[0]["account_identifier"] == "brand_new_hash"
+
 
 class TestUnmappedAccountsError:
     def test_message_includes_registration_hint_and_details(self):
@@ -297,3 +322,60 @@ class TestUnmappedAccountsError:
         assert "kroo" in message
         assert "brand_new_hash" in message
         assert "3 records" in message
+
+
+class TestAccountMapCaching:
+    def test_repeated_lookups_read_disk_once(self, tmp_path, monkeypatch):
+        path = tmp_path / "account_map.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "identifiers": {
+                        "h1": {
+                            "account_id": "acc_1",
+                            "display_name": "A",
+                            "account_type": "current",
+                        }
+                    },
+                    "source_type_fallback": {},
+                }
+            )
+        )
+        spy = MagicMock(wraps=account_config._read_account_map_file)
+        monkeypatch.setattr(account_config, "_read_account_map_file", spy)
+
+        for _ in range(10):
+            assert get_account_id("h1", "kroo", path=path) == "acc_1"
+
+        assert spy.call_count == 1
+
+    def test_registration_visible_immediately_no_stale_cache(self, tmp_path):
+        path = tmp_path / "account_map.json"
+        with pytest.raises(KeyError):
+            get_account_id("h2", "kroo", path=path)  # primes the empty-map cache entry
+
+        register_account("h2", "acc_2", "Account 2", "current", path=path)
+
+        assert get_account_id("h2", "kroo", path=path) == "acc_2"
+
+    def test_failed_registration_does_not_poison_cache(self, tmp_path, monkeypatch):
+        """register_account used to mutate the cached config dict itself and
+        only then write it - so a write that failed halfway left the cache
+        serving an account that was never persisted, for the rest of the
+        process. Registration must copy first, so a failed write changes
+        nothing."""
+        path = tmp_path / "account_map.json"
+        with pytest.raises(KeyError):
+            get_account_id("h3", "kroo", path=path)  # primes the empty-map cache entry
+
+        def _failing_write(config, path):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(account_config, "_write", _failing_write)
+        with pytest.raises(OSError, match="disk full"):
+            register_account("h3", "acc_3", "Account 3", "current", path=path)
+        monkeypatch.undo()
+
+        # The cache must still serve the pre-registration (empty) map.
+        with pytest.raises(KeyError):
+            get_account_id("h3", "kroo", path=path)

@@ -1,6 +1,7 @@
 """Tests for transformers/coverage.py (statement-period coverage tracking)."""
 
 import json
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -28,7 +29,8 @@ def _account_map_path(tmp_path, identifiers=None):
 def _bronze_row(account_identifier, filename, period_from, period_to):
     return {
         "account_identifier": account_identifier,
-        "filename": filename, "ingestion_id": filename,
+        "filename": filename,
+        "ingestion_id": filename,
         "statement_period_from": period_from,
         "statement_period_to": period_to,
     }
@@ -184,6 +186,42 @@ class TestFindStatementPeriods:
 
         result = find_statement_periods(datalake, path=path)
         assert result.empty
+
+    def test_bronze_frames_bypasses_datalake_read(self, tmp_path):
+        """Passing bronze_frames must not touch datalake.read_bronze at all
+        (P2.2b) - same result as the datalake-driven path above."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_amex": {
+                    "account_id": "acc_amex",
+                    "display_name": "Amex",
+                    "account_type": "credit",
+                }
+            },
+        )
+        bronze_df = pd.DataFrame(
+            [
+                _bronze_row(
+                    "hash_amex",
+                    "jan.pdf",
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-31"),
+                )
+            ]
+        )
+        mock_dl = MagicMock()
+        mock_dl.read_bronze.side_effect = AssertionError(
+            "read_bronze should not be called when bronze_frames is provided"
+        )
+
+        result = find_statement_periods(
+            mock_dl, path=path, bronze_frames={"amex": bronze_df}
+        )
+
+        mock_dl.read_bronze.assert_not_called()
+        assert len(result) == 1
+        assert result.iloc[0]["account_id"] == "acc_amex"
 
 
 class TestFindCoverageGaps:

@@ -3,9 +3,21 @@
 Two-tier policy: same-source dedup uses a full content fingerprint (account,
 date, amount, normalized description, occurrence); declared cross-source pairs
 match on a looser key (account, date, amount) with a stated preference for one
-source over the other. Bank-provided transaction IDs (e.g. Monzo CSV's "id")
-outrank both when available - a match on (account, bank_txn_id) is
-unambiguous.
+source over the other.
+
+There is deliberately **no** bank-transaction-id tier. An earlier version of
+this docstring claimed one ("bank-provided IDs outrank both"), but the code
+never implemented it - `_bank_txn_id` was assigned and then dropped unused.
+It has been removed rather than built out, because the only source that
+carries a genuine bank-issued id is the Monzo CSV export, which is
+effectively unused in practice; every PDF source has no such id and never
+will. Synthesising one at parse time would not restore the tier's value:
+what earns a bank id top rank is being stable across *different files*
+containing the same transaction, and any id derived from parsed content is
+just a content fingerprint - which this module already computes, more
+faithfully than an adapter-level key can (see
+adapters/base.py::make_transaction_source_key). If a real bank-issued id
+ever arrives (Open Banking), add the tier here then.
 
 Designed after the plan doc's "explicit, traceable cross-file matching
 policy" - the Natwest Transactions/Statement pair is the canonical
@@ -18,7 +30,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -31,10 +43,7 @@ def _normalize_description(desc: str) -> str:
     characters to a single space, strip leading/trailing whitespace."""
 
     canonical = (
-        desc.upper()
-        .replace("£", "")
-        .replace("'LL", " WILL")
-        .replace("N'T", " NOT")
+        desc.upper().replace("£", "").replace("'LL", " WILL").replace("N'T", " NOT")
     )
     canonical = re.sub(r"[^A-Z0-9\s]", " ", canonical)
     return re.sub(r"\s+", " ", canonical).strip()
@@ -43,15 +52,29 @@ def _normalize_description(desc: str) -> str:
 def _compute_fingerprint(
     account_id: str, date: str, amount_minor: int, description: str
 ) -> str:
-    """Deterministic content fingerprint for same-source dedup."""
+    """Deterministic content fingerprint for same-source dedup.
+
+    Deliberately excludes source_type: it is a *content* hash. Scoping by
+    source happens in the grouping keys and, for the canonical id, in
+    _silver_id below."""
     normalized = _normalize_description(description)
     material = f"{account_id}|{date}|{amount_minor}|{normalized}".encode()
     return hashlib.sha256(material).hexdigest()
 
 
-def _loose_key(account_id: str, date: str, amount_minor: int) -> Tuple[str, str, int]:
-    """Cross-source match key: account + date + amount (no description)."""
-    return (account_id, date, amount_minor)
+def _silver_id(source_type: str, fingerprint: str, occurrence) -> str:
+    """Canonical silver_transaction_id, scoped by source_type.
+
+    Occurrence numbers are assigned per (source_type, fingerprint) group,
+    so a bare `fingerprint_occurrence` id collides whenever two source
+    types produce identical normalized content for the same account - the
+    Monzo CSV x Monzo PDF overlap is the real case (both map to one
+    account_id, and no cross-source policy pairs them). Two distinct
+    canonical rows sharing one id makes the transactions table's primary
+    key non-unique and turns every join on it into a fan-out, so the
+    source_type is folded in here, at the single place ids are minted.
+    """
+    return f"{source_type}:{fingerprint}_{occurrence}"
 
 
 # Declared cross-source pairs with explicit match policy.
@@ -87,13 +110,10 @@ def match_transactions(
 
     df = transactions.copy()
 
-    # 1. Extract bank-provided transaction IDs from raw_data if present.
-    df["_bank_txn_id"] = None
-    if "bank_transaction_id" in df.columns:
-        df["_bank_txn_id"] = df["bank_transaction_id"]
-
-    # 2. Same-source fingerprint (source_type included so different banks
-    #    with the same description/amount don't collide).
+    # 1. Same-source content fingerprint. source_type is NOT part of the
+    #    hash - it scopes the grouping below and the canonical id (see
+    #    _silver_id), so different banks with the same description/amount
+    #    never merge.
     df["_fingerprint"] = [
         _compute_fingerprint(
             row.account_id,
@@ -104,17 +124,15 @@ def match_transactions(
         for row in df.itertuples()
     ]
 
-    # 3. Assign occurrence numbers within each (source_type, fingerprint)
+    # 2. Assign occurrence numbers within each (source_type, fingerprint)
     #    group. Sorting by (statement_period_to, upload_timestamp, line_number)
     #    gives a stable, sensible order in which to number occurrences.
     sort_key = df["statement_period_to"].fillna(df["upload_timestamp"])
     df["_sort_key"] = sort_key
     df = df.sort_values(["_sort_key", "line_number"]).reset_index(drop=True)
-    df["_occurrence"] = df.groupby(
-        ["source_type", "_fingerprint"]
-    ).cumcount() + 1
+    df["_occurrence"] = df.groupby(["source_type", "_fingerprint"]).cumcount() + 1
 
-    # 4. Canonicalize: for each (source_type, fingerprint, occurrence), keep
+    # 3. Canonicalize: for each (source_type, fingerprint, occurrence), keep
     #    the row with the most complete data and record all bronze_record_ids
     #    it absorbed.
     #    Drop duplicates within the same source_type + fingerprint +
@@ -140,7 +158,10 @@ def match_transactions(
         )
         canonical = group_sorted.iloc[0].to_dict()
 
-        silver_id = group.name[1]  # _fingerprint from group key
+        # Stable canonical id: source_type + fingerprint + occurrence, so
+        # two genuinely distinct same-day/same-amount/same-merchant repeats
+        # - from one source or two - get unique ids.
+        silver_id = _silver_id(group.name[0], group.name[1], group.name[2])
         for bi, ii in zip(bronze_ids, ingestion_ids):
             provenance_rows.append(
                 {
@@ -152,17 +173,15 @@ def match_transactions(
                 }
             )
 
-        canonical["_fingerprint"] = silver_id
+        canonical["_fingerprint"] = group.name[1]
         canonical["_occurrence"] = group.name[2]
         canonical["source_type"] = source_type
         return pd.DataFrame([canonical])
 
     grouped = df.groupby(group_cols, group_keys=False)
-    canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(
-        drop=True
-    )
+    canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(drop=True)
 
-    # 5. Cross-source dedup for declared policy pairs.
+    # 4. Cross-source dedup for declared policy pairs.
     #    A row from the non-preferred source that has a matching loose-key
     #    row in the preferred source is dropped - but only to the extent of
     #    the multiset count in the preferred source (genuine repeats
@@ -173,10 +192,19 @@ def match_transactions(
             canonical, pair_set, key_cols, prefer_source, provenance_rows
         )
 
-    # 6. Clean up internal columns.
-    canonical["silver_transaction_id"] = canonical["_fingerprint"]
+    # 5. Clean up internal columns. Mint ids through the same helper the
+    #    provenance/dedup steps used, so every id in both output frames is
+    #    built identically by construction.
+    canonical["silver_transaction_id"] = [
+        _silver_id(st, fp, occ)
+        for st, fp, occ in zip(
+            canonical["source_type"],
+            canonical["_fingerprint"],
+            canonical["_occurrence"],
+        )
+    ]
     canonical = canonical.drop(
-        columns=["_fingerprint", "_occurrence", "_sort_key", "_bank_txn_id"],
+        columns=["_fingerprint", "_occurrence", "_sort_key"],
         errors="ignore",
     )
 
@@ -203,32 +231,52 @@ def _dedupe_cross_source(
     preferred = subset[subset["source_type"] == prefer_source]
     non_preferred = subset[subset["source_type"] != prefer_source]
 
-    # Count occurrences of each loose key in the preferred source.
-    preferred_counts: Dict[Tuple, int] = dict(
-        preferred.groupby(key_cols).size()
-    )
+    # Map each loose key to the list of preferred survivor ids. We pop ids
+    # as non-preferred rows are absorbed so provenance points at the actual
+    # canonical row that subsumed the Bronze row (not the absorbed row's own
+    # id, which would be dangling after it is dropped).
+    preferred_ids: Dict[Tuple, List[str]] = {}
+    for _, row in preferred.iterrows():
+        key = tuple(row[col] for col in key_cols)
+        survivor_id = _silver_id(
+            row["source_type"], row["_fingerprint"], row["_occurrence"]
+        )
+        preferred_ids.setdefault(key, []).append(survivor_id)
+
+    # Index existing provenance rows by silver_transaction_id, once, so the
+    # redirect step below is a dict lookup instead of a full rescan of the
+    # ever-growing provenance_rows list per absorbed row (was O(n^2) across
+    # a rebuild). Maintained incrementally as rows are appended.
+    prov_index: Dict[str, List[Dict]] = {}
+    for prov in provenance_rows:
+        prov_index.setdefault(prov["silver_transaction_id"], []).append(prov)
 
     drop_indices = []
     for idx, row in non_preferred.iterrows():
         key = tuple(row[col] for col in key_cols)
-        if preferred_counts.get(key, 0) > 0:
+        if preferred_ids.get(key):
             drop_indices.append(idx)
-            preferred_counts[key] -= 1
+            survivor_id = preferred_ids[key].pop(0)
+            absorbed_id = _silver_id(
+                row["source_type"], row["_fingerprint"], row["_occurrence"]
+            )
             # Record provenance: this non-preferred row is absorbed
             # into the matching preferred row.
-            for si, ri in zip(
-                row.get("ingestion_id", [None]),
-                [row.get("bronze_record_id", "")],
-            ):
-                provenance_rows.append(
-                    {
-                        "silver_transaction_id": row.get("_fingerprint", ""),
-                        "bronze_record_id": ri if ri else "",
-                        "ingestion_id": si if si else "",
-                        "source_type": row.get("source_type", ""),
-                        "match_policy": f"cross-source({prefer_source}-preferred)",
-                    }
-                )
+            new_entry = {
+                "silver_transaction_id": survivor_id,
+                "bronze_record_id": row.get("bronze_record_id", "") or "",
+                "ingestion_id": row.get("ingestion_id", "") or "",
+                "source_type": row.get("source_type", ""),
+                "match_policy": f"cross-source({prefer_source}-preferred)",
+            }
+            provenance_rows.append(new_entry)
+            prov_index.setdefault(survivor_id, []).append(new_entry)
+            # Redirect any same-source provenance that pointed at the now-
+            # absorbed canonical row so transaction_sources stays fully
+            # joinable - every row that shared the absorbed id, not just one.
+            for prov in prov_index.pop(absorbed_id, []):
+                prov["silver_transaction_id"] = survivor_id
+                prov_index.setdefault(survivor_id, []).append(prov)
 
     deduped_non_preferred = non_preferred.drop(index=drop_indices)
     return pd.concat(

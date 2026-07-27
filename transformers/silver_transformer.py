@@ -287,17 +287,6 @@ _TRANSACTION_NORMALIZERS = {
 }
 
 
-def _parse_money(value: Any) -> float:
-    """Parse a '£1,234.56' / '-' / bare-decimal string into a float."""
-    if value is None or value == "-":
-        return 0.0
-    cleaned = str(value).replace("£", "").replace(",", "")
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
-
-
 def _normalize_vanguard_pdf_holding(
     raw: Dict[str, Any], reference: Any
 ) -> Dict[str, Any]:
@@ -342,6 +331,7 @@ def _normalize_amex_plan_it_instalment(
 def _ledger_from_kroo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %B %Y"),
     }
 
@@ -362,6 +352,7 @@ def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": as_of_date,
     }
 
@@ -369,6 +360,7 @@ def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
 def _ledger_from_firstdirect(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %y"),
     }
 
@@ -389,6 +381,7 @@ def _ledger_from_natwest_statement(
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": as_of_date,
     }
 
@@ -396,6 +389,7 @@ def _ledger_from_natwest_statement(
 def _ledger_from_monzo_pdf(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
     }
 
@@ -407,6 +401,7 @@ def _ledger_from_chase(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     date-year trap doesn't apply to Chase)."""
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %Y"),
     }
 
@@ -458,6 +453,7 @@ _LEDGER_COLUMNS = [
     "account_id",
     "source_type",
     "balance_minor",
+    "currency",
     "as_of_date",
     "upload_timestamp",
     "statement_period_to",
@@ -675,20 +671,19 @@ def _contiguous_coverage_end(
     account_id: str,
     anchor_date: pd.Timestamp,
     dependent_source_type: str,
-    datalake: DataLake,
+    bronze: Optional[pd.DataFrame],
 ) -> pd.Timestamp:
     """Find the latest date up to which the dependent source_type's
     statement-period coverage is contiguous starting from `anchor_date`.
 
-    Reads Bronze `statement_period_from/to` columns for all files of the
-    given source_type that belong to this account_id, sorts them by
-    period start, and walks forward: any gap (period i+1's start > the
-    running max_to + tolerance) truncates the window. Returns the end of
-    the first contiguous segment after anchor_date, or
-    `pd.Timestamp.max` if coverage is fully contiguous (or no period
-    data exists to judge gaps at all).
+    Reads `statement_period_from/to` columns from the given (already-loaded)
+    Bronze frame for all files of the given source_type that belong to this
+    account_id, sorts them by period start, and walks forward: any gap
+    (period i+1's start > the running max_to + tolerance) truncates the
+    window. Returns the end of the first contiguous segment after
+    anchor_date, or `pd.Timestamp.max` if coverage is fully contiguous (or
+    no period data exists to judge gaps at all).
     """
-    bronze = datalake.read_bronze(dependent_source_type)
     if bronze is None or bronze.empty or "statement_period_from" not in bronze.columns:
         return pd.Timestamp.max
 
@@ -729,7 +724,7 @@ def _contiguous_coverage_end(
 def _derive_rollforward_ledger_rows(
     transactions_df: pd.DataFrame,
     ledger_df: pd.DataFrame,
-    datalake: DataLake,
+    bronze_frames: Dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     """For each dependent→anchor pair declared in _DERIVED_BALANCE_ANCHORS,
     take the anchor source's latest confirmed balance per account and roll
@@ -783,7 +778,7 @@ def _derive_rollforward_ledger_rows(
                 continue
 
             contiguous_end = _contiguous_coverage_end(
-                account_id, anchor_date, dependent_st, datalake
+                account_id, anchor_date, dependent_st, bronze_frames.get(dependent_st)
             )
             account_txns = account_txns[
                 pd.to_datetime(account_txns["transaction_date"]) <= contiguous_end
@@ -803,6 +798,7 @@ def _derive_rollforward_ledger_rows(
                         "account_id": account_id,
                         "source_type": dependent_st,
                         "balance_minor": running,
+                        "currency": txn.get("currency") or "GBP",
                         "as_of_date": txn["transaction_date"],
                         "upload_timestamp": txn.get("upload_timestamp") or pd.NaT,
                         "statement_period_to": txn.get("statement_period_to") or pd.NaT,
@@ -934,12 +930,14 @@ def run_bronze_to_silver(
     """
     datalake = datalake or get_datalake()
 
-    unmapped = find_unmapped_accounts(datalake)
+    transformer = SilverTransformer(datalake)
+    all_bronze_frames = transformer._read_bronze_frames()
+
+    unmapped = find_unmapped_accounts(datalake, bronze_frames=all_bronze_frames)
     if not unmapped.empty:
         raise UnmappedAccountsError(unmapped)
 
-    transformer = SilverTransformer(datalake)
-    bronze_frames = transformer._read_bronze_frames()
+    bronze_frames = all_bronze_frames
 
     # Quality gate: quarantine reconciliation-mismatched ingestions.
     eligible_ids, excluded_ingestions = _eligible_ingestion_ids(bronze_frames)
@@ -963,7 +961,7 @@ def run_bronze_to_silver(
     holdings_df = transformer.normalize_holdings(bronze_frames)
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     derived_ledger = _derive_rollforward_ledger_rows(
-        transactions_df, ledger_df, datalake
+        transactions_df, ledger_df, all_bronze_frames
     )
     if not derived_ledger.empty:
         assert list(derived_ledger.columns) == _LEDGER_COLUMNS, (
@@ -978,14 +976,16 @@ def run_bronze_to_silver(
     # silently drops or duplicates a genuine transaction, which Bronze's
     # own pre-matching check can never see (item 3 of the reconciliation
     # hardening work; see transformers/silver_reconciliation.py).
-    bronze_anchors = find_reconciliation_status(datalake)
+    bronze_anchors = find_reconciliation_status(
+        datalake, bronze_frames=all_bronze_frames
+    )
     plan_it_adjustments = amex_plan_it_adjustment_by_ingestion(
         bronze_frames.get("amex")
     )
     silver_breaks_df = find_silver_reconciliation_breaks(
         bronze_anchors, sources_df, transactions_df, plan_it_adjustments
     )
-    silver_mismatches = silver_breaks_df[silver_breaks_df["matches"] == False]  # noqa: E712
+    silver_mismatches = silver_breaks_df[silver_breaks_df["matches"].eq(False)]
     if not silver_mismatches.empty:
         logger.warning(
             "%d ingestion(s) reconcile against their own Bronze anchor but "
@@ -1006,7 +1006,7 @@ def run_bronze_to_silver(
     # Cross-file continuity (item 2): does one file's closing anchor equal
     # the next file's opening anchor, per account? Complements the two
     # per-file checks above, which can't see across file boundaries.
-    continuity_df = find_balance_continuity(datalake)
+    continuity_df = find_balance_continuity(datalake, bronze_frames=all_bronze_frames)
 
     # Collect build metadata from Bronze frames.
     ingestion_ids: List[str] = []

@@ -9,7 +9,11 @@ import fitz
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import StatementPeriod
+from adapters.base import (
+    StatementPeriod,
+    make_snapshot_source_key,
+    make_transaction_source_key,
+)
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 from adapters.reconciliation import build_reconciliation_result
 
@@ -155,7 +159,9 @@ class AmexPdfAdapter(PdfAdapter):
             derived_closing_minor=derived_closing,
             expected_opening_minor=previous_balance,
         )
-        matches = self.last_reconciliation is not None and self.last_reconciliation.matches
+        matches = (
+            self.last_reconciliation is not None and self.last_reconciliation.matches
+        )
         if not matches:
             logger.warning(
                 "Amex %s: derived closing balance %d minor units does not "
@@ -342,7 +348,9 @@ class AmexPdfAdapter(PdfAdapter):
                 continue
 
             if not self._is_credit_marked(lines, idx):
-                amount_minor = -amount_minor  # Amex lists spend as positive; we use signed debits
+                amount_minor = (
+                    -amount_minor
+                )  # Amex lists spend as positive; we use signed debits
 
             transactions.append(
                 {
@@ -528,24 +536,27 @@ class AmexPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + date + description + amount."""
-        account_part = f"{account_identifier}_" if account_identifier else ""
-
         if txn.get("record_type") == "plan_it_instalment":
             # Distinguished from other months' rows for the same plan by
             # as_of_date (the statement's own closing date) - mirrors
             # VanguardPdfAdapter's holding key (account + fund_name +
             # as_of_date), since each month's statement re-prints the same
             # plan with updated progress.
-            start_date = txn.get("start_date", "").replace(" ", "_")
-            description = txn.get("description", "")[:15].replace(" ", "_")
-            as_of = (txn.get("as_of_date") or "").replace(" ", "_")
-            return f"amex_planit_{account_part}{start_date}_{description}_{as_of}"
+            return make_snapshot_source_key(
+                "amex_planit",
+                txn.get("description", ""),
+                txn.get("as_of_date") or "",
+                account_identifier,
+                extra=txn.get("start_date", ""),
+            )
 
-        date_str = txn.get("date", "").replace(" ", "")
-        description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount_minor", 0)))
-
-        return f"amex_txn_{account_part}{date_str}_{description}_{amount}"
+        return make_transaction_source_key(
+            "amex_txn",
+            txn.get("date", ""),
+            txn.get("description", ""),
+            int(txn.get("amount_minor", 0)),
+            account_identifier,
+        )
 
     def detect_source_type(self) -> str:
         """Return source type."""

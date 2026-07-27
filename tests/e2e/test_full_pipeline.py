@@ -5,6 +5,8 @@ See TODO.md item 6 for the acceptance criteria.
 """
 
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pytest
 
@@ -75,8 +77,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
     monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
     monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-    monkeypatch.setattr("transformers.silver_transformer._SILVER_DIR",
-                        tmp_path / "silver")
+    monkeypatch.setattr(
+        "transformers.silver_transformer._SILVER_DIR", tmp_path / "silver"
+    )
     monkeypatch.setattr("models.build._DEFAULT_SILVER_DIR", tmp_path / "silver")
     monkeypatch.setattr("models.ingestion.INGESTIONS_DIR", tmp_path / "ingestions")
     monkeypatch.setattr("models.ingestion.RAW_DIR", tmp_path / "raw")
@@ -126,7 +129,8 @@ def _ingest_bytes(datalake, pdf_bytes, filename, tmp_dir):
         ]
     )
     filepath = datalake.write_bronze(
-        manifest, df,
+        manifest,
+        df,
         reconciliation=result.reconciliation,
         statement_period=result.statement_period,
         reconciliations=result.reconciliations,
@@ -192,7 +196,10 @@ class TestEndToEnd:
         m1 = _ingest_bytes(datalake, pdf1, "statement.pdf", tmp_path)
         m2 = _ingest_bytes(datalake, pdf2, "statement.pdf", tmp_path)
         assert m1.ingestion_id != m2.ingestion_id
-        assert load_manifest(m1.ingestion_id).raw_artifact_path != load_manifest(m2.ingestion_id).raw_artifact_path
+        assert (
+            load_manifest(m1.ingestion_id).raw_artifact_path
+            != load_manifest(m2.ingestion_id).raw_artifact_path
+        )
 
     def test_exact_reingest_idempotent(self, isolated, tmp_path):
         datalake = isolated
@@ -215,6 +222,29 @@ class TestEndToEnd:
         # Verify reconciliation is in pence (int).
         ledger = datalake.read_silver("account_ledger")
         assert ledger["balance_minor"].dtype.kind in ("i", "u")
+
+    def test_read_bronze_called_once_per_source_type_during_rebuild(
+        self, isolated, tmp_path
+    ):
+        """P2.2: a full rebuild used to call datalake.read_bronze() ~46
+        times for 9 source_types (once from find_unmapped_accounts, once
+        from _read_bronze_frames, twice from find_reconciliation_status,
+        plus once per account inside the rollforward loop). With Bronze
+        frames threaded through every call site, one rebuild should read
+        Bronze exactly once per source_type - a real, disk-backed proof,
+        not a mocked unit test."""
+        datalake = isolated
+        _ingest_bytes(datalake, _kroo_pdf_bytes(), "kroo_jul.pdf", tmp_path)
+
+        spy = MagicMock(wraps=datalake.read_bronze)
+        datalake.read_bronze = spy
+
+        run_bronze_to_silver(datalake)
+
+        all_source_types = (
+            AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        )
+        assert spy.call_count == len(all_source_types)
 
 
 class TestStrictReconciliationGate:

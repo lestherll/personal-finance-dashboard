@@ -48,7 +48,9 @@ def parse_money_minor(text: str, currency: str = "GBP") -> int:
     stripped = text.strip()
     if stripped == "-":
         raise MoneyParseError(f"ambiguous dash in money field: {text!r}")
-    stripped = stripped.upper().replace("CR", "").replace("£", "").replace(",", "").strip()
+    stripped = (
+        stripped.upper().replace("CR", "").replace("£", "").replace(",", "").strip()
+    )
     match = _AMOUNT_RE.search(stripped)
     if not match:
         # Try with the more permissive _DECIMAL_RE as a fallback (handles
@@ -63,7 +65,7 @@ def parse_money_minor(text: str, currency: str = "GBP") -> int:
     if currency not in MINOR_UNITS:
         raise MoneyParseError(f"unknown currency for minor-unit conversion: {currency}")
     scale = MINOR_UNITS[currency]
-    return int(decimal * (10 ** scale))
+    return int(decimal * (10**scale))
 
 
 def try_parse_money_minor(text: str, currency: str = "GBP") -> Optional[int]:

@@ -27,6 +27,77 @@ def make_bronze_record_id(
     return hashlib.sha256(material).hexdigest()
 
 
+def _readable_slug(text: str, limit: int = 10) -> str:
+    """Short human-readable fragment for the readable part of a source key."""
+    return re.sub(r"\s+", "_", (text or "").strip())[:limit]
+
+
+def _normalize_key_date(date_str: str) -> str:
+    """Strip the separators PDF adapters variously use ('15 May 2026', '15/05/2026')."""
+    return re.sub(r"[\s/]", "", date_str or "")
+
+
+def make_transaction_source_key(
+    prefix: str,
+    date_str: str,
+    description: str,
+    amount_minor: int,
+    account_identifier: Optional[str] = None,
+) -> str:
+    """Deterministic content key for one parsed transaction.
+
+    Two properties this must have, both of which an earlier hand-rolled
+    version in each adapter silently lacked:
+
+    - **Sign-preserving.** The old key used `abs(amount_minor)`, so paying
+      someone £50 and being repaid £50 by them on the same day produced an
+      *identical* key. Only `PdfAdapter.parse()`'s `_dup1/_dup2` same-file
+      suffixing (Gotcha #13) kept those rows apart, and that disambiguates
+      by position, not by meaning.
+    - **Collision-free on long descriptions.** The old key truncated the
+      description to 10 characters, so two different merchants sharing a
+      10-char prefix on the same day for the same amount also collided.
+
+    The readable `slug` is kept purely for debuggability; correctness comes
+    from `digest`, which covers the *full* description and the *signed*
+    amount. Callers pass their own `prefix` so keys stay source-attributable.
+    """
+    account_part = f"{account_identifier}_" if account_identifier else ""
+    slug = _readable_slug(description)
+    digest = hashlib.sha256(f"{description or ''}|{amount_minor}".encode()).hexdigest()[
+        :8
+    ]
+    return (
+        f"{prefix}_{account_part}{_normalize_key_date(date_str)}_"
+        f"{slug}_{amount_minor}_{digest}"
+    )
+
+
+def make_snapshot_source_key(
+    prefix: str,
+    label: str,
+    as_of_date: str,
+    account_identifier: Optional[str] = None,
+    extra: Optional[str] = None,
+) -> str:
+    """Deterministic content key for a re-printed snapshot row (a Vanguard
+    holding, an Amex Plan-It plan) - identified by *what* it is plus the
+    statement date it was printed on, with no amount involved.
+
+    Same truncation hazard as `make_transaction_source_key`: `label` (a fund
+    name or plan description) was previously cut to 15 characters, so two
+    funds sharing a 15-char prefix on one statement collided. The digest
+    covers the full label.
+    """
+    account_part = f"{account_identifier}_" if account_identifier else ""
+    extra_part = f"{_normalize_key_date(extra)}_" if extra else ""
+    digest = hashlib.sha256(f"{label or ''}".encode()).hexdigest()[:8]
+    return (
+        f"{prefix}_{account_part}{extra_part}{_readable_slug(label, 15)}_"
+        f"{_normalize_key_date(as_of_date)}_{digest}"
+    )
+
+
 @dataclass
 class RawRecord:
     """Minimal wrapper for raw data from a file."""

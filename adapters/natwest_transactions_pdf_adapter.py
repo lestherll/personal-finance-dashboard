@@ -16,10 +16,12 @@ separate adapters - the naming is deliberately explicit about which is which
 Because both can cover overlapping dates for the same account (e.g. this
 export re-covers a month a Statement later also covers), the same real
 transaction can appear under both source_types with two different
-`bronze_source_key`s. `transformers/silver_transformer.py::_dedupe_natwest_cross_format()`
-is what prevents that from double-counting - matched by
-`(account_id, transaction_date, amount)`, preferring the `natwest-statement`
-row (it carries real balance data). See CLAUDE.md Gotcha #11.
+`bronze_source_key`s. The declared cross-source policy in
+`transformers/matching.py` (`_CROSS_SOURCE_POLICIES`) is what prevents
+that from double-counting - matched by
+`(account_id, transaction_date, amount_minor)`, preferring the
+`natwest-statement` row (it carries real balance data). See CLAUDE.md
+Gotcha #11.
 """
 
 import re
@@ -28,7 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import StatementPeriod
+from adapters.base import StatementPeriod, make_transaction_source_key
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
 # e.g. "From  01/01/2026  To  31/05/2026" - full DD/MM/YYYY dates, unlike
@@ -190,9 +192,7 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
                     sign = match.group(1)
                     amount_text = match.group(2)
                     try:
-                        amount_minor = parse_money_minor(
-                            f"{sign or ''}£{amount_text}"
-                        )
+                        amount_minor = parse_money_minor(f"{sign or ''}£{amount_text}")
                     except MoneyParseError:
                         pass
                 break
@@ -219,13 +219,12 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + date + description + amount."""
-        date_str = txn.get("date", "").replace(" ", "")
-        description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount_minor", 0)))
-        account_part = f"{account_identifier}_" if account_identifier else ""
-
-        return (
-            f"natwest_transactions_txn_{account_part}{date_str}_{description}_{amount}"
+        return make_transaction_source_key(
+            "natwest_transactions_txn",
+            txn.get("date", ""),
+            txn.get("description", ""),
+            int(txn.get("amount_minor", 0)),
+            account_identifier,
         )
 
     def detect_source_type(self) -> str:

@@ -61,8 +61,20 @@ def generate_build_id(git_sha: Optional[str] = None) -> str:
     when available. Exposed separately (not just inlined in
     publish_silver_build) so callers that need the same build_id to stamp
     other artifacts - e.g. transformers/reconciliation_log.py's per-build
-    reconciliation history - can generate it once and pass it through."""
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    reconciliation history - can generate it once and pass it through.
+
+    The timestamp carries milliseconds because it is not merely a label: it
+    names the build *directory*, and publish_silver_build os.rename()s onto
+    that path assuming it is free. At the original second granularity two
+    rebuilds within the same second produced the same id, and the second one
+    died with a bare "OSError: Directory not empty" after its staging
+    directory was fully written but before the symlink swap - so no build was
+    published and `current` silently stayed on the older one. (The staging
+    directory itself is cleaned up by publish_silver_build's finally block.)
+    Rare when driven by hand, routine once rebuilds are triggered
+    programmatically (Phase 3 / Celery).
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")[:-3]
     git = git_sha if git_sha is not None else _git_sha()
     return f"{timestamp}-{git}" if git else timestamp
 
@@ -99,9 +111,7 @@ def publish_silver_build(
     build_dir = _builds_dir(silver_dir) / build_id
     build_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f".build-{build_id}-", dir=build_dir.parent
-        )
+        tempfile.mkdtemp(prefix=f".build-{build_id}-", dir=build_dir.parent)
     )
     current_link = _current_link(silver_dir)
 
@@ -134,25 +144,40 @@ def publish_silver_build(
             row_counts=row_counts,
         )
         manifest_path = staging_dir / "build.json"
-        manifest_path.write_text(
-            json.dumps(asdict(manifest), indent=2, sort_keys=True)
-        )
+        manifest_path.write_text(json.dumps(asdict(manifest), indent=2, sort_keys=True))
 
         # Atomic publish: rename staging to final, then swap symlink.
-        # Final path must not exist (build_id is unique).
+        # generate_build_id() is millisecond-granular so this path is free in
+        # practice; an explicit check keeps a caller-supplied duplicate
+        # build_id from surfacing as a bare "Directory not empty" OSError.
+        if build_dir.exists():
+            raise FileExistsError(
+                f"Silver build {build_id} already exists at {build_dir}. "
+                f"Refusing to overwrite a published build - builds are "
+                f"immutable. Pass a fresh build_id (see generate_build_id)."
+            )
         os.rename(str(staging_dir), str(build_dir))
         staging_dir = Path("")  # prevent cleanup of already-renamed dir
 
         # Swap the current/ symlink atomically.
-        absolute_build_dir = build_dir.resolve()
+        #
+        # The target is relative *to the link's own directory* ("builds/<id>"),
+        # not to the process cwd and not absolute. All three were tried:
+        # str(build_dir) alone was cwd-relative, so `data/silver/current`
+        # resolved to `data/silver/data/silver/builds/<id>` and dangled;
+        # build_dir.resolve() fixed that but hardcoded this machine's absolute
+        # path into the data lake, so moving or copying the repo silently broke
+        # every build (and read_silver then fell through to stale flat files).
+        # A link-relative target is correct under both and survives relocation.
+        relative_build_dir = os.path.relpath(build_dir.resolve(), silver_dir.resolve())
         if current_link.is_symlink() or current_link.exists():
             tmp_link = current_link.with_suffix(".tmp")
             if tmp_link.exists():
                 tmp_link.unlink()
-            tmp_link.symlink_to(str(absolute_build_dir), target_is_directory=False)
+            tmp_link.symlink_to(relative_build_dir, target_is_directory=True)
             os.replace(str(tmp_link), str(current_link))
         else:
-            current_link.symlink_to(str(absolute_build_dir), target_is_directory=False)
+            current_link.symlink_to(relative_build_dir, target_is_directory=True)
 
         # Prune old builds.
         _prune_old_builds(silver_dir)

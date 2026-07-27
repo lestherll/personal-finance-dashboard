@@ -158,7 +158,12 @@ class _FakeDatalake:
         self.write_calls = []
 
     def write_bronze(
-        self, ingestion, df, reconciliation=None, statement_period=None, reconciliations=None
+        self,
+        ingestion,
+        df,
+        reconciliation=None,
+        statement_period=None,
+        reconciliations=None,
     ):
         self.write_calls.append(
             {
@@ -917,9 +922,7 @@ class TestReconciliationLogCommand:
                 {"check_type": "continuity", "matches": None},
             ]
         )
-        fake_datalake = type(
-            "D", (), {"read_silver": lambda self, entity: log}
-        )()
+        fake_datalake = type("D", (), {"read_silver": lambda self, entity: log})()
         monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
 
         result = runner.invoke(cli, ["accounts", "reconciliation-log"])

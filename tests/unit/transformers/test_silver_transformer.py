@@ -8,6 +8,8 @@ from transformers.silver_transformer import (
     SilverTransformer,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_account_map")
+
 # Real (test-only) entries so get_account_id resolves without hitting the fallback.
 _KROO_ID = "fd7a2651d39e"
 _NATWEST_ID = "43ae9e53d8a2"
@@ -115,7 +117,11 @@ class TestNormalizeTransactionsMonzo:
 
 class TestNormalizeTransactionsPdfSources:
     def test_kroo_full_date_and_identifier(self, transformer):
-        raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount_minor": -450}
+        raw = {
+            "date": "12 January 2026",
+            "description": "Coffee Shop",
+            "amount_minor": -450,
+        }
         bronze = _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)
         df, _ = transformer.normalize_transactions({"kroo": bronze})
 
@@ -249,7 +255,11 @@ class TestNormalizeTransactionsPdfSources:
         assert row["transaction_date"] == pd.Timestamp("2024-01-15")
 
     def test_vanguard_pdf_slash_date(self, transformer):
-        raw = {"date": "15/01/2024", "description": "Fund Purchase", "amount_minor": -50000}
+        raw = {
+            "date": "15/01/2024",
+            "description": "Fund Purchase",
+            "amount_minor": -50000,
+        }
         bronze = _bronze_frame(
             "vanguard-pdf", [raw], account_identifier=_VANGUARD_ISA_ID
         )
@@ -356,7 +366,11 @@ class TestNormalizeHoldings:
 
     def test_vanguard_pdf_transactions_excluded_from_holdings(self, transformer):
         """A transaction-record_type row must not leak into normalize_holdings."""
-        txn_raw = {"date": "15/01/2024", "description": "Deposit", "amount_minor": 10000}
+        txn_raw = {
+            "date": "15/01/2024",
+            "description": "Deposit",
+            "amount_minor": 10000,
+        }
         bronze = _bronze_frame(
             "vanguard-pdf",
             [txn_raw],
@@ -411,7 +425,11 @@ class TestNormalizePlanItInstalments:
     def test_amex_transactions_excluded_from_plan_it_instalments(self, transformer):
         """A transaction-record_type row must not leak into
         normalize_plan_it_instalments."""
-        txn_raw = {"date": "19 Apr 2026", "description": "COFFEE SHOP", "amount_minor": -385}
+        txn_raw = {
+            "date": "19 Apr 2026",
+            "description": "COFFEE SHOP",
+            "amount_minor": -385,
+        }
         bronze = _bronze_frame(
             "amex", [txn_raw], account_identifier=_AMEX_ID, record_type="transaction"
         )
@@ -765,4 +783,3 @@ class TestNormalizeAccountLedger:
         assert second["statement_period_to"] == pd.Timestamp("2026-01-31")
         assert first["line_number"] == 5
         assert second["line_number"] == 1
-

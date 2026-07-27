@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -234,3 +235,45 @@ class TestFindBalanceContinuity:
 
         result = find_balance_continuity(datalake, path=path)
         assert result.empty
+
+    def test_bronze_frames_bypasses_datalake_read(self, tmp_path):
+        """Passing bronze_frames must not touch datalake.read_bronze at all
+        (P2.2b) - threaded through to both internal find_reconciliation_status/
+        find_statement_periods calls - same result as the datalake-driven
+        path above."""
+        path = _account_map_path(tmp_path, _AMEX_MAP)
+        bronze_df = pd.DataFrame(
+            [
+                _bronze_row(
+                    "hash_amex",
+                    "jan.pdf",
+                    "ing1",
+                    10000,
+                    12000,
+                    datetime(2026, 1, 1),
+                    datetime(2026, 1, 31),
+                ),
+                _bronze_row(
+                    "hash_amex",
+                    "feb.pdf",
+                    "ing2",
+                    12000,
+                    15000,
+                    datetime(2026, 2, 1),
+                    datetime(2026, 2, 28),
+                ),
+            ]
+        )
+        mock_dl = MagicMock()
+        mock_dl.read_bronze.side_effect = AssertionError(
+            "read_bronze should not be called when bronze_frames is provided"
+        )
+
+        result = find_balance_continuity(
+            mock_dl, path=path, bronze_frames={"amex": bronze_df}
+        )
+
+        mock_dl.read_bronze.assert_not_called()
+        assert len(result) == 1
+        assert result.iloc[0]["filename"] == "jan.pdf"
+        assert result.iloc[0]["next_filename"] == "feb.pdf"

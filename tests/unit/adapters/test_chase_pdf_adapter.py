@@ -187,9 +187,7 @@ class TestChaseParsing:
         the header on the Current fixture, never parsed for real."""
         txns = adapter.parse_transactions(SAMPLE_SAVER_TEXT)
         assert len(txns) == 2
-        assert all(
-            t["_account_identifier_raw"] == "53932015_60-84-07" for t in txns
-        )
+        assert all(t["_account_identifier_raw"] == "53932015_60-84-07" for t in txns)
 
         kroo_deposit = next(t for t in txns if "Sent from Kroo" in t["description"])
         assert kroo_deposit["amount_minor"] == 255000

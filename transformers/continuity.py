@@ -25,7 +25,7 @@ anchor rows - no overlap-merging high-water-mark is needed here.
 """
 
 from datetime import timedelta
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 from pathlib import Path
 
 import pandas as pd
@@ -55,18 +55,26 @@ def find_balance_continuity(
     datalake: Optional[DataLake] = None,
     path: Optional[PathLike] = None,
     tolerance: timedelta = _COVERAGE_GAP_TOLERANCE,
+    bronze_frames: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Check that each account's consecutive anchored statements connect:
     the prior file's closing anchor should equal the next file's opening
     anchor. Returns one row per consecutive pair of anchored files, per
     account - not one row per file.
+
+    Pass an already-loaded `bronze_frames` dict (source_type -> DataFrame)
+    to avoid re-reading Bronze from disk when the caller already has it in
+    memory - threaded through to both internal find_reconciliation_status/
+    find_statement_periods calls, which otherwise re-read Bronze themselves.
     """
     datalake = datalake or get_datalake()
-    anchors = find_reconciliation_status(datalake, path=path)
+    anchors = find_reconciliation_status(
+        datalake, path=path, bronze_frames=bronze_frames
+    )
     if anchors.empty:
         return pd.DataFrame(columns=_CONTINUITY_COLUMNS)
 
-    periods = find_statement_periods(datalake, path=path)
+    periods = find_statement_periods(datalake, path=path, bronze_frames=bronze_frames)
     merged = anchors.merge(
         periods, on=["account_id", "source_type", "filename"], how="left"
     )

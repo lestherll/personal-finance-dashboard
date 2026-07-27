@@ -3,8 +3,14 @@
 import json
 
 import pandas as pd
+import pytest
 
-from transformers.balance import get_current_balances, get_net_worth, get_net_worth_breakdown
+from transformers.balance import (
+    MixedCurrencyError,
+    get_current_balances,
+    get_net_worth,
+    get_net_worth_breakdown,
+)
 
 
 class _FakeDatalakeForBalance:
@@ -34,10 +40,12 @@ def _ledger_row(
     line_number=1,
     source_type="kroo",
     reconciled=None,
+    currency="GBP",
 ):
     return {
         "account_id": account_id,
         "balance_minor": balance_minor,
+        "currency": currency,
         "as_of_date": as_of_date,
         "upload_timestamp": upload_timestamp,
         "statement_period_to": statement_period_to,
@@ -47,11 +55,18 @@ def _ledger_row(
     }
 
 
-def _holdings_row(account_id, total_value_minor, fund_name="Test Fund", as_of_date=None):
+def _holdings_row(
+    account_id,
+    total_value_minor,
+    fund_name="Test Fund",
+    as_of_date=None,
+    currency="GBP",
+):
     return {
         "account_id": account_id,
         "fund_name": fund_name,
         "total_value_minor": total_value_minor,
+        "currency": currency,
         "as_of_date": as_of_date,
     }
 
@@ -296,8 +311,12 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 2
-        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0]["balance_minor"]
-        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0]["balance_minor"]
+        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0][
+            "balance_minor"
+        ]
+        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0][
+            "balance_minor"
+        ]
         assert kroo_balance == 20000
         assert amex_balance == 5000
 
@@ -625,6 +644,171 @@ class TestGetNetWorth:
         net_worth = get_net_worth(datalake, path=path)
 
         assert net_worth == 350000
+
+
+class TestMixedCurrencyGuard:
+    def test_mixed_currency_ledger_raises(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_usd": {
+                    "account_id": "acc_usd",
+                    "display_name": "USD Account",
+                    "account_type": "current",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="GBP",
+                ),
+                _ledger_row(
+                    "acc_usd",
+                    5000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="USD",
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth(datalake, path=path)
+
+    def test_mixed_ledger_and_holdings_currency_raises(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard": {
+                    "account_id": "acc_vanguard",
+                    "display_name": "Vanguard",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="GBP",
+                ),
+            ]
+        )
+        holdings = pd.DataFrame(
+            [_holdings_row("acc_vanguard", 100000, "Fund A", currency="USD")]
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": ledger, "holdings": holdings}
+        )
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth(datalake, path=path)
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth_breakdown(datalake, path=path)
+
+    def test_single_currency_all_gbp_unchanged(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard": {
+                    "account_id": "acc_vanguard",
+                    "display_name": "Vanguard",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_vanguard",
+                    50000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        assert get_net_worth(datalake, path=path) == 60000
+
+
+class TestPreCurrencyBuildCompatibility:
+    """Regression: a Silver build published before account_ledger gained a
+    currency column (P1.1) has no currency column at all. get_current_balances
+    used to project onto _BALANCES_COLUMNS blindly, so merely reading such a
+    build raised KeyError: "['currency'] not in index" - i.e. every
+    net-worth/breakdown CLI command broke until the user happened to run
+    `silver rebuild`. The projection must tolerate the missing column the
+    same way _assert_single_currency deliberately no-ops on it."""
+
+    def _old_schema_ledger(self):
+        row = _ledger_row(
+            "acc_kroo",
+            10000,
+            pd.Timestamp("2026-06-01"),
+            pd.Timestamp("2026-06-01"),
+        )
+        del row["currency"]  # simulate a pre-P1.1 build
+        return pd.DataFrame([row])
+
+    def test_get_current_balances_tolerates_missing_currency_column(self):
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": self._old_schema_ledger()}
+        )
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance_minor"] == 10000
+        assert result.iloc[0]["currency"] is None
+
+    def test_get_net_worth_does_not_raise_on_missing_currency_column(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                }
+            },
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": self._old_schema_ledger()}
+        )
+
+        assert get_net_worth(datalake, path=path) == 10000
 
 
 class TestGetNetWorthBreakdown:

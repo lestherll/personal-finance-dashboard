@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod, hash_account_identifier
+from adapters.base import (
+    ReconciliationResult,
+    StatementPeriod,
+    hash_account_identifier,
+    make_snapshot_source_key,
+    make_transaction_source_key,
+)
 from adapters.pdf_adapter import PdfAdapter
 
 _ACCOUNT_NUMBER_RE = re.compile(r"Account number:\s*([A-Z0-9]+)")
@@ -218,9 +224,7 @@ class VanguardPdfAdapter(PdfAdapter):
             if len(values) == num_value_columns:
                 wrapper_name = " ".join(label_parts).strip()
                 try:
-                    summary[wrapper_name] = parse_money_minor(
-                        values[-1]
-                    )
+                    summary[wrapper_name] = parse_money_minor(values[-1])
                 except MoneyParseError:
                     pass
                 label_parts = []
@@ -432,17 +436,21 @@ class VanguardPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + (date|as_of_date) + description/fund + amount."""
-        account_part = f"{account_identifier}_" if account_identifier else ""
-
         if txn.get("record_type") == "holding":
-            as_of = txn.get("as_of_date", "").replace(" ", "_")
-            fund = txn.get("fund_name", "")[:15].replace(" ", "_")
-            return f"vanguard_holding_{account_part}{fund}_{as_of}"
+            return make_snapshot_source_key(
+                "vanguard_holding",
+                txn.get("fund_name", ""),
+                txn.get("as_of_date", ""),
+                account_identifier,
+            )
 
-        date_str = txn.get("date", "").replace("/", "")
-        description = txn.get("description", "")[:15].replace(" ", "_")
-        amount = str(abs(txn.get("amount_minor", 0)))
-        return f"vanguard_txn_{account_part}{date_str}_{description}_{amount}"
+        return make_transaction_source_key(
+            "vanguard_txn",
+            txn.get("date", ""),
+            txn.get("description", ""),
+            int(txn.get("amount_minor", 0)),
+            account_identifier,
+        )
 
     def detect_source_type(self) -> str:
         """Return source type."""

@@ -18,8 +18,10 @@ table instead of a single signed-amount-per-line format, and a full
 adapter/source_type rather than a branch inside the other one. Because they
 can cover overlapping dates for the same account, the same real transaction
 can appear under both source_types with two different `bronze_source_key`s -
-`transformers/silver_transformer.py::_dedupe_natwest_cross_format()` is what
-prevents that from double-counting (see CLAUDE.md Gotcha #11).
+the declared cross-source policy in `transformers/matching.py`
+(`_CROSS_SOURCE_POLICIES`: loose-key match on `(account_id,
+transaction_date, amount_minor)`, preferring the `natwest-statement` row)
+is what prevents that from double-counting (see CLAUDE.md Gotcha #11).
 """
 
 import logging
@@ -29,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import StatementPeriod
+from adapters.base import StatementPeriod, make_transaction_source_key
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 from adapters.reconciliation import build_reconciliation_result
 
@@ -228,9 +230,7 @@ class NatwestStatementPdfAdapter(PdfAdapter):
 
         return transactions
 
-    def _check_reconciliation(
-        self, text: str, computed_final: Optional[int]
-    ) -> None:
+    def _check_reconciliation(self, text: str, computed_final: Optional[int]) -> None:
         """Non-blocking sanity check against the statement's own summary figures.
 
         Also captures the statement's "Previous Balance" anchor (previously
@@ -281,12 +281,13 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + date + description + amount."""
-        date_str = txn.get("date", "").replace(" ", "")
-        description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount_minor", 0)))
-        account_part = f"{account_identifier}_" if account_identifier else ""
-
-        return f"natwest_statement_txn_{account_part}{date_str}_{description}_{amount}"
+        return make_transaction_source_key(
+            "natwest_statement_txn",
+            txn.get("date", ""),
+            txn.get("description", ""),
+            int(txn.get("amount_minor", 0)),
+            account_identifier,
+        )
 
     def detect_source_type(self) -> str:
         """Return source type."""
