@@ -287,17 +287,6 @@ _TRANSACTION_NORMALIZERS = {
 }
 
 
-def _parse_money(value: Any) -> float:
-    """Parse a '£1,234.56' / '-' / bare-decimal string into a float."""
-    if value is None or value == "-":
-        return 0.0
-    cleaned = str(value).replace("£", "").replace(",", "")
-    try:
-        return float(cleaned)
-    except ValueError:
-        return 0.0
-
-
 def _normalize_vanguard_pdf_holding(
     raw: Dict[str, Any], reference: Any
 ) -> Dict[str, Any]:
