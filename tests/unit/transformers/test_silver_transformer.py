@@ -8,6 +8,8 @@ from transformers.silver_transformer import (
     SilverTransformer,
 )
 
+pytestmark = pytest.mark.usefixtures("isolated_account_map")
+
 # Real (test-only) entries so get_account_id resolves without hitting the fallback.
 _KROO_ID = "fd7a2651d39e"
 _NATWEST_ID = "43ae9e53d8a2"
