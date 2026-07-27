@@ -6,10 +6,12 @@ the real data/account_map.json.
 """
 
 import json
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
+from transformers import account_config
 from transformers.account_config import (
     UnmappedAccountsError,
     build_accounts_table,
@@ -297,3 +299,38 @@ class TestUnmappedAccountsError:
         assert "kroo" in message
         assert "brand_new_hash" in message
         assert "3 records" in message
+
+
+class TestAccountMapCaching:
+    def test_repeated_lookups_read_disk_once(self, tmp_path, monkeypatch):
+        path = tmp_path / "account_map.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "identifiers": {
+                        "h1": {
+                            "account_id": "acc_1",
+                            "display_name": "A",
+                            "account_type": "current",
+                        }
+                    },
+                    "source_type_fallback": {},
+                }
+            )
+        )
+        spy = MagicMock(wraps=account_config._read_account_map_file)
+        monkeypatch.setattr(account_config, "_read_account_map_file", spy)
+
+        for _ in range(10):
+            assert get_account_id("h1", "kroo", path=path) == "acc_1"
+
+        assert spy.call_count == 1
+
+    def test_registration_visible_immediately_no_stale_cache(self, tmp_path):
+        path = tmp_path / "account_map.json"
+        with pytest.raises(KeyError):
+            get_account_id("h2", "kroo", path=path)  # primes the empty-map cache entry
+
+        register_account("h2", "acc_2", "Account 2", "current", path=path)
+
+        assert get_account_id("h2", "kroo", path=path) == "acc_2"

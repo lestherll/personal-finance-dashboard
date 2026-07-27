@@ -48,10 +48,20 @@ _UNMAPPED_COLUMNS = [
 ]
 
 
-def _load(path: Optional[PathLike] = None) -> Dict[str, Dict[str, Dict[str, str]]]:
-    """Load the account map from the data store. A missing file is treated
-    as an empty (not-yet-configured) map rather than an error."""
-    resolved = Path(path) if path is not None else ACCOUNT_MAP_PATH
+_CACHE: Dict[Path, Dict[str, Dict[str, Dict[str, str]]]] = {}
+
+
+def _resolve_path(path: Optional[PathLike]) -> Path:
+    return Path(path) if path is not None else ACCOUNT_MAP_PATH
+
+
+def _read_account_map_file(
+    resolved: Path,
+) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """Actually parse the account map off disk. A missing file is treated
+    as an empty (not-yet-configured) map rather than an error. This is the
+    expensive part - _load() pays it at most once per resolved path per
+    process."""
     if not resolved.exists():
         return {"identifiers": {}, "source_type_fallback": {}}
 
@@ -61,6 +71,23 @@ def _load(path: Optional[PathLike] = None) -> Dict[str, Dict[str, Dict[str, str]
         "identifiers": data.get("identifiers", {}),
         "source_type_fallback": data.get("source_type_fallback", {}),
     }
+
+
+def _load(path: Optional[PathLike] = None) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """Load the account map from the data store, cached per resolved path.
+
+    Re-resolves `path or ACCOUNT_MAP_PATH` on every call (not once at
+    import/cache-construction time), so a monkeypatched
+    transformers.account_config.ACCOUNT_MAP_PATH in one test gets its own
+    cache entry, never another test's stale one. register_account /
+    register_source_type_fallback invalidate the entry for their resolved
+    path immediately after writing, so a registration is visible to the
+    very next _load() call in-process.
+    """
+    resolved = _resolve_path(path)
+    if resolved not in _CACHE:
+        _CACHE[resolved] = _read_account_map_file(resolved)
+    return _CACHE[resolved]
 
 
 def get_account_id(
@@ -123,11 +150,12 @@ def build_accounts_table(path: Optional[PathLike] = None) -> pd.DataFrame:
 def _write(
     config: Dict[str, Dict[str, Dict[str, str]]], path: Optional[PathLike]
 ) -> None:
-    resolved = Path(path) if path is not None else ACCOUNT_MAP_PATH
+    resolved = _resolve_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     with open(resolved, "w") as f:
         json.dump(config, f, indent=2, sort_keys=True)
         f.write("\n")
+    _CACHE.pop(resolved, None)
 
 
 def register_account(
