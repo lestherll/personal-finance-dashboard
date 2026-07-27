@@ -1,13 +1,16 @@
 """Data lake utilities for Parquet files and DuckDB queries."""
 
 import logging
+import os
+import tempfile
 from typing import Optional
 
 import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import ReconciliationResult, StatementPeriod, make_bronze_record_id
 from config import BRONZE_DIR, DUCKDB_PATH, GOLD_DIR, SILVER_DIR
+from models.ingestion import IngestionManifest
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +26,7 @@ class DataLake:
 
     def write_bronze(
         self,
-        source_type: str,
-        filename: str,
+        ingestion: IngestionManifest,
         df: pd.DataFrame,
         reconciliation: Optional[ReconciliationResult] = None,
         statement_period: Optional[StatementPeriod] = None,
@@ -33,8 +35,7 @@ class DataLake:
         Write raw records to Bronze layer (immutable).
 
         Args:
-            source_type: 'monzo', 'kroo', 'amex'
-            filename: Original filename
+            ingestion: Immutable artifact manifest for this upload
             df: DataFrame with raw data
             reconciliation: whole-file balance self-check result, if the
                 adapter performed one (see adapters.base.ReconciliationResult)
@@ -44,14 +45,41 @@ class DataLake:
         Returns:
             Path to written Parquet file
         """
-        filepath = BRONZE_DIR / source_type / f"{filename}.parquet"
+        if not ingestion.source_type:
+            raise ValueError("Bronze publication requires a detected source_type")
+
+        filepath = BRONZE_DIR / ingestion.source_type / f"{ingestion.ingestion_id}.parquet"
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
+        # A complete content-addressed ingestion is idempotent. Never rewrite
+        # an already published Bronze artifact.
+        if filepath.exists():
+            return str(filepath)
+
+        df = df.copy()
+
         # Add metadata columns
-        df["bronze_source_key"] = df.get("source_key", "")
-        df["source_type"] = source_type
+        # `source_key` is a legacy semantic fingerprint. It is useful for
+        # diagnosis/matching but not stable enough to identify Bronze rows.
+        df["legacy_source_key"] = df.get("source_key", "")
+        df["bronze_source_key"] = df["legacy_source_key"]
+        if "bronze_record_id" not in df.columns:
+            df["bronze_record_id"] = [
+                make_bronze_record_id(
+                    ingestion.ingestion_id,
+                    row.get("record_type", "transaction"),
+                    int(row.get("line_number", index + 1)),
+                )
+                for index, (_, row) in enumerate(df.iterrows())
+            ]
+        if "source_ordinal" not in df.columns:
+            df["source_ordinal"] = df.get("line_number")
+        df["source_type"] = ingestion.source_type
         df["upload_timestamp"] = pd.Timestamp.now()
-        df["filename"] = filename
+        df["filename"] = ingestion.original_filename
+        df["ingestion_id"] = ingestion.ingestion_id
+        df["raw_artifact_path"] = ingestion.raw_artifact_path
+        df["parser_version"] = ingestion.parser_version
 
         # Only added when the adapter actually produced the fact, so
         # sources with no reconciliation/period concept simply don't get
@@ -74,9 +102,19 @@ class DataLake:
             df["statement_period_from"] = statement_period.from_date
             df["statement_period_to"] = statement_period.to_date
 
-        # Write Parquet (immutable, append-only)
+        # Write and validate a sibling temporary file before publishing it.
         table = pa.Table.from_pandas(df)
-        pq.write_table(table, filepath, filesystem=None)
+        with tempfile.NamedTemporaryFile(
+            dir=filepath.parent, suffix=".parquet", delete=False
+        ) as temp:
+            temp_path = temp.name
+        try:
+            pq.write_table(table, temp_path, filesystem=None)
+            pq.read_table(temp_path)
+            os.replace(temp_path, filepath)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
         logger.info(f"✓ Wrote {len(df)} records to Bronze: {filepath}")
         return str(filepath)

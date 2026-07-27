@@ -5,7 +5,7 @@ from datetime import datetime
 from io import StringIO
 from typing import Any, Dict, List
 
-from adapters.base import DataSourceAdapter, RawRecord
+from adapters.base import DataSourceAdapter, RawRecord, make_bronze_record_id
 
 
 class MonzoAdapter(DataSourceAdapter):
@@ -89,6 +89,10 @@ class MonzoAdapter(DataSourceAdapter):
                     file_hash=file_hash,
                     upload_timestamp=datetime.now(),
                     line_number=idx,
+                    bronze_record_id=make_bronze_record_id(
+                        file_hash, "transaction", idx
+                    ),
+                    source_ordinal=idx,
                 )
             )
 

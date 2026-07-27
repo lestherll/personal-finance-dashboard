@@ -10,7 +10,6 @@ Usage:
 """
 
 import hashlib
-import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -20,8 +19,14 @@ import pandas as pd
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.factory import AdapterDetectionError, AdapterFactory
-from config import RAW_DIR
 from models.datalake import get_datalake
+from models.ingestion import (
+    STATUS_BRONZE_FAILED,
+    STATUS_COMPLETE,
+    STATUS_PARSE_FAILED,
+    start_ingestion,
+    write_manifest,
+)
 from transformers.account_config import (
     find_unmapped_accounts,
     register_account,
@@ -92,31 +97,6 @@ def register_fallback(source_type, account_id, display_name, account_type):
     )
 
 
-def _archive_raw_file(path: Path, source_type: str, file_hash: str) -> str:
-    """Copy the original statement file into data/raw/{source_type}/, so all
-    uploaded statements live in one place instead of scattered wherever the
-    user downloaded them from. Never overwrites a differently-named file;
-    if the same filename was already archived with different content, the
-    new copy is suffixed with a short hash to avoid clobbering it.
-
-    Returns the destination path (as a string) - a repeat of the exact
-    same file (same name, same hash) is a no-op and just returns the
-    existing path.
-    """
-    dest_dir = RAW_DIR / source_type
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / path.name
-
-    if dest.exists():
-        existing_hash = hashlib.sha256(dest.read_bytes()).hexdigest()
-        if existing_hash == file_hash:
-            return str(dest)
-        dest = dest_dir / f"{path.stem}_{file_hash[:8]}{path.suffix}"
-
-    shutil.copy2(path, dest)
-    return str(dest)
-
-
 def _echo_reconciliation(result: Optional[ReconciliationResult]) -> None:
     if result is None or result.matches is None:
         return
@@ -155,6 +135,10 @@ def ingest(files):
         path = Path(file_arg)
         raw_bytes = path.read_bytes()
         file_hash = hashlib.sha256(raw_bytes).hexdigest()
+        manifest = start_ingestion(path, file_hash)
+        if manifest.status == STATUS_COMPLETE:
+            click.echo(f"✓ {path.name}: already ingested ({file_hash})")
+            continue
         content = (
             raw_bytes.decode("utf-8-sig")
             if path.suffix.lower() == ".csv"
@@ -164,10 +148,16 @@ def ingest(files):
         try:
             result = factory.ingest(content, path.name, file_hash)
         except AdapterDetectionError as e:
+            manifest.status = STATUS_PARSE_FAILED
+            manifest.error = str(e)
+            write_manifest(manifest)
             click.echo(f"✗ {path.name}: {e}")
             had_failure = True
             continue
         except ValueError as e:
+            manifest.status = STATUS_PARSE_FAILED
+            manifest.error = str(e)
+            write_manifest(manifest)
             click.echo(
                 f"✗ {path.name}: recognized the format but failed to parse "
                 f"this file ({e})"
@@ -176,11 +166,17 @@ def ingest(files):
             continue
 
         records = result.records
+        manifest.source_type = result.source_type or records[0].source_type
+        manifest.adapter = result.adapter or "test/legacy-adapter"
+        manifest.parser_version = result.parser_version
         if not records:
+            manifest.status = STATUS_PARSE_FAILED
+            manifest.error = "Adapter parsed zero records"
+            write_manifest(manifest)
             click.echo(f"⚠ {path.name}: parsed 0 records")
+            had_failure = True
             continue
 
-        source_type = records[0].source_type
         df = pd.DataFrame(
             [
                 {
@@ -190,20 +186,34 @@ def ingest(files):
                     "record_type": r.record_type,
                     "file_hash": r.file_hash,
                     "line_number": r.line_number,
+                    "bronze_record_id": r.bronze_record_id,
+                    "source_ordinal": r.source_ordinal,
                 }
                 for r in records
             ]
         )
-        filepath = datalake.write_bronze(
-            source_type,
-            path.name,
-            df,
-            reconciliation=result.reconciliation,
-            statement_period=result.statement_period,
-        )
-        raw_path = _archive_raw_file(path, source_type, file_hash)
+        try:
+            filepath = datalake.write_bronze(
+                manifest,
+                df,
+                reconciliation=result.reconciliation,
+                statement_period=result.statement_period,
+            )
+        except Exception as e:
+            manifest.status = STATUS_BRONZE_FAILED
+            manifest.error = str(e)
+            write_manifest(manifest)
+            click.echo(f"✗ {path.name}: failed to publish Bronze ({e})")
+            had_failure = True
+            continue
+
+        manifest.status = STATUS_COMPLETE
+        manifest.record_count = len(records)
+        manifest.bronze_path = filepath
+        manifest.error = None
+        write_manifest(manifest)
         click.echo(f"✓ {path.name}: {len(records)} record(s) -> {filepath}")
-        click.echo(f"  archived raw file -> {raw_path}")
+        click.echo(f"  archived raw file -> {manifest.raw_artifact_path}")
         _echo_reconciliation(result.reconciliation)
         _echo_statement_period(result.statement_period)
 

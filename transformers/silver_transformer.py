@@ -358,6 +358,7 @@ _LEDGER_NORMALIZERS = {
 }
 
 _TRANSACTIONS_COLUMNS = [
+    "bronze_record_id",
     "bronze_source_key",
     "source_type",
     "account_id",
@@ -373,6 +374,7 @@ _TRANSACTIONS_COLUMNS = [
 ]
 
 _HOLDINGS_COLUMNS = [
+    "bronze_record_id",
     "bronze_source_key",
     "account_id",
     "isin",
@@ -385,6 +387,7 @@ _HOLDINGS_COLUMNS = [
 ]
 
 _LEDGER_COLUMNS = [
+    "bronze_record_id",
     "bronze_source_key",
     "account_id",
     "source_type",
@@ -397,6 +400,7 @@ _LEDGER_COLUMNS = [
 ]
 
 _PLAN_IT_INSTALMENTS_COLUMNS = [
+    "bronze_record_id",
     "bronze_source_key",
     "account_id",
     "start_date",
@@ -447,6 +451,8 @@ class SilverTransformer:
                 )
                 rows.append(
                     {
+                        "bronze_record_id": bronze_row.get("bronze_record_id")
+                        or bronze_row.get("bronze_source_key"),
                         "bronze_source_key": bronze_row.get("bronze_source_key"),
                         "source_type": source_type,
                         "account_id": account_id,
@@ -486,6 +492,8 @@ class SilverTransformer:
             )
             rows.append(
                 {
+                    "bronze_record_id": bronze_row.get("bronze_record_id")
+                    or bronze_row.get("bronze_source_key"),
                     "bronze_source_key": bronze_row.get("bronze_source_key"),
                     "account_id": account_id,
                     **normalized,
@@ -519,6 +527,8 @@ class SilverTransformer:
             account_id = get_account_id(bronze_row.get("account_identifier"), "amex")
             rows.append(
                 {
+                    "bronze_record_id": bronze_row.get("bronze_record_id")
+                    or bronze_row.get("bronze_source_key"),
                     "bronze_source_key": bronze_row.get("bronze_source_key"),
                     "account_id": account_id,
                     **normalized,
@@ -559,6 +569,8 @@ class SilverTransformer:
                 )
                 rows.append(
                     {
+                        "bronze_record_id": bronze_row.get("bronze_record_id")
+                        or bronze_row.get("bronze_source_key"),
                         "bronze_source_key": bronze_row.get("bronze_source_key"),
                         "account_id": account_id,
                         "source_type": source_type,
@@ -675,21 +687,8 @@ def run_bronze_to_silver(
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     plan_it_df = transformer.normalize_plan_it_instalments(bronze_frames)
 
-    accounts_df = _dedupe_with_existing(
-        datalake, "accounts", accounts_df, ["account_id"]
-    )
-    transactions_df = _dedupe_with_existing(
-        datalake, "transactions", transactions_df, ["bronze_source_key"]
-    )
-    holdings_df = _dedupe_with_existing(
-        datalake, "holdings", holdings_df, ["bronze_source_key"]
-    )
-    ledger_df = _dedupe_with_existing(
-        datalake, "account_ledger", ledger_df, ["bronze_source_key"]
-    )
-    plan_it_df = _dedupe_with_existing(
-        datalake, "plan_it_instalments", plan_it_df, ["bronze_source_key"]
-    )
+    # Silver is a materialization of the current immutable Bronze set. Never
+    # merge with a prior build: that preserves stale rows after parser fixes.
 
     datalake.write_silver("accounts", accounts_df)
     datalake.write_silver("transactions", transactions_df)

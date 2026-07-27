@@ -13,6 +13,7 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "./data"))
 RAW_DIR = (
     DATA_DIR / "raw"
 )  # Original uploaded statement files (PDF/CSV), by source_type
+INGESTIONS_DIR = DATA_DIR / "ingestions"  # One manifest per raw artifact
 BRONZE_DIR = DATA_DIR / "bronze"  # Raw CSV uploads (immutable)
 SILVER_DIR = DATA_DIR / "silver"  # Normalized parquet files
 GOLD_DIR = DATA_DIR / "gold"  # Enriched parquet files
@@ -48,5 +49,5 @@ CELERY_CONFIG: dict[str, Any] = {
 }
 
 # Create directories if they don't exist
-for directory in [RAW_DIR, BRONZE_DIR, SILVER_DIR, GOLD_DIR]:
+for directory in [RAW_DIR, INGESTIONS_DIR, BRONZE_DIR, SILVER_DIR, GOLD_DIR]:
     directory.mkdir(parents=True, exist_ok=True)

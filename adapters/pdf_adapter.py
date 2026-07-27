@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, Union
 
 import fitz
 
-from adapters.base import DataSourceAdapter, RawRecord, hash_account_identifier
+from adapters.base import (
+    DataSourceAdapter,
+    RawRecord,
+    hash_account_identifier,
+    make_bronze_record_id,
+)
 
 _DECIMAL_RE = re.compile(r"[-+]?[\d,]+\.\d{2}")
 
@@ -133,6 +138,10 @@ class PdfAdapter(DataSourceAdapter):
                         line_number=idx,
                         account_identifier=account_identifier,
                         record_type=record_type,
+                        bronze_record_id=make_bronze_record_id(
+                            file_hash, record_type, idx
+                        ),
+                        source_ordinal=idx,
                     )
                 )
 

@@ -20,6 +20,14 @@ def hash_account_identifier(raw_identifier: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()[:12]
 
 
+def make_bronze_record_id(
+    ingestion_id: str, record_type: str, source_ordinal: int
+) -> str:
+    """Return an immutable identity for one parsed row in one raw artifact."""
+    material = f"{ingestion_id}:{record_type}:{source_ordinal}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
 @dataclass
 class RawRecord:
     """Minimal wrapper for raw data from a file."""
@@ -35,6 +43,8 @@ class RawRecord:
         str
     ] = None  # hashed; distinguishes multiple accounts of the same source_type
     record_type: str = "transaction"  # "transaction" | "holding"
+    bronze_record_id: Optional[str] = None
+    source_ordinal: Optional[int] = None
 
 
 @dataclass
@@ -58,6 +68,8 @@ class StatementPeriod:
 
 class DataSourceAdapter(ABC):
     """All adapters inherit from this."""
+
+    PARSER_VERSION = "1"
 
     def __init__(self) -> None:
         # Per-file, whole-statement facts a subclass's parse() may set -

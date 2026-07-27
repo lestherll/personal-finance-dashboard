@@ -67,6 +67,9 @@ class IngestResult:
     records: List[RawRecord]
     reconciliation: Optional[ReconciliationResult]
     statement_period: Optional[StatementPeriod]
+    source_type: str = ""
+    adapter: str = ""
+    parser_version: str = "1"
 
 
 class AdapterFactory:
@@ -214,4 +217,7 @@ class AdapterFactory:
             records=records,
             reconciliation=getattr(adapter, "last_reconciliation", None),
             statement_period=getattr(adapter, "last_statement_period", None),
+            source_type=adapter.detect_source_type(),
+            adapter=adapter.__class__.__name__,
+            parser_version=adapter.PARSER_VERSION,
         )

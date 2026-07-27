@@ -44,6 +44,7 @@ import pytest
 from adapters.base import hash_account_identifier
 from adapters.factory import AdapterFactory
 from models.datalake import DataLake
+from models.ingestion import IngestionManifest
 from transformers.account_config import register_account
 from transformers.balance import get_current_balances
 from transformers.coverage import find_coverage_gaps, find_statement_periods
@@ -280,9 +281,18 @@ def _ingest(datalake, factory, text, filename):
             for r in records
         ]
     )
+    manifest = IngestionManifest(
+        ingestion_id=file_hash,
+        original_filename=filename,
+        raw_artifact_path=f"/test/raw/{file_hash}.pdf",
+        status="archived",
+        created_at="2026-01-01T00:00:00+00:00",
+        source_type=result.source_type,
+        adapter=result.adapter,
+        parser_version=result.parser_version,
+    )
     datalake.write_bronze(
-        records[0].source_type,
-        filename,
+        manifest,
         df,
         reconciliation=result.reconciliation,
         statement_period=result.statement_period,

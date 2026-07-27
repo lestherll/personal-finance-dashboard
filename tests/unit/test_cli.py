@@ -16,6 +16,7 @@ from adapters.factory import (
     UnrecognizedFormatError,
 )
 from cli import cli
+from models.ingestion import IngestionManifest
 
 
 @pytest.fixture
@@ -30,6 +31,28 @@ def account_map_path(tmp_path, monkeypatch):
     path.write_text(json.dumps({"identifiers": {}, "source_type_fallback": {}}))
     monkeypatch.setattr("transformers.account_config.ACCOUNT_MAP_PATH", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def fake_ingestion_lifecycle(monkeypatch):
+    """Keep CLI command tests isolated from content-addressed disk storage."""
+    manifests = {}
+
+    def start(path, ingestion_id):
+        manifest = manifests.get(ingestion_id)
+        if manifest is None:
+            manifest = IngestionManifest(
+                ingestion_id=ingestion_id,
+                original_filename=path.name,
+                raw_artifact_path=f"/fake/raw/{ingestion_id}{path.suffix}",
+                status="archived",
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+            manifests[ingestion_id] = manifest
+        return manifest
+
+    monkeypatch.setattr(cli_module, "start_ingestion", start)
+    monkeypatch.setattr(cli_module, "write_manifest", lambda manifest: None)
 
 
 class TestRegisterCommand:
@@ -136,17 +159,17 @@ class _FakeDatalake:
         self.write_calls = []
 
     def write_bronze(
-        self, source_type, filename, df, reconciliation=None, statement_period=None
+        self, ingestion, df, reconciliation=None, statement_period=None
     ):
         self.write_calls.append(
             {
-                "source_type": source_type,
-                "filename": filename,
+                "source_type": ingestion.source_type,
+                "filename": ingestion.original_filename,
                 "reconciliation": reconciliation,
                 "statement_period": statement_period,
             }
         )
-        return f"/fake/bronze/{source_type}/{filename}.parquet"
+        return f"/fake/bronze/{ingestion.source_type}/{ingestion.ingestion_id}.parquet"
 
 
 class _FakeFactory:
@@ -188,11 +211,6 @@ class TestIngestCommand:
             lambda: _FakeFactory({"statement.pdf": outcome}),
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(pdf_path)])
         assert result.exit_code == 0
@@ -220,11 +238,6 @@ class TestIngestCommand:
             lambda: _FakeFactory({"statement.pdf": outcome}),
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(pdf_path)])
         assert result.exit_code == 1
@@ -255,11 +268,6 @@ class TestIngestCommand:
             lambda: _FakeFactory({"statement.pdf": outcome}),
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/statement.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(pdf_path)])
         assert result.exit_code == 0
@@ -273,7 +281,7 @@ class TestIngestCommand:
         mismatched_path = tmp_path / "mismatched.pdf"
         mismatched_path.write_bytes(b"%PDF-fake")
         good_path = tmp_path / "good.pdf"
-        good_path.write_bytes(b"%PDF-fake")
+        good_path.write_bytes(b"%PDF-good")
 
         mismatched_outcome = IngestResult(
             records=[_make_record(filename="mismatched.pdf")],
@@ -299,11 +307,6 @@ class TestIngestCommand:
             cli_module, "AdapterFactory", lambda: _FakeFactory(outcomes)
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/file.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(mismatched_path), str(good_path)])
         assert result.exit_code == 1
@@ -378,11 +381,6 @@ class TestIngestCommand:
             cli_module, "AdapterFactory", lambda: _FakeFactory(outcomes)
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/good.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(bad_path), str(good_path)])
         assert result.exit_code == 1
@@ -403,11 +401,6 @@ class TestIngestCommand:
             lambda: _FakeFactory({"good.pdf": good_outcome}),
         )
         monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
-        monkeypatch.setattr(
-            cli_module,
-            "_archive_raw_file",
-            lambda path, source_type, file_hash: "/fake/raw/good.pdf",
-        )
 
         result = runner.invoke(cli, ["ingest", str(good_path)])
         assert result.exit_code == 0
