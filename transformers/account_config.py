@@ -83,11 +83,31 @@ def _load(path: Optional[PathLike] = None) -> Dict[str, Dict[str, Dict[str, str]
     register_source_type_fallback invalidate the entry for their resolved
     path immediately after writing, so a registration is visible to the
     very next _load() call in-process.
+
+    One deliberate trade-off: only this module's own writes evict, so an
+    edit made by *another* process is invisible for the rest of this
+    process's lifetime. That is fine for the CLI (short-lived, one
+    register-or-rebuild per invocation) but a long-lived worker (Phase 3
+    Celery) would need to restart - or evict `_CACHE` itself - to see an
+    external edit.
+
+    The returned dict is the live cache entry: callers must not mutate it
+    (registrations copy first - see _fresh_copy).
     """
     resolved = _resolve_path(path)
     if resolved not in _CACHE:
         _CACHE[resolved] = _read_account_map_file(resolved)
     return _CACHE[resolved]
+
+
+def _fresh_copy(
+    config: Dict[str, Dict[str, Dict[str, str]]],
+) -> Dict[str, Dict[str, Dict[str, str]]]:
+    """Per-section shallow copy of a cached config, for registration to
+    mutate safely. Mutating the cached dict itself would leave a phantom
+    entry behind if the subsequent file write failed halfway - the next
+    _load() would serve an account that was never actually persisted."""
+    return {section: dict(entries) for section, entries in config.items()}
 
 
 def get_account_id(
@@ -166,7 +186,7 @@ def register_account(
     path: Optional[PathLike] = None,
 ) -> None:
     """Add (or overwrite) an identifier -> account mapping in the data store."""
-    config = _load(path)
+    config = _fresh_copy(_load(path))
     config["identifiers"][account_identifier] = {
         "account_id": account_id,
         "display_name": display_name,
@@ -184,7 +204,7 @@ def register_source_type_fallback(
 ) -> None:
     """Add (or overwrite) a source_type-level fallback (for sources with no
     extractable identifier at all, e.g. Monzo's CSV export)."""
-    config = _load(path)
+    config = _fresh_copy(_load(path))
     config["source_type_fallback"][source_type] = {
         "account_id": account_id,
         "display_name": display_name,

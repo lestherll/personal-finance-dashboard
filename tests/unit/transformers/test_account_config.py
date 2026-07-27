@@ -357,3 +357,25 @@ class TestAccountMapCaching:
         register_account("h2", "acc_2", "Account 2", "current", path=path)
 
         assert get_account_id("h2", "kroo", path=path) == "acc_2"
+
+    def test_failed_registration_does_not_poison_cache(self, tmp_path, monkeypatch):
+        """register_account used to mutate the cached config dict itself and
+        only then write it - so a write that failed halfway left the cache
+        serving an account that was never persisted, for the rest of the
+        process. Registration must copy first, so a failed write changes
+        nothing."""
+        path = tmp_path / "account_map.json"
+        with pytest.raises(KeyError):
+            get_account_id("h3", "kroo", path=path)  # primes the empty-map cache entry
+
+        def _failing_write(config, path):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(account_config, "_write", _failing_write)
+        with pytest.raises(OSError, match="disk full"):
+            register_account("h3", "acc_3", "Account 3", "current", path=path)
+        monkeypatch.undo()
+
+        # The cache must still serve the pre-registration (empty) map.
+        with pytest.raises(KeyError):
+            get_account_id("h3", "kroo", path=path)
