@@ -240,11 +240,19 @@ class TestBuildIdUniqueness:
     publish_silver_build os.rename()s onto it assuming it is free. At second
     granularity two rebuilds in the same second collided."""
 
-    def test_back_to_back_ids_are_unique(self):
-        from models.build import generate_build_id
+    def test_back_to_back_publishes_all_get_distinct_ids(self, lake):
+        """Exercise the guarantee where it actually matters - publish time.
+        (Asserting raw generate_build_id() calls are unique would be flaky:
+        at millisecond granularity nothing stops two calls landing in the
+        same millisecond on a fast machine. The publish path is protected
+        by the FileExistsError guard below regardless.)"""
+        dl, silver, _ = lake
 
-        ids = [generate_build_id() for _ in range(20)]
-        assert len(set(ids)) == len(ids), f"collision among {ids}"
+        build_ids = {
+            _publish(silver, transactions=[{"amount_minor": i}]) for i in range(5)
+        }
+
+        assert len(build_ids) == 5
 
     def test_two_rebuilds_in_the_same_second_both_publish(self, lake):
         dl, silver, _ = lake
