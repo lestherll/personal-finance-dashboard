@@ -10,6 +10,7 @@ Personal finance dashboard using a **medallion data lake architecture**. Ingests
 - **Query Engine:** DuckDB (in-process, no server)
 - **Orchestration:** Celery + Redis (configured but not yet wired up)
 - **Python Version:** 3.13+ (use `uv` to manage)
+- **Monetary values:** All financial data is stored as **signed integer minor units** (e.g. GBP pence) with explicit currency — never `float`. See `models/money.py`.
 
 See `ARCHITECTURE.md` for the full design philosophy and data flow.
 
@@ -52,14 +53,21 @@ factory = AdapterFactory()
 EOF
 ```
 
-### CLI (ingestion + account mapping)
+### CLI (ingestion + account mapping + Silver management)
 ```bash
 uv run python cli.py ingest <file> [<file> ...]           # Parse statement file(s), write to Bronze
-uv run python cli.py accounts list-unmapped              # Bronze accounts with no mapping yet
+uv run python cli.py accounts list-unmapped               # Bronze accounts with no mapping yet
 uv run python cli.py accounts register <hash> <account_id> <display_name> <current|credit|investment|savings>
 uv run python cli.py accounts register-fallback <source_type> <account_id> <display_name> <account_type>
 uv run python cli.py accounts coverage                    # Per-account statement periods ingested + flagged gaps
-uv run python cli.py accounts reconciliation               # Per-account balance-reconciliation status (B1 self-checks)
+uv run python cli.py accounts reconciliation              # Per-account balance-reconciliation status (B1 self-checks)
+uv run python cli.py accounts breakdown                   # Net-worth breakdown by account/holding
+uv run python cli.py silver rebuild                       # Full rebuild of Silver from current Bronze
+uv run python cli.py silver builds                        # List published Silver builds
+uv run python cli.py ingestions list                      # List all ingestion manifests
+uv run python cli.py ingestions show <ingestion_id>       # Show a full ingestion manifest
+uv run python cli.py ingestions quarantined               # List quarantined ingestions (mismatch, no override)
+uv run python cli.py ingestions override <id> --allow --reason "..."  # Override quarantine for an ingestion
 ```
 
 ---
@@ -68,29 +76,35 @@ uv run python cli.py accounts reconciliation               # Per-account balance
 
 ### Medallion Layers (Bronze → Silver → Gold)
 
-**Bronze Layer** (`data/bronze/{source_type}/`):
-- Raw, immutable Parquet files (one per upload)
+**Bronze Layer** (`data/bronze/{source_type}/{ingestion_id}.parquet`):
+- Raw, immutable Parquet files — one per ingestion, content-addressed by SHA-256 of the original uploaded bytes
 - Created by `adapters/` parsing CSV/PDF files
-- Stores as-is: Monzo fields, Natwest fields, etc. (no normalization yet)
-- Deduplication via deterministic `source_key` (prevents re-import duplicates)
-- `cli.py ingest` also archives a copy of the original uploaded file to `data/raw/{source_type}/`, so every statement ever ingested lives in one place instead of scattered wherever it was downloaded from (`_archive_raw_file()` in `cli.py`; never overwrites a differently-named file, suffixes with a short hash on a genuine name collision)
+- Original source files archived to `data/raw/sha256/{xx}/{sha256}.pdf` (content-addressed, immutable — never overwritten)
+- Every Bronze row carries `ingestion_id` (file hash), `bronze_record_id` (immutable hash of `ingestion_id:record_type:source_ordinal`), `source_type`, `parser_version`, and the adapter's `raw_data` dict preserved untouched
+- Idempotent re-ingest: same file → same ingestion_id → manifest already complete → skip (never overwrites)
+- Ingestion manifest (`data/ingestions/{sha256}.json`) tracks every file's status through the lifecycle: `archived` → parsing → `complete` / `parse_failed` / `bronze_failed`
+- All monetary values in `raw_data` are integer minor units (`amount_minor`, `balance_minor`), not float — see Gotcha #18
 
-**What Bronze guarantees** (hardened per `BRONZE_SILVER_HARDENING_PLAN.md`'s B1/B2/B3 — see Gotcha #14):
-- No double-counting on re-upload (`bronze_source_key` dedup, plus same-file/cross-format dedup — Gotchas #11, #13)
-- Full audit trail: original file archived to `data/raw/`, every field the adapter saw preserved untouched in the `raw_data` column
-- Friendly, typed errors on an unrecognized/ambiguous statement format: `AdapterFactory.detect_adapter()` raises `UnrecognizedFormatError`/`AmbiguousFormatError` (subclasses of `AdapterDetectionError`, itself a `ValueError` — `adapters/factory.py`), not a bare `ValueError` with no actionable message. `cli.py ingest` distinguishes "format not recognized" from "recognized but failed to parse" and exits nonzero if any file in the batch fails (still processes every file in the batch first — one bad file doesn't stop the rest)
-- **When the source statement itself prints a balance anchor** (Previous/New/Closing Balance, or equivalent): a structured, persisted self-check that parsed transactions actually reconcile — `reconciliation_check`/`reconciliation_expected_closing`/`reconciliation_derived_closing`/`reconciliation_matches` columns on the Bronze row (`models/datalake.py::write_bronze`), echoed by `cli.py ingest` (not just a log line anymore). Currently implemented: Amex, First Direct, Natwest Statement, Kroo, Chase, Monzo Flex, Monzo PDF, Vanguard PDF (per-wrapper — see below)
-- **When the source statement itself prints a coverage period** ("From X to Y", "Period Covered", a single "Statement Date", etc.): `statement_period_from`/`statement_period_to` columns on the Bronze row, queryable per-account via `cli.py accounts coverage` (`transformers/coverage.py::find_statement_periods()`/`find_coverage_gaps()`). Implemented for all 9 PDF source_types (`amex`, `natwest-transactions`, `natwest-statement`, `monzo-pdf`, `chase`, `vanguard-pdf`, `kroo`, `firstdirect`, `monzo-flex`) — First Direct only prints a single Statement Date, not a range, so its `from_date` is derived (one calendar month earlier, its known fixed monthly cycle), not read off the page.
+**What Bronze guarantees:**
+- No double-counting on re-upload (content-addressed, idempotent; two distinct files with the same original filename → two separate ingestions)
+- Full audit trail: original file archived to `data/raw/`, every field the adapter saw preserved untouched in `raw_data`, ingestion manifest records lifecycle status
+- Friendly, typed errors on unrecognized/ambiguous formats: `UnrecognizedFormatError`/`AmbiguousFormatError` (subclasses of `AdapterDetectionError`, itself a `ValueError` — `adapters/factory.py`). `cli.py ingest` distinguishes "format not recognized" from "recognized but failed to parse" and exits nonzero if any file in the batch fails (still processes every file in the batch first)
+- **Reconciliation self-check:** for sources whose statement prints a balance anchor (Previous/New/Closing Balance), a structured per-file verification that parsed transactions reconcile — persisted as `reconciliation_check`/`reconciliation_expected_closing_minor`/`reconciliation_derived_closing_minor`/`reconciliation_matches` columns on the Bronze row, echoed by `cli.py ingest`, and queryable via `cli.py accounts reconciliation`. Implemented for 8 of 10 source_types (all PDF sources except `natwest-transactions`, which has no balance data anywhere — see Gotcha #6)
+- **Statement period:** `statement_period_from`/`statement_period_to` columns, queryable via `cli.py accounts coverage`. Implemented for all 9 PDF source_types. First Direct only prints a single Statement Date, so its `from_date` is derived (one calendar month earlier)
+- **Quality gate:** reconciliation-mismatched ingestions (`matches=False`) are quarantined from Silver promotion unless overridden via `cli.py ingestions override`. Inconclusive (`matches=None`, e.g. natwest-transactions with no anchor) is not quarantined
 
 **What Bronze does *not* guarantee:**
-- That parsed numbers are correct for a source with no balance anchor to self-check against — reconciliation only catches errors for the 8 source_types listed above; see Gotcha #8's history of silent parsing bugs that predate this
-- Reconciliation columns for every source_type — only present when the adapter actually set them (see "Reaching 'proper Bronze' for a new adapter" below); absent (not `NaN`-filled) for sources with no balance anchor to check against at all (the CSV adapter (`monzo`); and `natwest-transactions`, which has no balance data anywhere, Gotcha #6). Statement-period columns, by contrast, are now present for all 9 PDF source_types — only the CSV adapter lacks that concept entirely.
+- That parsed numbers are correct for a source with no balance anchor to self-check against — `natwest-transactions` structurally has no balance data; see Gotcha #8 for history
+- The Monzo CSV adapter has no balance anchor or statement period concept at all
 
-**Silver Layer** (`data/silver/`):
-- Normalized records: `transactions.parquet`, `accounts.parquet`, `holdings.parquet`, `account_ledger.parquet`
-- Unified schema across all sources (e.g., all transaction amounts are single signed `amount` column, not Kroo's `out`/`in` split)
-- Account linking applied via hashed statement identifiers (sort code+account number, masked card number, etc.) resolved against `data/account_map.json` — see `transformers/account_config.py` and Gotcha #5
-- Created by `transformers/silver_transformer.py::run_bronze_to_silver()` (Phase 2 — done)
+**Silver Layer** (`data/silver/builds/` + `data/silver/current` symlink):
+- **Versioned builds with atomic publication:** each rebuild creates a new build directory under `data/silver/builds/<build_id>/` with all Parquet tables + `build.json` manifest. The `data/silver/current` symlink is swapped atomically (temp symlink + `os.replace`) only after all tables are written and validated. Old builds pruned (keep last 2).
+- Normalized records: `transactions`, `accounts`, `holdings`, `account_ledger`, `transaction_sources`, `plan_it_instalments`
+- **Exact-money schema:** all monetary columns are integer minor units (`amount_minor`, `balance_minor`, `total_value_minor`, `unit_price_minor` int64) + `currency` column
+- **Two-tier matching engine** (`transformers/matching.py`): same-source dedup by full content fingerprint (account, date, amount_minor, normalized description, occurrence); declared cross-source pairs (Natwest Transactions+Statement) match on loose key (account, date, amount_minor) with multiset counting, preferring the statement. Bank-provided transaction IDs (Monzo CSV) outrank both
+- **Transaction provenance:** `transaction_sources` table maps each canonical `silver_transaction_id` to every ingested `bronze_record_id` it subsumed, with match policy attribution
+- Unmapped-account pre-flight check raises `UnmappedAccountsError` listing all unmapped accounts at once before writing anything
+- Created by `transformers/silver_transformer.py::run_bronze_to_silver()`, exposed via `cli.py silver rebuild`
 
 **Gold Layer** (`data/gold/`):
 - Enriched records: `transactions.parquet`, `subscriptions.parquet`, `transfers.parquet`, `account_snapshots.parquet`
@@ -107,25 +121,30 @@ Located in `adapters/`:
 - `parse(file_content, filename, file_hash)` → `List[RawRecord]` — Extract transactions/holdings
 - `detect_source_type()` → `str` — Return adapter name (e.g., "monzo", "kroo")
 - `generate_source_key(txn, line_num, account_identifier=None)` → `str` — Deterministic key for dedup; PDF adapters fold `account_identifier` in so two accounts of the same source_type (e.g. two Amex cards) never collide
+- `PARSER_VERSION` class attr (default `"1"`, bumped to `"2"` by all adapters after exact-money migration) — tracked per ingestion in the manifest and build manifest
 
-`RawRecord` also carries `account_identifier` (hashed, see Gotcha #5) and `record_type` ("transaction" | "holding" — only Vanguard PDF produces both).
+`RawRecord` carries `bronze_record_id` (immutable identity), `source_ordinal`, `account_identifier` (hashed), and `record_type` ("transaction" | "holding" | "plan_it_instalment").
+
+**Adapter contract for amounts:** `raw_data` dict must carry `amount_minor` (int) — never `amount` (float). Reconciliation accumulators use integer minor arithmetic. `ReconciliationResult` uses `expected_closing_minor`/`derived_closing_minor` (int). See `models/money.py::parse_money_minor` / `try_parse_money_minor`.
 
 **CSV Adapters:** Monzo (`*_adapter.py`)
 - Parse string content (CSV text)
 - Handle format variations (e.g., Monzo has both "full export" and "search export" formats)
+- Emits `bank_transaction_id` from the Monzo native "id"/"Transaction ID" field
 
-**PDF Adapters:** Kroo, Natwest, Natwest Statement, First Direct, AmEx, Vanguard, Monzo, Chase (`*_pdf_adapter.py`)
+**PDF Adapters:** Kroo, Natwest, Natwest Statement, First Direct, AmEx, Vanguard, Monzo, Chase, Monzo Flex (`*_pdf_adapter.py`)
 - Inherit from `PdfAdapter` base (handles PyMuPDF text extraction)
 - Parse bytes content (PDF files)
 - Implement bank-specific regex patterns to extract transactions from extracted text
 - Handle multi-line transactions (PDF text extraction breaks table cells into separate lines)
-- Natwest has **two** unrelated PDF adapters, named to make the distinction explicit: `natwest_transactions_pdf_adapter.py` (source_type `"natwest-transactions"`) for the online "Transactions" export, and `natwest_statement_pdf_adapter.py` (source_type `"natwest-statement"`) for the quarterly Statement PDF. Both are needed for continuous coverage: the Statement is generated automatically by Natwest only every ~3 months, so the Transactions export (a manual, on-demand pull from online banking) is what covers whatever's happened *since* the last Statement. They share almost no structure (different section markers, different column layout, masked vs full account number) — see Gotcha #10.
+- Natwest has **two** unrelated PDF adapters (see Gotcha #10)
 
 **Factory:** `factory.py` auto-detects + routes:
 - Branches on content type: `str` → try CSV adapters, `bytes` → try PDF adapters
 - Scores each adapter, picks highest confidence
 - Raises if no valid match or ambiguous tie (< 0.05 confidence gap at top)
 - Supports disabling adapters: `AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)`
+- `IngestResult` carries records + reconciliation verdict (singular or plural for Vanguard per-wrapper) + statement period + source_type/adapter/parser_version
 
 ### Data Lake I/O
 
@@ -136,17 +155,26 @@ from models.datalake import get_datalake
 
 datalake = get_datalake()
 
-# Write raw records to Bronze
-datalake.write_bronze("monzo", "export_20260724.csv", df)
+# Write raw records to Bronze (content-addressed, immutable)
+datalake.write_bronze(ingestion_manifest, df, reconciliation=..., statement_period=...)
 
 # Read all Bronze records for a source
 df = datalake.read_bronze("monzo")
+
+# Read Silver through the current/ build symlink (falls back to flat file)
+df = datalake.read_silver("transactions")
 
 # Query across Parquet files with DuckDB SQL
 df = datalake.query("SELECT * FROM read_parquet('data/silver/transactions.parquet') LIMIT 10")
 ```
 
 Singleton pattern: `get_datalake()` returns cached connection; safe to call multiple times.
+
+`models/ingestion.py`: `IngestionManifest`, `start_ingestion()`, `load_manifest()`, `write_manifest()`, `archive_raw_artifact()` — content-addressed immutable ingestion lifecycle.
+
+`models/money.py`: `parse_money_minor()` / `try_parse_money_minor()` — text→int minor units; `minor_to_decimal()`, `format_minor()` — display. `MoneyParseError` raised on unparseable input (never silently returns 0).
+
+`models/build.py`: `publish_silver_build()` — versioned builds with atomic symlink swap; `list_builds()`, `current_build_id()`.
 
 ---
 
@@ -157,87 +185,70 @@ Singleton pattern: `get_datalake()` returns cached connection; safe to call mult
 1. **Create the adapter file** (`adapters/newbank_adapter.py`):
    ```python
    from adapters.base import DataSourceAdapter, RawRecord
-   
+   from models.money import parse_money_minor
+
    class NewBankAdapter(DataSourceAdapter):
+       PARSER_VERSION = "2"
+
        def validate(self, file_content: str) -> tuple[bool, float]:
-           # Check for bank-specific markers in CSV text
            if "NewBank" in file_content and "Transaction" in file_content:
                return True, 0.95
            return False, 0.0
-       
+
        def parse(self, file_content: str, filename: str, file_hash: str) -> List[RawRecord]:
-           # Parse CSV, extract transactions
            records = []
-           for row in csv.DictReader(file_content.splitlines()):
+           for idx, row in enumerate(csv.DictReader(file_content.splitlines()), start=1):
                records.append(RawRecord(
                    source_key=self.generate_source_key(...),
                    source_type="newbank",
-                   raw_data={"date": row["Date"], "amount": row["Amount"], ...},
+                   raw_data={
+                       "date": row["Date"],
+                       "description": row["Description"],
+                       "amount_minor": parse_money_minor(row["Amount"]),
+                       "amount_text": row["Amount"],
+                   },
                    filename=filename,
                    file_hash=file_hash,
                    upload_timestamp=datetime.now(),
                    line_number=idx,
+                   bronze_record_id=make_bronze_record_id(file_hash, "transaction", idx),
+                   source_ordinal=idx,
                ))
            return records
-       
-       def generate_source_key(self, txn: dict, line_num: int) -> str:
-           return f"newbank_txn_{txn['date']}_{txn['amount']}"
-       
+
+       def generate_source_key(self, txn: dict, line_num: int, account_identifier=None) -> str:
+           return f"newbank_txn_{txn['date']}_{txn['amount_minor']}"
+
        def detect_source_type(self) -> str:
            return "newbank"
    ```
+   Key: emit `amount_minor` (int minor units) in `raw_data`, not `amount` (float). Construct `bronze_record_id` via `make_bronze_record_id`. Bump `PARSER_VERSION` on semantic changes.
 
 2. **Register in factory** (`adapters/factory.py`):
    - Add import: `from adapters.newbank_adapter import NewBankAdapter`
    - Add to `self.csv_adapters` list (or `self.pdf_adapters` if PDF)
 
-3. **Add tests** (`tests/unit/adapters/test_newbank_adapter.py`):
-   - Use fixtures in `tests/conftest.py` to create sample data
+3. **Add a Silver normalizer** in `transformers/silver_transformer.py` — add to `_TRANSACTION_NORMALIZERS` dict. Emit `amount_minor`, `currency`, `bank_transaction_id`.
+
+4. **Add tests** (`tests/unit/adapters/test_newbank_adapter.py`):
    - Test validation, parsing, source key generation
+   - If the adapter has a balance anchor, add reconciliation tests (match, mismatch, reset-between-parses per Gotcha #14)
 
 ### Reaching "proper Bronze" for a new PDF adapter
 
-The steps above (`RawRecord`, `generate_source_key` folding in `account_identifier`) are required for every adapter and are enough to *ship*. Two more whole-file facts feed Bronze's reconciliation/coverage guarantees (see above) — both optional, both keyed off what the *source statement itself* prints, not something to fabricate or infer:
-
-**Reconciliation** — if the statement prints a balance anchor (a "Previous Balance"/"Closing Balance"/"New Balance" pair, or similar):
-1. Extract the anchor value(s) with a regex against the extracted text — see `_PREVIOUS_BALANCE_RE`/`_NEW_BALANCE_RE` in `first_direct_pdf_adapter.py` or the column-flattened `_ACCOUNT_SUMMARY_RE` in `amex_pdf_adapter.py` for two different real layouts.
-2. Roll a `Decimal` running balance forward through parsed transactions from the anchor. Mind the sign convention — the printed balance is typically a liability/asset that moves *opposite* to the signed `amount` field (`balance -= amount`, not `+=`) — see Gotcha #6.
-3. Set `self.last_reconciliation = ReconciliationResult(check_name=..., expected_closing=..., derived_closing=..., matches=...)` (dataclass in `adapters/base.py`) — **reset to `None` at the very top** of whichever method computes it, not only inside the "anchor found" branch (see Gotcha #14).
-4. If the source has no rolled-forward balance concept at all but a per-row balance is a *direct read* (not derived) and a separate closing anchor is printed, a lighter check comparing the last transaction's own balance to that anchor still counts — see `KrooPdfAdapter._check_reconciliation`.
-5. If one file can cover *more than one* distinct account (Vanguard's ISA + Personal Pension wrappers), a single `self.last_reconciliation` can't hold two results — use the additive `self.last_reconciliations: List[ReconciliationResult]` instead (reset to `[]` at the top, same discipline), tagging each result's `account_identifier` field with that account's hashed identifier so `write_bronze()` can assign it to only that account's Bronze rows rather than broadcasting one scalar file-wide. See `VanguardPdfAdapter._check_reconciliation`/`_sum_wrapper_holdings_total`.
-
-**Statement period** — if the statement prints its own coverage range ("From X to Y", "Period Covered", etc.):
-1. Extract it with a regex — see `_PERIOD_RE` in `amex_pdf_adapter.py`/`natwest_transactions_pdf_adapter.py`, or `_PERIOD_COVERED_RE` in `natwest_statement_pdf_adapter.py`.
-2. Set `self.last_statement_period = StatementPeriod(from_date, to_date)` (dataclass in `adapters/base.py`) — same reset-at-top discipline as reconciliation.
-3. If the period is *also* needed to resolve missing years on individual transaction dates (see Gotcha #7), that's a separate, already-existing use of the same extracted period via `resolve_year_in_period()` — don't conflate the two call sites, they serve different purposes even when they parse the same text.
-
-Neither is required to ship a working adapter. Monzo PDF is a direct-read balance, but (like Kroo/Monzo Flex) its statement separately prints a closing anchor to check that direct-read balance against, so it does get a lighter reconciliation check despite never rolling a balance forward — see `MonzoPdfAdapter._check_reconciliation`. Vanguard PDF is also a direct-read balance (no rolled-forward concept), but its page-1 "Your Vanguard account summary" table prints a separate closing anchor *per wrapper* — confirmed against real data as exact: `Value on <end date>` equals that wrapper's holdings total (fund `total_value` + cash `total_value`). Since that's two anchors from one file, it's the first (and so far only) adapter using the multi-result `self.last_reconciliations` channel instead of the singular `self.last_reconciliation` — see point 5 above and `VanguardPdfAdapter._check_reconciliation`. But when the source *does* print the anchor/period, capturing it is what makes Bronze's guarantees actually apply to that source — and Bronze's biggest historical class of bug (Gotcha #8) is exactly the kind of thing a reconciliation check catches automatically instead of needing another manual statement-by-statement audit.
-
-Add matching tests per the pattern in e.g. `tests/unit/adapters/test_amex_pdf_adapter.py`'s `TestAmexReconciliation`/`TestAmexStatementPeriod`: a match case, a mismatch/missing-anchor case, and a reset-between-parses regression test (adapter instances are reused across files within one `cli.py ingest` invocation — see Gotcha #14).
+See the full guide at Gotcha #14 and in the relevant adapter files. Key contract points:
+- Reconciliation: if the statement prints a balance anchor, compute a `ReconciliationResult(check_name, expected_closing_minor, derived_closing_minor, matches)`, set it on `self.last_reconciliation` (or `self.last_reconciliations` for multi-account files like Vanguard), and **reset to None/[] at the top** of the method
+- Statement period: extract from text, set `self.last_statement_period`, same reset discipline
+- Multi-account files: use `self.last_reconciliations: List[ReconciliationResult]` with per-result `account_identifier` — see `VanguardPdfAdapter._check_reconciliation`
+- All monetary values in `ReconciliationResult` are integer minor units
 
 ### Writing a Silver Transformer
 
-Silver transformers normalize multi-source raw data to a common schema. Implemented in `transformers/silver_transformer.py` (Phase 2 — done).
-
-Pattern used:
-1. `SilverTransformer` class with `normalize_transactions(bronze_frames)`, `normalize_holdings(bronze_frames)`, `normalize_account_ledger(bronze_frames)`:
-   - Each takes a `dict[source_type, Bronze DataFrame]`
-   - A per-`source_type` normalizer function (`_TRANSACTION_NORMALIZERS` dict) maps that source's `raw_data` fields to the common schema
-   - Returns a normalized DataFrame ready for `write_silver`
-2. Account linking: `transformers/account_config.py::get_account_id(account_identifier, source_type)` — resolves against `data/account_map.json`, a data file, not code (see Gotcha #5)
-3. `run_bronze_to_silver(datalake)` is the orchestration entry point — pre-flight checks every Bronze account is mapped (raises `UnmappedAccountsError` listing *all* unmapped accounts at once if not), then normalizes, merges with existing Silver data via `_dedupe_with_existing()` (dedup by `bronze_source_key`, idempotent reruns), and writes all four Silver tables
-4. To add a new adapter's transactions to Silver: add a normalizer function to `_TRANSACTION_NORMALIZERS`. To register a new physical account: `uv run python cli.py accounts list-unmapped` then `accounts register` — never hand-edit `account_map.json`
-
-**PDF date-year handling:** see Gotcha #7 — Natwest Transactions, Natwest Statement, and AmEx all now stamp a real year onto transaction dates at the adapter level when the statement's period header is found; `_infer_dated_with_year()` here is the fallback for when it isn't (or for Bronze rows ingested before that existed).
-
-### Adding a Gold Enrichment
-
-Gold enrichments add business logic (subscription detection, transfer matching, etc.). Not yet implemented (Phase 3 scope).
-
-Pattern to follow:
-1. Create task in `tasks/gold_tasks.py` (once Celery is wired up)
-2. Read Silver layer, apply heuristics, write to Gold layer
-3. E.g., `detect_subscriptions(silver_transactions_df)` → identify recurring monthly charges
+Pattern (already implemented, extend when adding adapters):
+- `SilverTransformer` class with `normalize_transactions()`, `normalize_holdings()`, `normalize_account_ledger()`, `normalize_plan_it_instalments()`
+- `run_bronze_to_silver()` orchestrates: pre-flight unmapped-account check → read Bronze → normalize → match (two-tier dedup) → publish via versioned build
+- To add a new adapter's transactions: add a normalizer function to `_TRANSACTION_NORMALIZERS` that reads `amount_minor`/`balance_minor` from `raw_data`
+- To register a new physical account: `uv run python cli.py accounts list-unmapped` then `accounts register` — never hand-edit `account_map.json`
 
 ---
 
@@ -245,25 +256,33 @@ Pattern to follow:
 
 | File | Purpose |
 |------|---------|
-| `adapters/base.py` | `DataSourceAdapter` ABC; all adapters inherit from this |
-| `adapters/factory.py` | `AdapterFactory.detect_adapter()` + `ingest()` — main entry point |
-| `adapters/*_adapter.py` | Concrete adapters for each bank/format |
-| `adapters/natwest_transactions_pdf_adapter.py` | Natwest on-demand online "Transactions" export PDF (`"natwest-transactions"`) — covers the gap since the last quarterly Statement; see Gotcha #10 |
-| `adapters/natwest_statement_pdf_adapter.py` | Natwest quarterly Statement PDF (`"natwest-statement"`), generated automatically every ~3 months — distinct from `natwest_transactions_pdf_adapter.py`'s on-demand export; see Gotcha #10 |
-| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `_parse_decimal()` helper, `resolve_year_in_period()` — see Gotcha #7) |
-| `adapters/monzo_flex_pdf_adapter.py` | Monzo Flex (BNPL/credit) statement PDF (`"monzo-flex"`) — no account identifier anywhere in the document (single-account-only via `register-fallback`); table is newest-first, so its reconciliation check compares the *first* parsed transaction to "Balance at end" (mirror image of Kroo's oldest-first check); known cosmetic page-split description-scramble, numerically unaffected — see Gotcha #16 |
-| `models/datalake.py` | `DataLake` singleton for Parquet I/O + DuckDB queries |
+| `adapters/base.py` | `DataSourceAdapter` ABC, `RawRecord`, `ReconciliationResult`, `StatementPeriod` dataclasses, `make_bronze_record_id()`, `hash_account_identifier()` |
+| `adapters/factory.py` | `AdapterFactory.detect_adapter()` + `ingest()` — main entry point; `IngestResult` carries records + reconciliation + period |
+| `adapters/*_adapter.py` | Concrete adapters for each bank/format (10 total) |
+| `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `resolve_year_in_period()`) |
+| `adapters/natwest_transactions_pdf_adapter.py` | Natwest on-demand online "Transactions" export — covers the gap since the last quarterly Statement; see Gotcha #10 |
+| `adapters/natwest_statement_pdf_adapter.py` | Natwest quarterly Statement PDF — distinct from the Transactions export; see Gotcha #10 |
+| `adapters/vanguard_pdf_adapter.py` | Vanguard PDF — multi-wrapper (ISA+Pension), per-wrapper reconciliation via `last_reconciliations` |
+| `adapters/monzo_flex_pdf_adapter.py` | Monzo Flex (BNPL/credit) — newest-first, single-account fallback registration; see Gotcha #16 |
+| `models/datalake.py` | `DataLake` singleton for Parquet I/O + DuckDB queries; `write_bronze` content-addressed + atomic |
+| `models/ingestion.py` | `IngestionManifest` dataclass + lifecycle (start_ingestion, load/write_manifest, archive_raw_artifact) |
+| `models/money.py` | Exact-money utilities: `parse_money_minor`, `format_minor`, `MoneyParseError` |
+| `models/build.py` | Versioned Silver builds with atomic symlink swap: `publish_silver_build`, `list_builds`, `current_build_id` |
 | `config.py` | Paths, logging level, Celery/Redis config (read-only at runtime) |
 | `logging_config.py` | Structured logging setup (dictConfig-based) |
-| `tests/conftest.py` | Shared pytest fixtures (sample CSV strings) |
-| `tests/unit/adapters/` | Unit tests for adapters (CSV + all 9 PDF adapters have coverage, plus the shared `PdfAdapter` base class in `test_pdf_adapter.py`) |
-| `cli.py` | `ingest` (Bronze ingestion) + `accounts list-unmapped/register/register-fallback` — CLI for the account map |
-| `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization (Phase 2) |
-| `transformers/account_config.py` | `get_account_id()`/`find_unmapped_accounts()`/`register_account()` — resolves against `data/account_map.json` (user data, not code) |
-| `transformers/coverage.py` | `find_statement_periods()`/`find_coverage_gaps()` — Bronze statement-period coverage tracking (`cli.py accounts coverage`), see Bronze guarantees above |
-| `transformers/balance.py` | `get_current_balances()`/`get_net_worth()` — stable-ordered current balance & net worth queries over `account_ledger` (Silver S2) |
-| `transformers/reconciliation_status.py` | `find_reconciliation_status()` — queryable per-file B1 reconciliation status (`cli.py accounts reconciliation`), Silver S3 |
-| `tests/unit/transformers/` | Unit tests for the Silver transformer + account config |
+| `cli.py` | `ingest`, `accounts *`, `silver rebuild/builds`, `ingestions *` — full CLI surface |
+| `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization with quality-gate quarantining |
+| `transformers/matching.py` | Two-tier transaction dedup (fingerprint + cross-source policies) + `transaction_sources` provenance |
+| `transformers/account_config.py` | Account mapping via `data/account_map.json` (user data, not code) |
+| `transformers/coverage.py` | `find_statement_periods()`/`find_coverage_gaps()` — per-account statement period coverage |
+| `transformers/balance.py` | `get_current_balances()`/`get_net_worth()`/`get_net_worth_breakdown()` — exact int minor arithmetic |
+| `transformers/reconciliation_status.py` | `find_reconciliation_status()` — queryable per-file reconciliation status |
+| `tests/conftest.py` | Shared pytest fixtures |
+| `tests/unit/adapters/` | Unit tests for all 10 adapters + base adapter |
+| `tests/unit/transformers/` | Unit tests for Silver transformer, balance, coverage, reconciliation, matching |
+| `tests/unit/models/` | Unit tests for ingestion, datalake |
+| `tests/integration/natwest_overlap/` | Disk-backed full-pipeline integration test for Natwest cross-format dedup |
+| `tests/e2e/` | Hermetic clean-checkout end-to-end tests (ingest→Bronze→Silver→net_worth, idempotency, money round-trip) |
 | `tasks/` | (Empty, Phase 3) Celery task definitions go here |
 | `ARCHITECTURE.md` | Design philosophy, data flow diagrams, Phase roadmap |
 
@@ -271,47 +290,37 @@ Pattern to follow:
 
 ## Current Status
 
-**Phase 1 ✅ DONE:** Adapters (CSV + PDF parsing)
-- 10 source_types working: Monzo (CSV); Kroo, Natwest Transactions, Natwest Statement, First Direct, AmEx, Vanguard, Monzo, Chase, Monzo Flex (PDF)
-- CSV adapters are currently disabled by default (`AdapterFactory(disabled_source_types=AdapterFactory.CSV_SOURCE_TYPES)`) — real exports are PDF-only for this user; CSV code still works and is tested, just not in the default routing path. Note: `cli.py ingest` itself uses the plain `AdapterFactory()` (CSV not disabled there) — a Monzo CSV adapter does exist (`adapters/monzo_adapter.py`), so don't assume it's absent. Natwest CSV and Vanguard CSV never existed as real export formats for this user and were removed entirely (adapters, tests, fixtures, `_TRANSACTION_NORMALIZERS`/`_LEDGER_NORMALIZERS` entries) rather than left as dead code — the only CSV adapter is Monzo
-- ⚠️ AmEx and Vanguard PDF adapters were rewritten after validating against real statements — the original implementations didn't actually work against real exports despite being marked "tested manually". See Gotcha #8 before trusting a "tested manually" claim on a PDF adapter
-- Monzo PDF adapter added and validated against a real "Personal Account statement" export (73 txns) — see Gotcha #10 for a false-positive bug this surfaced in the Kroo adapter. A balance-reconciliation self-check (`_check_reconciliation`, the same "lighter check" pattern as Kroo/Monzo Flex — a direct-read balance confirmed against a separately printed closing anchor, not rolled forward) was added later, comparing the first (most recent) parsed transaction's own balance to the summary block's "Personal Account balance" figure; verified against both the test fixture and a real archived statement whose PDF was generated 25 days after its own period end and still matched exactly, confirming this is a genuine period-end anchor rather than a live-now balance that would have drifted. Chase PDF adapter added, covering both the current account and Chase Saver statements (distinguished by `account_identifier`, same two-accounts-one-source_type pattern as Amex — see Gotcha #5); validated end-to-end against both real statements (balance capture, reconciliation against the printed Opening/Closing balance block, and both real accounts registered/ingested with correct disambiguation)
-- ✅ Amex's `_select_amount_block`-class bugs (amount mispairing/dropped transactions, wrong credit signs on "OTHER ACCOUNT TRANSACTIONS", an Account Summary regex that broke on Plan-It-active statements, and a missing Plan It balance component) — root-caused and fixed by switching transaction extraction to PyMuPDF's `sort=True` mode. All 7 real Amex statements available now reconcile exactly against their printed Closing Balance (previously 0 of 7 did). Full investigation trail in `AMEX_BUG_HANDOFF.md`.
-- Monzo Flex PDF adapter added and validated against a real statement (127 txns, reconciles exactly against the printed "Balance at end"). A credit/BNPL product with no account identifier anywhere in the document (unlike its sibling Personal Account adapter) — single Flex account assumed, registered via `register-fallback`. Newest-first transaction order (like Monzo PDF) required adding `"monzo-flex"` to `transformers/balance.py::_REVERSE_CHRONOLOGICAL_SOURCE_TYPES`, or same-day balance queries silently pick the wrong row — see Gotcha #16. Also has a known, accepted cosmetic limitation where a description split across a page boundary lands on the wrong row (numerically unaffected).
+**Critical Hardening (Milestones 1–3 + Items 4–6) ✅ DONE** — see `CRITICAL_HARDENING_PLAN.md` and `CRITICAL_HARDENING_HANDOFF.md`:
+- M1: Immutable content-addressed Bronze ingestion with per-file manifest lifecycle
+- M2: Stable source-record identity (`bronze_record_id`), two-tier Silver matching interface with provenance, versioned atomic Silver builds
+- M3: Exact-money schema (all monetary values are integer minor units, all adapters bumped to `PARSER_VERSION="2"`)
+- Item 4: Quality gate — reconciliation verdict in manifest, quarantine + override CLI
+- Item 5: Holdings snapshot semantics — per-account latest complete snapshot used for net worth
+- Item 6: Atomic Silver publication, hermetic E2E tests, cleanup (dedup key fixes, pyarrow import, schema.py removed)
+- Real statement data ingested and verified: 28 files, 697 transactions, £10,084.76 net worth, all reconciling files pass
 
-**Phase 2 ✅ DONE: Silver Transformations**
-- Account linking via hashed statement identifiers resolved against `data/account_map.json` (`transformers/account_config.py`) — distinguishes multiple accounts of the same source_type (e.g. two Amex cards, Natwest current vs credit), not just cross-source dedup
-- Schema normalization for all 10 source_types → `transactions`, `holdings`, `account_ledger` (`transformers/silver_transformer.py`)
-- Deduplication by `bronze_source_key`, idempotent reruns (`_dedupe_with_existing`); Natwest's two PDF formats additionally get cross-format dedup by `(account_id, transaction_date, amount)` since they can cover overlapping periods (`_dedupe_natwest_cross_format`, see Gotcha #11)
-- New accounts registered via `cli.py accounts register`, not hand-edited into `account_map.json`
-- `account_ledger` now covers Kroo, AmEx, First Direct, Natwest Statement, Monzo PDF, Chase, and Monzo Flex. Still excluded: `natwest-transactions` (the online export has no balance data in the source document at all) and `vanguard-pdf` (its per-line `cash_balance` is a different metric from Portfolio Value — kept in `raw_data` but not wired into the ledger). See Gotcha #6.
-- Natwest Transactions, Natwest Statement, and AmEx transaction dates all get a real year at parse time whenever the statement's own period header is found (`resolve_year_in_period()`, `_extract_statement_period()`/`_extract_period_covered()` per adapter) — falls back to upload-timestamp inference (`_infer_dated_with_year()` in `silver_transformer.py`) for Bronze rows ingested before this existed, or if the period header isn't present. See Gotcha #7.
+**Phase 1 ✅ DONE:** Adapters (CSV + PDF parsing) — 10 source_types
 
-**Bronze Hardening (B1/B2/B3) ✅ DONE, extended (B4):** see `BRONZE_SILVER_HARDENING_PLAN.md` for the full rationale/history — structured per-file reconciliation status (B1), friendly typed detection errors (B2), and statement coverage tracking (B3) are implemented; see "What Bronze guarantees" above and Gotcha #14. B4 (not in the original plan doc) extended statement-period capture from 3 to all 8 PDF source_types.
+**Phase 2 ✅ DONE:** Silver Transformations — full normalization, matching, provenance, versioned builds
 
-**Silver Hardening (S1-S3) ✅ DONE:** `account_ledger`/`transactions` now carry `upload_timestamp`/`statement_period_to`/`line_number` for a stable same-day tie-break (S1) — fixes a real bug where a naive "latest balance" query returned the wrong row. `transformers/balance.py::get_current_balances()`/`get_net_worth()` (S2, Python helpers, no CLI) and `transformers/reconciliation_status.py::find_reconciliation_status()` + `cli.py accounts reconciliation` (S3, mirrors `coverage.py`) are implemented. S4 (merchant normalization) remains deferred, per the plan doc's own recommendation.
+**Bronze Hardening (B1/B2/B3) ✅ DONE, extended (B4):** reconciliation, detection errors, statement coverage
+
+**Silver Hardening (S1-S3) ✅ DONE:** same-day ordering, current balance/net worth, queryable reconciliation. S4 (merchant normalization) deferred.
 
 **Phase 3 (Next): Celery Orchestration** (configured but not wired up)
-- Bronze→Silver transformation job — should just wrap `run_bronze_to_silver()`
-- Silver→Gold enrichment job
-- Job chaining + error recovery
 
-**Phase 4: Testing**
-- ✅ Unit tests for all PDF adapters (all 9 have coverage)
-- Integration tests for the full Bronze→Silver→Gold pipeline (transformer unit tests exist; no disk-backed integration test yet)
-- E2E tests with real files
+**Phase 4: Testing** — ✅ Unit + integration + E2E tests exist
 
 ---
 
 ## Testing Notes
 
-- **Unit tests** live in `tests/unit/adapters/` and use sample CSV strings from `conftest.py`
-- **PDF adapters** have pytest coverage (`tests/unit/adapters/test_*_pdf_adapter.py`, fabricated fixtures mirroring real structural patterns) and were validated against real downloaded statements during development — see Gotcha #8
-- **Silver transformer unit tests** live in `tests/unit/transformers/` — normalize_* methods are tested purely in-memory (no disk I/O); `run_bronze_to_silver()` itself has only been verified manually end-to-end (via a temp `DATA_DIR`), not under pytest
-- **CLI (`cli.py`) tests** live in `tests/unit/test_cli.py`, using `click.testing.CliRunner`
-- **No integration tests yet** (disk-backed Bronze→Silver→Gold pipeline)
+- **Unit tests** cover adapters, models, transformers, CLI
+- **Integration tests** in `tests/integration/natwest_overlap/` exercise the disk-backed pipeline (real Bronze→Silver, cross-format dedup)
+- **E2E tests** in `tests/e2e/` run on clean `tmp_path` checkouts: ingest→Silver→net_worth, idempotent re-ingest, same-name different bytes, money round-trip
+- **403 tests pass, 88% coverage** (threshold 85%)
 - Dev dependencies require `uv sync --extra dev` (pytest, black, ruff not auto-installed with base `uv sync`)
-- **A fresh git worktree has no `data/account_map.json`:** it's gitignored user data, so `tests/unit/transformers/test_silver_transformer.py` (whose fixtures resolve real account IDs, not just source_type fallbacks) will fail with `KeyError: No account mapping for ...` until it's copied in from another checkout that already has one. Safe to copy — it's just hashed-identifier → account_id/display_name/type mappings, no financial figures.
+- **A fresh git worktree has no `data/account_map.json`:** it's gitignored user data. Copy from another checkout that has one — safe, it's just hashed-identifier → account_id/display_name/type mappings, no financial figures.
 
 ---
 
@@ -319,7 +328,8 @@ Pattern to follow:
 
 Read-only at runtime (defined in `config.py`):
 - `DATA_DIR` — root data lake directory (default: `./data`)
-- `RAW_DIR`, `BRONZE_DIR`, `SILVER_DIR`, `GOLD_DIR` — medallion layer paths, plus `RAW_DIR` (`data/raw/{source_type}/`), where `cli.py ingest` archives a copy of every original uploaded file (see Architecture)
+- `RAW_DIR`, `BRONZE_DIR`, `SILVER_DIR`, `GOLD_DIR` — medallion layer paths
+- `INGESTIONS_DIR` — per-ingestion manifest JSON files (default: `data/ingestions/`)
 - `DUCKDB_PATH` — DuckDB database file path
 - `LOG_LEVEL` — logging level (default: `INFO`)
 - `REDIS_URL` — Redis broker for Celery (default: `redis://localhost:6379/0`)
@@ -327,59 +337,54 @@ Read-only at runtime (defined in `config.py`):
 
 Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`, `ACCOUNT_MAP_PATH`.
 
-`data/` is gitignored — raw statements, Bronze/Silver/Gold parquet, the DuckDB file, and `account_map.json` are all personal financial data and never committed.
+`data/` is gitignored — raw statements, Bronze/Silver/Gold parquet, ingestion manifests, the DuckDB file, and `account_map.json` are all personal financial data and never committed.
 
 ---
 
 ## Common Gotchas
 
-1. **PyArrow import placement:** In `models/datalake.py`, `import pyarrow as pa` is at the bottom (line 177) instead of top. This works at runtime but is unconventional; consider moving it to the top.
+1. ~~**PyArrow import placement**~~ ✅ Fixed — `import pyarrow as pa` is now at the top of `models/datalake.py`.
 
-2. **PDF adapter field normalization:** ✅ Resolved in Phase 2 — `transformers/silver_transformer.py`'s `_TRANSACTION_NORMALIZERS` maps each source_type's `raw_data` shape (Kroo's already-signed `amount`, Natwest Statement's balance-derived `amount`, Monzo's full-vs-search export field names, etc.) to the common `transactions` schema.
+2. **PDF adapter field normalization:** ✅ Resolved — `_TRANSACTION_NORMALIZERS` / `_LEDGER_NORMALIZERS` normalize per-adapter shapes to a common schemas with `amount_minor`/`balance_minor`.
 
-3. **Re-upload deduplication:** Based on `source_key` (deterministic hash of date + description + amount). If parsing logic changes and produces different `source_key` for the same transaction, it could be imported twice. Document the generation rule clearly per adapter.
+3. **Re-upload deduplication:** Content-addressed by SHA-256. Same file → same `ingestion_id` → manifest already complete → skip. Different files with the same original filename → two separate ingestion_ids, no collision. Cross-file transaction matching is handled by the two-tier matching engine (`transformers/matching.py`).
 
 4. **Celery not yet wired:** Celery/Redis dependencies are installed and `CELERY_CONFIG` dict exists, but no Celery app instance or `@app.task` decorators exist yet. Phase 3 will wire this up.
 
-5. **Account linking:** PDF adapters extract a real identifier from the statement (sort code+account number, masked card number, Vanguard account+wrapper), hash it (`adapters/base.py::hash_account_identifier` — SHA256 truncated, never stores the raw number), and resolve it against `data/account_map.json`. That file is a data store, not code — it's user data and deliberately kept out of source control/hardcoding. New accounts go through `uv run python cli.py accounts register`, not hand-editing JSON. `run_bronze_to_silver()` pre-flight-checks every account is mapped and raises `UnmappedAccountsError` listing *all* unmapped accounts at once (not just the first) before writing anything.
+5. **Account linking:** PDF adapters extract a real identifier from the statement (sort code+account number, masked card number, Vanguard account+wrapper), hash it (`hash_account_identifier` — SHA256 truncated, never stores the raw number), and resolve it against `data/account_map.json`. That file is a data store, not code — it's user data and deliberately kept out of source control. New accounts go through `uv run python cli.py accounts register`, not hand-editing JSON. `run_bronze_to_silver()` pre-flight-checks every account is mapped and raises `UnmappedAccountsError` listing *all* unmapped accounts at once.
 
-6. **`account_ledger` balance coverage (mostly resolved):** Kroo, AmEx, First Direct, Natwest Statement (`natwest-statement`), Monzo PDF (`monzo-pdf`), and Chase all now capture a `balance` field in `raw_data` and are wired into `LEDGER_SOURCE_TYPES`/`_LEDGER_NORMALIZERS`. Two PDF sources are still excluded, for different reasons:
-   - `natwest-transactions` (the online "Transactions" export): verified against a real download — this document genuinely has **no balance data anywhere**, not even an opening balance. Nothing to capture; this isn't fixable without a different export format from Natwest.
-   - `vanguard-pdf`: its per-line "Cash balance" (captured as `raw_data["cash_balance"]`) is uninvested cash sitting in a wrapper (ISA/pension), not the wrapper's total value — a different metric from "Portfolio Value". Deliberately kept separate rather than mixed into `account_ledger.balance`.
+6. **`account_ledger` balance coverage:** Kroo, AmEx, First Direct, Natwest Statement, Monzo PDF, Chase, and Monzo Flex all capture `balance_minor` (int minor) and are wired into `LEDGER_SOURCE_TYPES`/`_LEDGER_NORMALIZERS`. Two PDF sources are excluded, for structural reasons:
+   - `natwest-transactions` (online "Transactions" export): the document has **no balance data anywhere** — not even an opening balance. Nothing to capture; this isn't fixable without a different export format.
+   - `vanguard-pdf`: per-line `cash_balance` is uninvested cash in a wrapper, not the wrapper's total value. Deliberately kept separate. Vanguard's reconciliation is per-wrapper (ISA + Pension), checking the "Your Vanguard account summary" table's "Value on <end date>" against each wrapper's holdings total (fund + cash).
 
-   Kroo, Vanguard PDF, Monzo PDF, and Chase's balance capture is a direct read (the adapter already parsed it as a `(GBP) Balance`-equivalent column, just wasn't returning it — Chase specifically parsed its printed per-transaction balance into a local variable and discarded it, `amounts[1]` in `chase_pdf_adapter.py::_parse_transaction_lines`, until this was fixed). AmEx and First Direct don't print a per-transaction balance at all — only a single "Previous Closing Balance"/"Previous Balance" anchor in an Account Summary block — so their `balance` is *derived*: roll a `Decimal` accumulator forward through transactions from that anchor (`balance -= amount`, not `+=` — the anchor is a liability that moves opposite to the signed cash-received `amount` convention used elsewhere). Both log a non-blocking warning if the derived final balance doesn't reconcile with the statement's own printed closing figure — this is what surfaced the AmEx bug fixed in Phase 1 status above (see `AMEX_BUG_HANDOFF.md`).
+   Kroo, Vanguard, Monzo PDF, and Chase's balance capture is a direct read of a printed column. AmEx and First Direct don't print per-transaction balances — only a printed anchor in an Account Summary block — so their `balance_minor` is derived by rolling a minoe-unit accumulator through transactions from the anchor. Both log a non-blocking warning if the derived balance doesn't reconcile.
 
-   Chase also gained its own reconciliation check (`_check_reconciliation` in `chase_pdf_adapter.py`, same B1 pattern as Amex/Kroo/First Direct/Natwest Statement), rolling forward from the statement's "Opening balance" anchor to the "Closing balance" anchor — but with **addition**, not subtraction: Chase is a cash/asset account, not a credit card liability, so `running += amount` (verified against real statements: Current `0.00 + 200 − 200 = 0.00`; Saver `0.00 + 2,550 + 200 = 2,750.00`). This was a genuinely fixable gap (the anchor was always there, just never checked), unlike `natwest-transactions`/`vanguard-pdf`'s exclusions above, which are structural.
+   Watch for this class of bug: `_ledger_from_amex` / `_ledger_from_natwest_statement` use a dual-path date check (4-digit year already present → parse directly; otherwise infer) because the adapter may have already stamped a real year via `resolve_year_in_period()`.
 
-   Watch for this class of bug recurring: `_ledger_from_amex` assumed AmEx's `date` was always a bare `"DD Mmm"` (no year) and fed it straight to `_infer_dated_with_year()`; once the AmEx adapter started stamping a real year onto `date` itself (Gotcha #7), that assumption broke silently (`_infer_dated_with_year` mis-parses a string that already has a year appended, returning `None` for `as_of_date`) even though the sibling `_normalize_pdf_no_year()` used for the `transactions` table already handled both cases correctly. Fixed by giving `_ledger_from_amex` the same dual-path check. Any future *_LEDGER_NORMALIZERS entry for a source whose date format the adapter itself might change needs to make the same check, not assume the transactions-table normalizer's date-handling automatically covers the ledger one too — they're separate functions.
+7. **PDF date-year inference:** ✅ Resolved — Natwest Transactions, Natwest Statement, and AmEx now stamp a real year onto transaction dates at the adapter level via `resolve_year_in_period()` whenever the statement's period header is found. `_infer_dated_with_year()` is kept as a fallback for Bronze rows ingested before the fix.
 
-7. **PDF date-year inference (resolved for Natwest Transactions / Natwest Statement / AmEx):** Natwest Transactions, Natwest Statement, and AmEx statement text never includes a year on individual transaction dates (e.g. `"15 Jan"`, `"26 FEB"`). All three now extract the statement's own period header at parse time and stamp the real year onto every transaction date (`resolve_year_in_period()` in `pdf_adapter.py`, `_extract_statement_period()`/`_extract_period_covered()` per adapter) — a period-boundary tolerance (±3 days) absorbs a transaction printed just outside the declared range. `_infer_dated_with_year()` in `silver_transformer.py` (guesses the year from the Bronze `upload_timestamp`, preferring the most recent year that doesn't land after the upload time) is kept as a fallback for Bronze rows ingested before this existed, or wherever the period header isn't found in the text.
+   **Rebuilding Silver is required after a date/description/amount fix:** changing what an adapter produces changes `generate_source_key()`'s output for already-ingested transactions. Since Silver is now a full rebuild (not a merge), just `cli.py silver rebuild` — Bronze doesn't need touching.
 
-    Natwest Statement's `_extract_period_covered()` was originally added only for B3 statement coverage tracking (sets `self.last_statement_period`, see Gotcha #14) and was *not* wired into per-transaction date-year inference — its docstring incorrectly claimed "this format's per-line dates already carry years where printed," which a real downloaded statement disproved (dates print as bare `"26 FEB"`, same as the other two). Now fixed: `parse_transactions` resolves the year via the same `resolve_year_in_period()` call the other two adapters use. The Silver-layer normalizers needed a matching fix too — `_ledger_from_natwest_statement` (in `transformers/silver_transformer.py`) unconditionally called `_infer_dated_with_year()`, the same latent bug already described in Gotcha #6 for `_ledger_from_amex`; both `_normalize_pdf_no_year` and `_ledger_from_natwest_statement` now do the same dual-path check (4-digit year already present → parse directly; otherwise fall back). **Rebuilding Silver is required after a fix like this**: changing what an adapter's `date` field produces changes `generate_source_key()`'s output for already-ingested transactions, so re-ingesting a previously-seen file produces a *different* `bronze_source_key` for the same real transaction — `_dedupe_with_existing`'s key-based dedup can't recognize old and new rows as the same, and both persist. Delete `data/silver/*.parquet` and rerun `run_bronze_to_silver()` (Bronze itself doesn't need touching, and doesn't duplicate — `write_bronze` overwrites the same-named file in place) whenever an adapter fix changes a date/description/amount field that feeds `generate_source_key()`.
+8. **"Tested manually" isn't proof a PDF adapter works:** AmEx and Vanguard's Phase 1 adapters looked reasonable but silently didn't work against real statements. Validate PDF adapter regex against an actual downloaded statement, not just a hand-written fixture, especially for table-heavy layouts.
 
-8. **"Tested manually" isn't proof a PDF adapter works:** AmEx and Vanguard's Phase 1 adapters looked reasonable but silently didn't work against real statements. AmEx: PyMuPDF extracts real tables column-by-column (all dates, then all descriptions, then all amounts as one block at the end) — one-line-per-transaction regex can't parse that; rows must be reconstructed by zipping the blocks back together positionally, and boilerplate text (e.g. an interest-rate worked example) can contain decoy numbers that must be filtered by matching the expected transaction count. Vanguard: real statements cover multiple product wrappers (e.g. ISA + Personal Pension) under one account, each with its own holdings table and activity section — a single flat "Activity" assumption merges them. Validate PDF adapter regex against an actual downloaded statement, not just a hand-written fixture, especially for table-heavy layouts.
+9. **`PdfAdapter._extract_text()` page boundaries:** pages are joined with `"\n\x0c\n"` (form-feed), not just `"\n"`. Existing line-based adapters are unaffected — `\x0c` strips to `""` and gets skipped by blank-line checks.
 
-9. **`PdfAdapter._extract_text()` page boundaries:** pages are joined with `"\n\x0c\n"` (form-feed), not just `"\n"`, so adapters needing per-page structure (e.g. Amex's column reconstruction) can `text.split("\x0c")`. Existing line-based adapters are unaffected — `\x0c` strips to `""` and gets skipped by their blank-line checks.
+10. **A loose `validate_text()` can silently swallow another bank's statement:** Kroo's original check matched a Monzo statement by coincidence (a "Sent from Kroo" transaction reference + Monzo's own "Sort code:" footer). Fixed by requiring the literal `"Kroo Current Account"` header. General lesson: validate on a structural header string, not individual words.
 
-10. **A loose `validate_text()` can silently swallow another bank's statement:** Kroo's original check was `"Kroo Current Account" in text or ("Kroo" in text and "Sort code" in text)`. A real Monzo PDF statement satisfied the `or` branch purely by coincidence — one transaction's reference read *"Sent from Kroo"* (a transfer from the user's actual Kroo account) and Monzo's own account-details footer happens to also use a `"Sort code:"` label. Since the factory picks whichever adapter validates when there's no competing match, the Monzo statement got routed to Kroo, its transaction regex found nothing, and `factory.ingest()` returned 0 records with no error — a fully wrong routing that looked like a formatting quirk instead. Fixed by dropping the loose branch and requiring the literal `"Kroo Current Account"` header (real statements always have it - see the fixture in `tests/unit/adapters/test_kroo_pdf_adapter.py`). General lesson: a PDF `validate_text()` built on words rather than a structural header string is at risk of matching another source's file whenever a transaction description happens to mention the bank by name.
+11. **Two unrelated Natwest PDF formats:** `natwest_transactions_pdf_adapter.py` and `natwest_statement_pdf_adapter.py` both parse Natwest PDFs but target structurally different documents. The Transactions export covers the gap since the last quarterly Statement, which only comes every ~3 months. They share almost no structure.
 
-11. **Two unrelated Natwest PDF formats:** `natwest_transactions_pdf_adapter.py` (`"natwest-transactions"`) and `natwest_statement_pdf_adapter.py` (`"natwest-statement"`) both parse Natwest PDFs but target structurally different real documents. Named explicitly (renamed from the original `natwest_pdf_adapter.py`/`"natwest-pdf"`, which named the file after "PDF" — true of *both* adapters, so it didn't actually distinguish anything) to make the real distinction obvious:
-    - **`natwest-statement`**: the real Statement, generated automatically by Natwest only every ~3 months, covering a fixed historical period once.
-    - **`natwest-transactions`**: a manual, on-demand export from online banking of whatever date range the user picks. It exists specifically to cover the gap between "now" and the last Statement, which won't exist yet for recent weeks/months — without it, there'd be no way to ingest anything more recent than the last quarterly Statement.
+    Because the two formats can cover overlapping date ranges, Silver's matching engine has a declared cross-source policy: match on `(account_id, transaction_date, amount_minor)` with multiset counting, preferring the statement row. Verified end-to-end against real overlapping files.
 
-    Confirmed by testing the *old* adapter's `validate_text` against a real quarterly Statement file: it returned `True` (its old check was just `"NatWest" in text and "Transaction" in text`, both of which happen to appear in the Statement's footer/transaction descriptions too), producing an exact-confidence tie with the new adapter that would make `AdapterFactory.detect_adapter()` raise an ambiguous-match error. Fixed by narrowing `natwest_transactions_pdf_adapter.py`'s check to `"Your transactions"`, a section heading unique to the online export. If you add a third Natwest document type, verify `validate_text` against real files from *all* existing Natwest adapters, not just the new one — a validator that looks reasonable in isolation can still collide.
+12. **Natwest Statement's amount is *derived from* balance:** its transaction table loses column position in plain-text extraction — a lone number after a description could be Paid In or Withdrawn. Rather than guess, the adapter treats the trailing `Balance(£)` as the primary values and derives amount as `balance_minor − previous_balance_minor`. Dates are only printed once per calendar day.
 
-    Because the two formats can cover overlapping date ranges, uploading both risks double-counting the same real transaction under two different `bronze_source_key`s (they differ by construction across adapters, so the usual `bronze_source_key`-based dedup can't catch it). `transformers/silver_transformer.py::_dedupe_natwest_cross_format()` handles this separately, matching by `(account_id, transaction_date, amount)` — not description, which differs materially in wording between the two formats for the same real transaction — and preferring the `natwest-statement` row (has balance data) via count-based (multiset) removal, so genuinely repeated same-day/same-amount transactions within one format aren't mistakenly dropped. Verified end-to-end against real overlapping Natwest Transactions/Statement files: 12 transactions-export rows + 8 statement rows correctly collapsed to 4 + 8 (only the non-overlapping dates survived from the transactions export).
+13. **Same-file transaction collisions need disambiguation:** `PdfAdapter.parse()` suffixes the Nth+1 same-key repeat within a single file (`_dup1`, `_dup2`, …). The first occurrence keeps the plain key for cross-file dedup; only same-file repeats get disambiguated.
 
-12. **Natwest Statement's amount is *derived from* balance, not the other way round:** its transaction table has separate `Paid In(£)`/`Withdrawn(£)`/`Balance(£)` columns, but plain-text PDF extraction loses column position — a lone number after a description could be either Paid In or Withdrawn. Rather than guess, `natwest_statement_pdf_adapter.py` treats the trailing (unambiguous) `Balance(£)` figure as the primary parsed value and derives the signed `amount` as `balance − previous_balance`. This is the opposite of every other adapter (which derive balance from amount, when they derive anything at all) and is correct by construction rather than a heuristic. The date is also only printed once per calendar day in this format — a second same-day transaction omits the date line entirely, so parsing carries the last-seen date forward rather than requiring one per row.
+14. **Per-file facts need instance-attribute reset discipline:** `last_reconciliation` / `last_reconciliations` / `last_statement_period` must be reset to `None`/`[]`/`None` at the very top of the method that sets them. Adapter instances are reused across files within one `cli.py ingest` invocation, so a file with no anchor would otherwise silently inherit the previous file's result. Every adapter that implements any of these has a reset-between-parses regression test.
 
-13. **Same-file transaction collisions need disambiguation, not just cross-file dedup:** `generate_source_key()` builds a content-based key (date/description/amount), which correctly dedupes the same real transaction re-appearing across overlapping statements — but two genuinely distinct transactions *within one statement* (e.g. two identical £5 Deliveroo Gold Benefit credits on different days that happen to collide after truncation, or any same-day/same-amount/same-description repeat) collide on that same key too. `PdfAdapter.parse()` now tracks per-file occurrence counts and suffixes the Nth+1 same-key repeat within a single file (`_dup1`, `_dup2`, ...) — the *first* occurrence keeps the plain key, so genuine cross-statement dedup still works, only same-file repeats get disambiguated.
+15. **A PDF label's layout doesn't necessarily match its neighbor's:** First Direct's `Previous Balance` is label-then-newline-then-value, but `Statement Date` in the same Account Summary block is inline. Validate each regex against real data individually.
 
-14. **Per-file (not per-record) facts need instance-attribute reset discipline:** `DataSourceAdapter.__init__` (`adapters/base.py`) gives every adapter three attributes, `self.last_reconciliation`/`self.last_statement_period`/`self.last_reconciliations` (dataclasses `ReconciliationResult`/`StatementPeriod`, also in `base.py`) — the channel whole-file facts use to escape `parse()`'s `List[RawRecord]`-only return contract, added for B1/B2/B3 (see "What Bronze guarantees" above). `AdapterFactory.ingest()` reads all three off the adapter instance right after `parse()` returns and packages them into the `IngestResult` it returns (`adapters/factory.py`) — no other code touches these attributes directly. Because `cli.py ingest` builds one `AdapterFactory()` and reuses its adapter instances across every file in a batch, any method that sets one of these attributes **must reset it to `None` (or `[]` for `last_reconciliations`) at the very top of the method**, not only inside the "anchor/period found" branch — otherwise a file with no anchor of its own silently inherits the previous file's result, which would misreport reconciliation/coverage for a file that has neither. Every adapter that implements either (Amex, First Direct, Natwest Statement, Kroo for reconciliation; Vanguard PDF for the multi-result `last_reconciliations` variant, one per wrapper; all 9 PDF adapters for period, since B4) has an explicit reset-between-parses regression test guarding this — e.g. `TestAmexReconciliation::test_reconciliation_and_period_reset_between_parses` in `tests/unit/adapters/test_amex_pdf_adapter.py`. Add the same style of test for any new adapter that sets either attribute (see "Reaching 'proper Bronze' for a new adapter" above).
+16. **A newest-first PDF adapter needs registering in `_REVERSE_CHRONOLOGICAL_SOURCE_TYPES`:** Monzo PDF and Monzo Flex print transactions newest-first. They must be in `transformers/balance.py::_REVERSE_CHRONOLOGICAL_SOURCE_TYPES` or same-day balance queries will silently pick the wrong row.
 
-15. **A PDF label's layout doesn't necessarily match its neighbor's, even in the same document:** First Direct's `Previous Balance`/`New Balance` are printed label-then-newline-then-value (`"Previous Balance\n1,573.99"`), but `Statement Date` in the same statement is inline on one line (`"Statement Date 05 May 2026"`). A regex written to match the neighboring pattern passed a hand-written fixture but silently returned `None` against the first real downloaded statement. Same underlying lesson as Gotcha #8 (validate against a real file, not just a fixture) — but the specific trap here is assuming one label's layout generalizes to a different label in the same Account Summary block.
+17. **Reconciliation mismatches are gated at both build time and query time:** Silver's `account_ledger` carries a `reconciled` flag per row. `run_bronze_to_silver` quarantines ingestions with `reconciliation_matches=False` unless overridden (build-time gate). `get_current_balances()` additionally filters `reconciled != False` at query time (defense-in-depth). A mismatched file's balance is never used for net worth.
 
-16. **A newest-first PDF adapter needs registering in `transformers/balance.py` too, not just Silver:** almost every adapter's transaction table prints oldest-first, so `get_current_balances()`'s same-day tie-break originally assumed ascending Bronze `line_number` always meant ascending time. Monzo PDF broke that assumption (its statement prints newest-first) and was fixed by adding `"monzo-pdf"` to `_REVERSE_CHRONOLOGICAL_SOURCE_TYPES` (module docstring/tests in `transformers/balance.py`), which negates `line_number` for listed source_types before sorting. Monzo Flex (`"monzo-flex"`) is also newest-first and needed the same registration — this surfaced only via manual end-to-end verification (`cli.py ingest` + `get_current_balances()` against the real statement), not by any unit test, since `_REVERSE_CHRONOLOGICAL_SOURCE_TYPES` lives in a different module from the adapter itself and nothing enforces the two stay in sync. **Any new PDF adapter whose real statement lists transactions newest-first must be added to this set**, or same-day balance queries will silently return the wrong (older) row — see `test_monzo_flex_same_day_tie_picks_newest_not_last_parsed`/`test_monzo_pdf_same_day_tie_picks_newest_not_last_parsed` in `tests/unit/transformers/test_balance.py` for the regression-test pattern to copy.
-
-17. **A reconciliation mismatch used to flow silently into `get_current_balances()`/`get_net_worth()`:** `normalize_account_ledger()` computed the per-file `reconciliation_matches` verdict (Gotcha #14) but never read it — a mismatched file's derived `balance` was used by the balance/net-worth helpers exactly as if it had reconciled, with zero indication (this was the actual failure mode behind the historical Amex incident, see `AMEX_BUG_HANDOFF.md` — reconciliation caught the bug in Bronze, but nothing would have stopped the bad numbers from reaching net worth). Fixed by adding a `reconciled: Optional[bool]` column to Silver's `account_ledger` (mirroring `ReconciliationResult.matches` — `None` = inconclusive/no anchor, kept; `True`/`False` = compared), set once per row from Bronze's `reconciliation_matches` in `normalize_account_ledger`/`_reconciled_flag`. Rows are **never excluded at normalization time** — deliberately, since `_dedupe_with_existing()`'s key-based merge can only add/replace by `bronze_source_key`, never remove one absent from a fresh run, so excluding a row that's later re-ingested and un-mismatches would strand the stale row in Silver forever. Instead, `get_current_balances()` filters `reconciled != False` immediately before its existing sort/`tail(1)` selection, so a mismatched file's balance is skipped in favor of the next-latest *reconciling* one — "stale but correct, rather than current but wrong." If **every** statement for an account fails reconciliation, that account is silently absent from `get_current_balances()`/`get_net_worth()` entirely (logged via `logger.warning`, never fabricated or raised). A `balance_may_be_stale` column on `get_current_balances()`/`get_net_worth_breakdown()`'s output flags when a newer, excluded statement exists for an account, so a caller doesn't have to separately cross-reference `cli.py accounts reconciliation` to notice. `cli.py ingest` also now exits non-zero when `matches is False` (not when `matches is None` — that's inconclusive, not a failure), mirroring its existing unrecognized-format/parse-failure exit behavior. See `RECONCILIATION_MISMATCH_CONTEXT.md`/`AMEX_BUG_HANDOFF.md` for why hard-failing the whole ingest on a mismatch was explicitly rejected instead (a real Amex bug once made every statement fail reconciliation for months — a hard fail would have blocked ingesting Amex data entirely for that whole period, even though the transactions themselves were mostly fine). `tests/unit/test_source_type_registration_consistency.py::TestLedgerSourcesHaveReconciliationSignal` guards the assumption this relies on: every `LEDGER_SOURCE_TYPES` member must also be in `_RECONCILIATION_SOURCE_TYPES`, or its mismatches could never be caught.
-
+18. **All monetary values are integer minor units:** Everything in `raw_data`, Bronze columns, Silver schema, and `ReconciliationResult` uses signed integer minor units (e.g. GBP pence). `models/money.py::parse_money_minor()` raises `MoneyParseError` on unparseable input — never silently returns zero. `format_minor()` converts at the CLI/SQL display boundary only. There is no `float` in any financial path. See `CRITICAL_HARDENING_PLAN.md` Milestone 3.

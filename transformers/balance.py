@@ -34,7 +34,13 @@ logger = logging.getLogger(__name__)
 
 PathLike = Union[str, Path]
 
-_BALANCES_COLUMNS = ["account_id", "balance_minor", "as_of_date", "balance_may_be_stale"]
+_BALANCES_COLUMNS = [
+    "account_id",
+    "balance_minor",
+    "as_of_date",
+    "balance_may_be_stale",
+    "balance_source",
+]
 _BREAKDOWN_COLUMNS = [
     "account_id",
     "source",
@@ -71,11 +77,8 @@ def get_latest_holdings_snapshot(
     if holdings is None or holdings.empty:
         return pd.DataFrame()
 
-    latest_dates = (
-        holdings.groupby("account_id")["as_of_date"].max().reset_index()
-    )
+    latest_dates = holdings.groupby("account_id")["as_of_date"].max().reset_index()
     return holdings.merge(latest_dates, on=["account_id", "as_of_date"])
-
 
 
 def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
@@ -145,6 +148,9 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
                 newer_mismatch > latest["as_of_date"]
             )
 
+    if "balance_source" not in latest.columns:
+        latest["balance_source"] = "printed"
+
     return latest[_BALANCES_COLUMNS].reset_index(drop=True)
 
 
@@ -184,9 +190,9 @@ def get_net_worth(
     # across statements (holdings are re-printed on every statement).
     latest_holdings = get_latest_holdings_snapshot(datalake)
     if not latest_holdings.empty:
-        holdings_by_account = (
-            latest_holdings.groupby("account_id")["total_value_minor"].sum()
-        )
+        holdings_by_account = latest_holdings.groupby("account_id")[
+            "total_value_minor"
+        ].sum()
         for value_minor in holdings_by_account:
             total_minor += int(value_minor)
 
@@ -219,7 +225,9 @@ def get_net_worth_breakdown(
 
         for row in merged.itertuples():
             amount_minor = int(row.balance_minor)
-            contribution = -amount_minor if row.account_type == "credit" else amount_minor
+            contribution = (
+                -amount_minor if row.account_type == "credit" else amount_minor
+            )
             rows.append(
                 {
                     "account_id": row.account_id,

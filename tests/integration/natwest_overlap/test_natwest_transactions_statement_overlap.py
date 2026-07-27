@@ -490,27 +490,52 @@ class TestCrossFormatDedup:
 
 
 class TestCurrentBalanceKnownLimitation:
-    """Documents present behavior, not desired behavior - see
-    NATWEST_TRANSACTIONS_BALANCE_DESIGN.md. `natwest-transactions` still
-    isn't in LEDGER_SOURCE_TYPES, so even though this scenario has fully
-    contiguous transaction coverage all the way to 2026-07-26 (Export B),
-    the ledger-derived "current balance" is still stuck at the most recent
-    *statement's* own closing balance and date. If this test starts
-    failing because the derived-rollforward design got implemented, that's
-    good news - update these assertions to match the new, better behavior
-    instead of trying to preserve them.
+    """See NATWEST_TRANSACTIONS_BALANCE_DESIGN.md. `natwest-transactions`
+    still isn't in LEDGER_SOURCE_TYPES, but derived-balance rollforward
+    now appends synthetic ledger rows with `balance_source="derived"`,
+    closing the gap: the current balance now reflects the most recent
+    transaction (GYM MEMBERSHIP on 2026-06-15), not just the last
+    printed statement closing.
     """
 
     def test_natwest_transactions_still_excluded_from_ledger(self):
         assert "natwest-transactions" not in LEDGER_SOURCE_TYPES
 
-    def test_current_balance_stuck_at_last_statement_not_last_transaction(
-        self, ingested, datalake
-    ):
+    def test_current_balance_reflects_derived_rollforward(self, ingested, datalake):
         balances = get_current_balances(datalake)
         account_balance = balances[balances["account_id"] == ACCOUNT_ID].iloc[0]
 
-        # Statement 2's own closing balance/date - correct, but stale: it
-        # predates Export B's GYM MEMBERSHIP transaction by over a month.
-        assert account_balance["balance_minor"] == 95000
-        assert account_balance["as_of_date"] == pd.Timestamp("2026-05-13")
+        # Derived from Statement 2's closing (95000) minus GYM (-3000) = 92000.
+        assert account_balance["balance_minor"] == 92000
+        # as_of_date bumped to Export B's statement_period_to (2026-07-26).
+        assert account_balance["as_of_date"] == pd.Timestamp("2026-07-26")
+        assert account_balance["balance_source"] == "derived"
+
+
+class TestDerivedBalance:
+    """Integration-level assertions about the derived ledger rows themselves."""
+
+    def test_derived_rows_exist_in_ledger(self, ingested, datalake):
+        ledger = datalake.read_silver("account_ledger")
+        derived = ledger[ledger["balance_source"] == "derived"]
+        assert not derived.empty
+
+    def test_derived_rows_have_correct_source(self, ingested, datalake):
+        ledger = datalake.read_silver("account_ledger")
+        derived = ledger[ledger["balance_source"] == "derived"]
+        account_derived = derived[derived["account_id"] == ACCOUNT_ID]
+        # Only GYM is in the gap after Statement 2 - one derived row.
+        assert len(account_derived) == 1
+        row = account_derived.iloc[0]
+        assert row["source_type"] == "natwest-transactions"
+        assert row["reconciled"] is None
+        assert row["balance_source"] == "derived"
+        assert row["balance_minor"] == 92000
+
+    def test_printed_ledger_rows_unchanged(self, ingested, datalake):
+        ledger = datalake.read_silver("account_ledger")
+        printed = ledger[ledger["balance_source"] == "printed"]
+        all_accounts = printed[printed["account_id"] == ACCOUNT_ID]
+        # Statement 1 + Statement 2 each contribute per-transaction ledger
+        # rows (SALARY + COFFEE SHOP + ONLINE SHOP = 3 printed rows).
+        assert len(all_accounts) == 3
