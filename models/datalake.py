@@ -49,6 +49,7 @@ class DataLake:
         # constructing a DataLake never depends on Silver having been built.
         self._views_registered = False
         self._views_build_path: Optional[Path] = None
+        self._registered_view_names: List[str] = []
         logger.info(f"DuckDB initialized at {db_path}")
 
     def write_bronze(
@@ -347,9 +348,21 @@ class DataLake:
         leave a view silently straddling two builds - `query()` detects the
         swap and calls this again.
 
+        Every previously-registered view is dropped first. Without this, a
+        build that has become *unreadable* since the last refresh (the
+        `current` symlink deleted by an interrupted publish, or its build
+        pruned) left the old views in place, and query() kept serving the
+        superseded build's Parquet with no warning - the exact silent-stale-
+        data failure read_silver raises StaleSilverError for. With the drop,
+        a query touching a Silver view in that state fails loudly with a
+        DuckDB catalog error instead.
+
         Returns the view names created.
         """
         from models.build import _current_link
+
+        for name in self._registered_view_names:
+            self.conn.execute(f"DROP VIEW IF EXISTS {name}")
 
         created: List[str] = []
         current_link = _current_link(SILVER_DIR)
@@ -382,6 +395,7 @@ class DataLake:
                 )
                 created.append(view)
 
+        self._registered_view_names = created
         logger.debug("Registered %d DuckDB views", len(created))
         return created
 

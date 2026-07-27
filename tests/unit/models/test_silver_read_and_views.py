@@ -187,6 +187,31 @@ class TestDuckDBViews:
 
         assert dl.query("SELECT x FROM bronze_kroo")["x"].iloc[0] == 7
 
+    def test_broken_build_drops_silver_views_loudly(self, lake):
+        """Regression: previously-registered Silver views survived their
+        build becoming unreadable (current/ deleted by an interrupted
+        publish), so query() kept serving the superseded build's Parquet
+        with no warning - the silent-stale-data failure read_silver raises
+        StaleSilverError for. The refresh must drop them, so the query
+        fails loudly instead. Bronze views are unaffected."""
+        dl, silver, bronze = lake
+        _publish(silver, transactions=[{"amount_minor": -100}])
+        (bronze / "kroo").mkdir()
+        pd.DataFrame([{"x": 7}]).to_parquet(bronze / "kroo" / "i1.parquet")
+        assert (
+            dl.query("SELECT sum(amount_minor) t FROM transactions")["t"].iloc[0]
+            == -100
+        )
+
+        (silver / "current").unlink()  # interrupted publish
+
+        import duckdb
+
+        with pytest.raises(duckdb.CatalogException, match="transactions"):
+            dl.query("SELECT * FROM transactions")
+        # Bronze-only queries keep working in the same state.
+        assert dl.query("SELECT x FROM bronze_kroo")["x"].iloc[0] == 7
+
 
 class TestSqlLiteralEscaping:
     def test_path_with_apostrophe_does_not_break_view_creation(
