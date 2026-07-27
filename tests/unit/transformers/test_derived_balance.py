@@ -427,9 +427,7 @@ class TestContiguousCoverageEnd:
         # Contiguous window stops at May 13.
         assert result == pd.Timestamp("2026-05-13")
 
-    def test_anchor_date_after_first_period_correctly_shifts_window(
-        self, monkeypatch
-    ):
+    def test_anchor_date_after_first_period_correctly_shifts_window(self, monkeypatch):
         monkeypatch.setattr(
             "transformers.silver_transformer.get_account_id",
             lambda ai, st, path=None: self._ACCOUNT,
@@ -493,7 +491,9 @@ class TestBronzeReadCountAcrossRollforward:
 
         transformer = SilverTransformer(datalake=mock_dl)
         bronze_frames = transformer._read_bronze_frames()
-        all_source_types = AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        all_source_types = (
+            AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        )
         assert mock_dl.read_bronze.call_count == len(all_source_types)
 
         txns = _transactions_df(

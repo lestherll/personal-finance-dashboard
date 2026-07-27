@@ -111,9 +111,7 @@ def publish_silver_build(
     build_dir = _builds_dir(silver_dir) / build_id
     build_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f".build-{build_id}-", dir=build_dir.parent
-        )
+        tempfile.mkdtemp(prefix=f".build-{build_id}-", dir=build_dir.parent)
     )
     current_link = _current_link(silver_dir)
 
@@ -146,9 +144,7 @@ def publish_silver_build(
             row_counts=row_counts,
         )
         manifest_path = staging_dir / "build.json"
-        manifest_path.write_text(
-            json.dumps(asdict(manifest), indent=2, sort_keys=True)
-        )
+        manifest_path.write_text(json.dumps(asdict(manifest), indent=2, sort_keys=True))
 
         # Atomic publish: rename staging to final, then swap symlink.
         # generate_build_id() is millisecond-granular so this path is free in

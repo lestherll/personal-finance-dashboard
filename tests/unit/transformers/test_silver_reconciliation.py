@@ -27,7 +27,9 @@ def _anchor_row(
     }
 
 
-def _source_row(silver_transaction_id, bronze_record_id, ingestion_id, source_type="amex"):
+def _source_row(
+    silver_transaction_id, bronze_record_id, ingestion_id, source_type="amex"
+):
     return {
         "silver_transaction_id": silver_transaction_id,
         "bronze_record_id": bronze_record_id,
@@ -52,8 +54,16 @@ class TestFindSilverReconciliationBreaks:
         )
         transactions = pd.DataFrame(
             [
-                {"bronze_record_id": "br1", "silver_transaction_id": "fp1", "amount_minor": -1000},
-                {"bronze_record_id": "br2", "silver_transaction_id": "fp2", "amount_minor": -1000},
+                {
+                    "bronze_record_id": "br1",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": -1000,
+                },
+                {
+                    "bronze_record_id": "br2",
+                    "silver_transaction_id": "fp2",
+                    "amount_minor": -1000,
+                },
             ]
         )
 
@@ -75,7 +85,13 @@ class TestFindSilverReconciliationBreaks:
         # as if matching.py wrongly dropped it.
         sources = pd.DataFrame([_source_row("fp1", "br1", "ing1")])
         transactions = pd.DataFrame(
-            [{"bronze_record_id": "br1", "silver_transaction_id": "fp1", "amount_minor": -1000}]
+            [
+                {
+                    "bronze_record_id": "br1",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": -1000,
+                }
+            ]
         )
 
         result = find_silver_reconciliation_breaks(anchors, sources, transactions)
@@ -106,7 +122,13 @@ class TestFindSilverReconciliationBreaks:
             ]
         )
         transactions = pd.DataFrame(
-            [{"bronze_record_id": "br_a", "silver_transaction_id": "fp1", "amount_minor": 2000}]
+            [
+                {
+                    "bronze_record_id": "br_a",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": 2000,
+                }
+            ]
         )
 
         result = find_silver_reconciliation_breaks(anchors, sources, transactions)
@@ -139,8 +161,16 @@ class TestFindSilverReconciliationBreaks:
         )
         transactions = pd.DataFrame(
             [
-                {"bronze_record_id": "br_a", "silver_transaction_id": "fp1", "amount_minor": 890},
-                {"bronze_record_id": "br_b", "silver_transaction_id": "fp1", "amount_minor": 890},
+                {
+                    "bronze_record_id": "br_a",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": 890,
+                },
+                {
+                    "bronze_record_id": "br_b",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": 890,
+                },
             ]
         )
 
@@ -165,7 +195,9 @@ class TestFindSilverReconciliationBreaks:
                 )
             ]
         )
-        sources = pd.DataFrame([_source_row("fp1", "br1", "ing_monzo", source_type="monzo-pdf")])
+        sources = pd.DataFrame(
+            [_source_row("fp1", "br1", "ing_monzo", source_type="monzo-pdf")]
+        )
         transactions = pd.DataFrame(
             [{"silver_transaction_id": "fp1", "amount_minor": -500}]
         )
@@ -179,11 +211,23 @@ class TestFindSilverReconciliationBreaks:
         sign here (they were never rolled forward to begin with - direct-
         read balances) must be skipped, not silently treated as sign=1."""
         anchors = pd.DataFrame(
-            [_anchor_row(account_id="acc_kroo", source_type="kroo", ingestion_id="ing_kroo")]
+            [
+                _anchor_row(
+                    account_id="acc_kroo", source_type="kroo", ingestion_id="ing_kroo"
+                )
+            ]
         )
-        sources = pd.DataFrame([_source_row("fp1", "br1", "ing_kroo", source_type="kroo")])
+        sources = pd.DataFrame(
+            [_source_row("fp1", "br1", "ing_kroo", source_type="kroo")]
+        )
         transactions = pd.DataFrame(
-            [{"bronze_record_id": "br1", "silver_transaction_id": "fp1", "amount_minor": -500}]
+            [
+                {
+                    "bronze_record_id": "br1",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": -500,
+                }
+            ]
         )
 
         result = find_silver_reconciliation_breaks(anchors, sources, transactions)
@@ -205,11 +249,19 @@ class TestFindSilverReconciliationBreaks:
         )
         sources = pd.DataFrame([_source_row("fp1", "br1", "ing1")])
         transactions = pd.DataFrame(
-            [{"bronze_record_id": "br1", "silver_transaction_id": "fp1", "amount_minor": -0}]
+            [
+                {
+                    "bronze_record_id": "br1",
+                    "silver_transaction_id": "fp1",
+                    "amount_minor": -0,
+                }
+            ]
         )
         # opening 10000 - 0 = 10000, but the real closing is 15521 (10000 +
         # a 5521 Plan-It adjustment) - without the adjustment this mismatches.
-        result_without = find_silver_reconciliation_breaks(anchors, sources, transactions)
+        result_without = find_silver_reconciliation_breaks(
+            anchors, sources, transactions
+        )
         assert bool(result_without.iloc[0]["matches"]) is False
 
         result_with = find_silver_reconciliation_breaks(

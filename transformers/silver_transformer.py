@@ -976,7 +976,9 @@ def run_bronze_to_silver(
     # silently drops or duplicates a genuine transaction, which Bronze's
     # own pre-matching check can never see (item 3 of the reconciliation
     # hardening work; see transformers/silver_reconciliation.py).
-    bronze_anchors = find_reconciliation_status(datalake, bronze_frames=all_bronze_frames)
+    bronze_anchors = find_reconciliation_status(
+        datalake, bronze_frames=all_bronze_frames
+    )
     plan_it_adjustments = amex_plan_it_adjustment_by_ingestion(
         bronze_frames.get("amex")
     )

@@ -242,8 +242,12 @@ def ingest(files):
 
         if result.reconciliation is not None:
             manifest.reconciliation_check_name = result.reconciliation.check_name
-            manifest.reconciliation_expected_minor = result.reconciliation.expected_closing_minor
-            manifest.reconciliation_derived_minor = result.reconciliation.derived_closing_minor
+            manifest.reconciliation_expected_minor = (
+                result.reconciliation.expected_closing_minor
+            )
+            manifest.reconciliation_derived_minor = (
+                result.reconciliation.derived_closing_minor
+            )
             manifest.reconciliation_matches = result.reconciliation.matches
         if result.reconciliations:
             manifest.reconciliations = [
@@ -460,9 +464,9 @@ def silver_rebuild(strict_reconciliation):
     log = result["reconciliation_log"]
     if not log.empty:
         click.echo("  reconciliation summary:")
-        for (check_type, matches), count in log.groupby(
-            ["check_type", "matches"], dropna=False
-        ).size().items():
+        for (check_type, matches), count in (
+            log.groupby(["check_type", "matches"], dropna=False).size().items()
+        ):
             if pd.isna(matches):
                 label = "inconclusive"
             else:
@@ -515,6 +519,7 @@ def ingestions_list():
     """List all known ingestion manifests."""
     import json
     from models.ingestion import INGESTIONS_DIR
+
     manifests = sorted(
         [p for p in INGESTIONS_DIR.glob("*.json") if p.is_file()],
         key=lambda p: p.stat().st_mtime,
@@ -553,6 +558,7 @@ def ingestions_list():
 def ingestions_show(ingestion_id_prefix):
     """Show a full ingestion manifest."""
     from models.ingestion import INGESTIONS_DIR
+
     for mp in INGESTIONS_DIR.glob("*.json"):
         if mp.stem.startswith(ingestion_id_prefix):
             click.echo(mp.read_text())
@@ -565,9 +571,11 @@ def ingestions_quarantined():
     """List quarantined ingestions (reconciliation mismatch, no override)."""
     import json
     from models.ingestion import INGESTIONS_DIR
+
     found = False
-    for mp in sorted(INGESTIONS_DIR.glob("*.json"),
-                     key=lambda p: p.stat().st_mtime, reverse=True):
+    for mp in sorted(
+        INGESTIONS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+    ):
         m = json.loads(mp.read_text())
         rec_match = m.get("reconciliation_matches")
         recs = m.get("reconciliations", [])
@@ -587,21 +595,31 @@ def ingestions_quarantined():
         derived = m.get("reconciliation_derived_minor")
         click.echo(f"  {iid}  {st}  {check}")
         if expected is not None and derived is not None:
-            click.echo(f"    expected: {_fmt_minor(expected)}  derived: {_fmt_minor(derived)}")
+            click.echo(
+                f"    expected: {_fmt_minor(expected)}  derived: {_fmt_minor(derived)}"
+            )
         for rec in recs:
             if rec.get("matches") is False:
-                click.echo(f"    {rec['check_name']}: expected {_fmt_minor(rec.get('expected_closing_minor'))}  derived {_fmt_minor(rec.get('derived_closing_minor'))}")
+                click.echo(
+                    f"    {rec['check_name']}: expected {_fmt_minor(rec.get('expected_closing_minor'))}  derived {_fmt_minor(rec.get('derived_closing_minor'))}"
+                )
     if not found:
         click.echo("No quarantined ingestions.")
 
 
 @ingestions.command("override")
 @click.argument("ingestion_id_prefix")
-@click.option("--allow", "decision", flag_value="allow", help="Allow this ingestion into Silver despite reconciliation mismatch")
+@click.option(
+    "--allow",
+    "decision",
+    flag_value="allow",
+    help="Allow this ingestion into Silver despite reconciliation mismatch",
+)
 @click.option("--reason", default="manual override", help="Reason for the override")
 def ingestions_override(ingestion_id_prefix, decision, reason):
     """Override a quarantined ingestion's promotion decision."""
     from models.ingestion import INGESTIONS_DIR
+
     for mp in INGESTIONS_DIR.glob("*.json"):
         if mp.stem.startswith(ingestion_id_prefix):
             manifest = load_manifest(mp.stem)
@@ -609,6 +627,7 @@ def ingestions_override(ingestion_id_prefix, decision, reason):
                 click.echo(f"Failed to load manifest {mp.stem}")
                 return
             from datetime import datetime, timezone
+
             manifest.promotion_override = {
                 "decision": decision,
                 "reason": reason,
@@ -628,10 +647,8 @@ def _fmt_minor(minor: int) -> str:
     if minor is None:
         return "None"
     from models.money import format_minor
+
     return format_minor(minor)
-
-
-
 
 
 if __name__ == "__main__":

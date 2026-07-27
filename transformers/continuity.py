@@ -68,7 +68,9 @@ def find_balance_continuity(
     find_statement_periods calls, which otherwise re-read Bronze themselves.
     """
     datalake = datalake or get_datalake()
-    anchors = find_reconciliation_status(datalake, path=path, bronze_frames=bronze_frames)
+    anchors = find_reconciliation_status(
+        datalake, path=path, bronze_frames=bronze_frames
+    )
     if anchors.empty:
         return pd.DataFrame(columns=_CONTINUITY_COLUMNS)
 

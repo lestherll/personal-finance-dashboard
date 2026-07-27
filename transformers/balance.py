@@ -101,7 +101,10 @@ def _assert_single_currency(balances: pd.DataFrame, holdings: pd.DataFrame) -> N
     if len(currencies) > 1:
         breakdown = (
             records.groupby("currency")
-            .agg(record_count=("account_id", "size"), sample_account_id=("account_id", "first"))
+            .agg(
+                record_count=("account_id", "size"),
+                sample_account_id=("account_id", "first"),
+            )
             .reset_index()
         )
         raise MixedCurrencyError(breakdown)

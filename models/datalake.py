@@ -89,7 +89,9 @@ class DataLake:
                 "last_reconciliations, never both"
             )
 
-        filepath = BRONZE_DIR / ingestion.source_type / f"{ingestion.ingestion_id}.parquet"
+        filepath = (
+            BRONZE_DIR / ingestion.source_type / f"{ingestion.ingestion_id}.parquet"
+        )
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         # A complete content-addressed ingestion is idempotent. Never rewrite
@@ -127,15 +129,15 @@ class DataLake:
         # these columns rather than getting them NaN-filled.
         if reconciliation is not None:
             df["reconciliation_check"] = reconciliation.check_name
-            df["reconciliation_expected_opening_minor"] = (
-                reconciliation.expected_opening_minor
-            )
-            df["reconciliation_expected_closing_minor"] = (
-                reconciliation.expected_closing_minor
-            )
-            df["reconciliation_derived_closing_minor"] = (
-                reconciliation.derived_closing_minor
-            )
+            df[
+                "reconciliation_expected_opening_minor"
+            ] = reconciliation.expected_opening_minor
+            df[
+                "reconciliation_expected_closing_minor"
+            ] = reconciliation.expected_closing_minor
+            df[
+                "reconciliation_derived_closing_minor"
+            ] = reconciliation.derived_closing_minor
             df["reconciliation_matches"] = reconciliation.matches
 
         if reconciliations:
@@ -155,15 +157,15 @@ class DataLake:
                     else df["account_identifier"] == rec.account_identifier
                 )
                 df.loc[mask, "reconciliation_check"] = rec.check_name
-                df.loc[mask, "reconciliation_expected_opening_minor"] = (
-                    rec.expected_opening_minor
-                )
-                df.loc[mask, "reconciliation_expected_closing_minor"] = (
-                    rec.expected_closing_minor
-                )
-                df.loc[mask, "reconciliation_derived_closing_minor"] = (
-                    rec.derived_closing_minor
-                )
+                df.loc[
+                    mask, "reconciliation_expected_opening_minor"
+                ] = rec.expected_opening_minor
+                df.loc[
+                    mask, "reconciliation_expected_closing_minor"
+                ] = rec.expected_closing_minor
+                df.loc[
+                    mask, "reconciliation_derived_closing_minor"
+                ] = rec.derived_closing_minor
                 df.loc[mask, "reconciliation_matches"] = rec.matches
 
         if statement_period is not None:

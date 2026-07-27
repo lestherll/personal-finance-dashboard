@@ -408,9 +408,7 @@ class TestSilverReconciliation:
         assert len(account_breaks) == 2  # both natwest-statement files
         assert account_breaks["matches"].all()
 
-    def test_dropped_genuine_transaction_is_caught_as_a_break(
-        self, ingested, datalake
-    ):
+    def test_dropped_genuine_transaction_is_caught_as_a_break(self, ingested, datalake):
         """Simulates match_transactions() incorrectly absorbing a genuine,
         non-duplicate transaction by removing one real provenance row for
         Statement 1's ingestion - the re-derived total must no longer

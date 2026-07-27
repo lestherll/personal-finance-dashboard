@@ -96,7 +96,8 @@ def test_failed_bronze_write_never_publishes_a_partial_file(
     manifest = _manifest_for(statement, content)
 
     monkeypatch.setattr(
-        "models.datalake.pq.write_table", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full"))
+        "models.datalake.pq.write_table",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
 
     with pytest.raises(OSError, match="disk full"):

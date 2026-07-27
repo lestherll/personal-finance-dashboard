@@ -77,8 +77,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
     monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
     monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-    monkeypatch.setattr("transformers.silver_transformer._SILVER_DIR",
-                        tmp_path / "silver")
+    monkeypatch.setattr(
+        "transformers.silver_transformer._SILVER_DIR", tmp_path / "silver"
+    )
     monkeypatch.setattr("models.build._DEFAULT_SILVER_DIR", tmp_path / "silver")
     monkeypatch.setattr("models.ingestion.INGESTIONS_DIR", tmp_path / "ingestions")
     monkeypatch.setattr("models.ingestion.RAW_DIR", tmp_path / "raw")
@@ -128,7 +129,8 @@ def _ingest_bytes(datalake, pdf_bytes, filename, tmp_dir):
         ]
     )
     filepath = datalake.write_bronze(
-        manifest, df,
+        manifest,
+        df,
         reconciliation=result.reconciliation,
         statement_period=result.statement_period,
         reconciliations=result.reconciliations,
@@ -194,7 +196,10 @@ class TestEndToEnd:
         m1 = _ingest_bytes(datalake, pdf1, "statement.pdf", tmp_path)
         m2 = _ingest_bytes(datalake, pdf2, "statement.pdf", tmp_path)
         assert m1.ingestion_id != m2.ingestion_id
-        assert load_manifest(m1.ingestion_id).raw_artifact_path != load_manifest(m2.ingestion_id).raw_artifact_path
+        assert (
+            load_manifest(m1.ingestion_id).raw_artifact_path
+            != load_manifest(m2.ingestion_id).raw_artifact_path
+        )
 
     def test_exact_reingest_idempotent(self, isolated, tmp_path):
         datalake = isolated
@@ -236,7 +241,9 @@ class TestEndToEnd:
 
         run_bronze_to_silver(datalake)
 
-        all_source_types = AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        all_source_types = (
+            AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        )
         assert spy.call_count == len(all_source_types)
 
 

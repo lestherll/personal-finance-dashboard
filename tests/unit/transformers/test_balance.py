@@ -56,7 +56,11 @@ def _ledger_row(
 
 
 def _holdings_row(
-    account_id, total_value_minor, fund_name="Test Fund", as_of_date=None, currency="GBP"
+    account_id,
+    total_value_minor,
+    fund_name="Test Fund",
+    as_of_date=None,
+    currency="GBP",
 ):
     return {
         "account_id": account_id,
@@ -307,8 +311,12 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 2
-        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0]["balance_minor"]
-        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0]["balance_minor"]
+        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0][
+            "balance_minor"
+        ]
+        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0][
+            "balance_minor"
+        ]
         assert kroo_balance == 20000
         assert amex_balance == 5000
 
@@ -708,7 +716,9 @@ class TestMixedCurrencyGuard:
         holdings = pd.DataFrame(
             [_holdings_row("acc_vanguard", 100000, "Fund A", currency="USD")]
         )
-        datalake = _FakeDatalakeForBalance({"account_ledger": ledger, "holdings": holdings})
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": ledger, "holdings": holdings}
+        )
 
         with pytest.raises(MixedCurrencyError):
             get_net_worth(datalake, path=path)

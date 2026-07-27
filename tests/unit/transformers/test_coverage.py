@@ -29,7 +29,8 @@ def _account_map_path(tmp_path, identifiers=None):
 def _bronze_row(account_identifier, filename, period_from, period_to):
     return {
         "account_identifier": account_identifier,
-        "filename": filename, "ingestion_id": filename,
+        "filename": filename,
+        "ingestion_id": filename,
         "statement_period_from": period_from,
         "statement_period_to": period_to,
     }

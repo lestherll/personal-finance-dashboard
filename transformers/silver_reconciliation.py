@@ -147,7 +147,11 @@ def amex_plan_it_adjustment_by_ingestion(
     Silver `plan_it_instalments` table - deliberately independent of
     whatever that table's own normalization does.
     """
-    if amex_bronze is None or amex_bronze.empty or "record_type" not in amex_bronze.columns:
+    if (
+        amex_bronze is None
+        or amex_bronze.empty
+        or "record_type" not in amex_bronze.columns
+    ):
         return {}
     plan_it = amex_bronze[amex_bronze["record_type"] == "plan_it_instalment"]
     if plan_it.empty:
@@ -160,5 +164,7 @@ def amex_plan_it_adjustment_by_ingestion(
             due_plan_minor = parse_money_minor(raw.get("due_this_month_plan", ""))
         except MoneyParseError:
             continue
-        adjustments[row.ingestion_id] = adjustments.get(row.ingestion_id, 0) + due_plan_minor
+        adjustments[row.ingestion_id] = (
+            adjustments.get(row.ingestion_id, 0) + due_plan_minor
+        )
     return adjustments

@@ -207,7 +207,9 @@ class TestReverseChronologicalRegistration:
             # and "holding" dicts in one list - holdings have no "date" key
             # (they use "as_of_date" instead) and aren't part of the
             # chronological transaction table this check cares about.
-            txns = [t for t in txns if t.get("record_type", "transaction") == "transaction"]
+            txns = [
+                t for t in txns if t.get("record_type", "transaction") == "transaction"
+            ]
             if len(txns) < 2:
                 continue
 

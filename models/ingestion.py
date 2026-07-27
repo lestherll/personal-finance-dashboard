@@ -52,6 +52,7 @@ class IngestionManifest:
     # Quality override — set via CLI to override quarantine.
     # {"decision": "allow", "reason": "...", "at": "iso-timestamp", "by": "user"}
     promotion_override: Optional[Dict[str, Any]] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.promotion_override is None:
             self.promotion_override = {}
