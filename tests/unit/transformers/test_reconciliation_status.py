@@ -28,7 +28,7 @@ def _account_map_path(tmp_path, identifiers=None):
 def _bronze_row(account_identifier, filename, check_name, expected_minor, derived_minor, matches):
     return {
         "account_identifier": account_identifier,
-        "filename": filename,
+        "filename": filename, "ingestion_id": filename,
         "reconciliation_check": check_name,
         "reconciliation_expected_closing_minor": expected_minor,
         "reconciliation_derived_closing_minor": derived_minor,

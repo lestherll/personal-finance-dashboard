@@ -7,6 +7,7 @@ from typing import List, Optional
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 from adapters.base import ReconciliationResult, StatementPeriod, make_bronze_record_id
 from config import BRONZE_DIR, DUCKDB_PATH, GOLD_DIR, SILVER_DIR
@@ -280,6 +281,3 @@ def get_datalake() -> DataLake:
         _datalake = DataLake()
     return _datalake
 
-
-# Re-export for convenience
-import pyarrow as pa

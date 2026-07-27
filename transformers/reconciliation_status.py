@@ -79,7 +79,7 @@ def find_reconciliation_status(
         # filename-only key would silently collapse to one row and drop
         # the other wrapper's status.
         per_file = df.dropna(subset=["reconciliation_check"]).drop_duplicates(
-            ["filename", "account_identifier"]
+            ["ingestion_id", "account_identifier"]
         )
 
         for row in per_file.itertuples():

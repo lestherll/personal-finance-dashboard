@@ -5,24 +5,24 @@
 The items below are ordered by dependency and risk. Detailed implementation
 planning for items 1–3 is in `CRITICAL_HARDENING_PLAN.md`.
 
-- [ ] **1. Make raw and Bronze ingestion immutable.** Archive source files by
+- [x] **1. Make raw and Bronze ingestion immutable.** Archive source files by
   SHA-256 before publication, record an ingestion manifest, and write Bronze
   to content-addressed paths. A same-named but different statement must never
   overwrite prior Bronze data.
-- [ ] **2. Separate immutable source-record identity from transaction
+- [x] **2. Separate immutable source-record identity from transaction
   deduplication.** Use a file-hash + record-type + line-number Bronze record
   ID; replace semantic `source_key` identity with an explicit, traceable
   cross-file matching policy; rebuild Silver from a selected Bronze set.
-- [ ] **3. Adopt an exact money data contract.** Replace persisted financial
+- [x] **3. Adopt an exact money data contract.** Replace persisted financial
   floats with signed integer minor units and currency; preserve source text;
   reject malformed monetary fields instead of coercing them to zero.
-- [ ] **4. Gate Silver promotion on data quality.** Persist parse and
+- [x] **4. Gate Silver promotion on data quality.** Persist parse and
   reconciliation results per ingestion, quarantine failed/inconclusive files
   by default, and require a recorded override before they affect balances.
-- [ ] **5. Correct snapshot and net-worth semantics.** Use the latest complete
+- [x] **5. Correct snapshot and net-worth semantics.** Use the latest complete
   holdings snapshot per investment account, account for investment cash, and
   expose data freshness alongside canonical current balances.
-- [ ] **6. Publish Bronze→Silver atomically with a hermetic test suite.** Build
+- [x] **6. Publish Bronze→Silver atomically with a hermetic test suite.** Build
   Silver into a staging run, validate it, publish all tables together, and add
   clean-checkout end-to-end tests for every critical failure mode.
 
@@ -38,11 +38,14 @@ planning for items 1–3 is in `CRITICAL_HARDENING_PLAN.md`.
 - [ ] Disk-backed integration test for the full Bronze→Silver pipeline (`run_bronze_to_silver()` itself is only verified manually via a temp `DATA_DIR`, not under pytest)
 - [ ] E2E test(s) with real files
 
-## Known limitations (see CLAUDE.md "Common Gotchas" for detail)
+## Known limitations (resolved by critical hardening)
 
-- [ ] `account_ledger` only covers Natwest CSV + Vanguard CSV — PDF adapters discard running balance during parsing (Gotcha #6)
-- [ ] Natwest PDF / AmEx transaction dates have no year in source text; year is inferred, not extracted (Gotcha #7)
-- [ ] `import pyarrow as pa` at the bottom of `models/datalake.py` instead of the top (Gotcha #1)
+- [x] `account_ledger` now covers Kroo, AmEx, First Direct, Natwest Statement, Monzo PDF, Chase, Monzo Flex (was: Gotcha #6)
+- [x] Natwest PDF / AmEx transaction dates have year inferred via `resolve_year_in_period()` (was: Gotcha #7)
+- [x] `import pyarrow as pa` moved to the top of `models/datalake.py` (was: Gotcha #1)
+- [x] `_parse_money(...) -> 0.0` silent-zero removed (now `parse_money_minor` with `MoneyParseError`)
+- [x] `coverage.py`/`reconciliation_status.py` dedup keys switched from `filename` to `ingestion_id`
+- [x] `models/schema.py` stub removed
 
 ## Phase 5+ (not started)
 
