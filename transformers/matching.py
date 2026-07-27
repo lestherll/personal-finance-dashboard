@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -31,10 +31,7 @@ def _normalize_description(desc: str) -> str:
     characters to a single space, strip leading/trailing whitespace."""
 
     canonical = (
-        desc.upper()
-        .replace("£", "")
-        .replace("'LL", " WILL")
-        .replace("N'T", " NOT")
+        desc.upper().replace("£", "").replace("'LL", " WILL").replace("N'T", " NOT")
     )
     canonical = re.sub(r"[^A-Z0-9\s]", " ", canonical)
     return re.sub(r"\s+", " ", canonical).strip()
@@ -110,9 +107,7 @@ def match_transactions(
     sort_key = df["statement_period_to"].fillna(df["upload_timestamp"])
     df["_sort_key"] = sort_key
     df = df.sort_values(["_sort_key", "line_number"]).reset_index(drop=True)
-    df["_occurrence"] = df.groupby(
-        ["source_type", "_fingerprint"]
-    ).cumcount() + 1
+    df["_occurrence"] = df.groupby(["source_type", "_fingerprint"]).cumcount() + 1
 
     # 4. Canonicalize: for each (source_type, fingerprint, occurrence), keep
     #    the row with the most complete data and record all bronze_record_ids
@@ -140,7 +135,9 @@ def match_transactions(
         )
         canonical = group_sorted.iloc[0].to_dict()
 
-        silver_id = group.name[1]  # _fingerprint from group key
+        # Stable canonical id: fingerprint + occurrence so two genuinely
+        # distinct same-day/same-amount/same-merchant repeats get unique ids.
+        silver_id = f"{group.name[1]}_{group.name[2]}"
         for bi, ii in zip(bronze_ids, ingestion_ids):
             provenance_rows.append(
                 {
@@ -152,15 +149,13 @@ def match_transactions(
                 }
             )
 
-        canonical["_fingerprint"] = silver_id
+        canonical["_fingerprint"] = group.name[1]
         canonical["_occurrence"] = group.name[2]
         canonical["source_type"] = source_type
         return pd.DataFrame([canonical])
 
     grouped = df.groupby(group_cols, group_keys=False)
-    canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(
-        drop=True
-    )
+    canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(drop=True)
 
     # 5. Cross-source dedup for declared policy pairs.
     #    A row from the non-preferred source that has a matching loose-key
@@ -174,7 +169,11 @@ def match_transactions(
         )
 
     # 6. Clean up internal columns.
-    canonical["silver_transaction_id"] = canonical["_fingerprint"]
+    canonical["silver_transaction_id"] = (
+        canonical["_fingerprint"].astype(str)
+        + "_"
+        + canonical["_occurrence"].astype(str)
+    )
     canonical = canonical.drop(
         columns=["_fingerprint", "_occurrence", "_sort_key", "_bank_txn_id"],
         errors="ignore",
@@ -203,32 +202,39 @@ def _dedupe_cross_source(
     preferred = subset[subset["source_type"] == prefer_source]
     non_preferred = subset[subset["source_type"] != prefer_source]
 
-    # Count occurrences of each loose key in the preferred source.
-    preferred_counts: Dict[Tuple, int] = dict(
-        preferred.groupby(key_cols).size()
-    )
+    # Map each loose key to the list of preferred survivor ids. We pop ids
+    # as non-preferred rows are absorbed so provenance points at the actual
+    # canonical row that subsumed the Bronze row (not the absorbed row's own
+    # id, which would be dangling after it is dropped).
+    preferred_ids: Dict[Tuple, List[str]] = {}
+    for _, row in preferred.iterrows():
+        key = tuple(row[col] for col in key_cols)
+        survivor_id = f"{row['_fingerprint']}_{row['_occurrence']}"
+        preferred_ids.setdefault(key, []).append(survivor_id)
 
     drop_indices = []
     for idx, row in non_preferred.iterrows():
         key = tuple(row[col] for col in key_cols)
-        if preferred_counts.get(key, 0) > 0:
+        if preferred_ids.get(key):
             drop_indices.append(idx)
-            preferred_counts[key] -= 1
+            survivor_id = preferred_ids[key].pop(0)
+            absorbed_id = f"{row['_fingerprint']}_{row['_occurrence']}"
             # Record provenance: this non-preferred row is absorbed
             # into the matching preferred row.
-            for si, ri in zip(
-                row.get("ingestion_id", [None]),
-                [row.get("bronze_record_id", "")],
-            ):
-                provenance_rows.append(
-                    {
-                        "silver_transaction_id": row.get("_fingerprint", ""),
-                        "bronze_record_id": ri if ri else "",
-                        "ingestion_id": si if si else "",
-                        "source_type": row.get("source_type", ""),
-                        "match_policy": f"cross-source({prefer_source}-preferred)",
-                    }
-                )
+            provenance_rows.append(
+                {
+                    "silver_transaction_id": survivor_id,
+                    "bronze_record_id": row.get("bronze_record_id", "") or "",
+                    "ingestion_id": row.get("ingestion_id", "") or "",
+                    "source_type": row.get("source_type", ""),
+                    "match_policy": f"cross-source({prefer_source}-preferred)",
+                }
+            )
+            # Redirect any same-source provenance that pointed at the now-
+            # absorbed canonical row so transaction_sources stays fully joinable.
+            for prov in provenance_rows:
+                if prov["silver_transaction_id"] == absorbed_id:
+                    prov["silver_transaction_id"] = survivor_id
 
     deduped_non_preferred = non_preferred.drop(index=drop_indices)
     return pd.concat(
