@@ -2,7 +2,9 @@
 
 import logging
 import os
+import re
 import tempfile
+from pathlib import Path
 from typing import List, Optional
 
 import duckdb
@@ -16,6 +18,26 @@ from models.ingestion import IngestionManifest
 logger = logging.getLogger(__name__)
 
 
+def _sql_literal(value: str) -> str:
+    """Quote a path as a SQL string literal.
+
+    DuckDB rejects bound parameters inside CREATE VIEW ("Unexpected prepared
+    parameter"), so view definitions have to inline their paths - and a data
+    lake living under a directory with an apostrophe in it would otherwise
+    produce a broken (or injectable) statement.
+    """
+    escaped = value.replace("'", "''")
+    return f"'{escaped}'"
+
+
+class StaleSilverError(RuntimeError):
+    """The Silver build layout exists but no published build can be read.
+
+    Raised instead of silently falling back to unversioned Silver files,
+    which would serve stale data indefinitely with no visible symptom.
+    """
+
+
 class DataLake:
     """File-based data lake with DuckDB query engine."""
 
@@ -23,6 +45,10 @@ class DataLake:
         """Initialize DuckDB connection."""
         self.db_path = db_path
         self.conn = duckdb.connect(db_path)
+        # Views are registered lazily on first query() rather than here, so
+        # constructing a DataLake never depends on Silver having been built.
+        self._views_registered = False
+        self._views_build_path: Optional[Path] = None
         logger.info(f"DuckDB initialized at {db_path}")
 
     def write_bronze(
@@ -225,21 +251,64 @@ class DataLake:
 
     def read_silver(self, entity_type: str) -> Optional[pd.DataFrame]:
         """
-        Read Silver records. Resolves through the current/ build symlink
-        when available (atomic publish model), falling back to the flat
-        {entity_type}.parquet for compatibility with pre-build data.
+        Read Silver records through the current/ build symlink.
+
+        Silver's whole correctness story is that `current` points at one
+        atomically-published, fully-validated build. An earlier version of
+        this method fell through to the flat legacy `{entity}.parquet`
+        whenever that link didn't resolve - which turned every way the link
+        can break (repo moved while the target was absolute, build pruned,
+        publish interrupted) into *silently serving months-old data* instead
+        of an error. Net worth would still compute, and still be wrong.
+
+        So a broken build is now loud. The flat-file path survives only for
+        a genuinely pre-build data lake - no builds/ directory at all - and
+        even then it warns, because that layout is legacy and unversioned.
+
+        Returns None when the entity legitimately doesn't exist (no Silver
+        has ever been built, or this build doesn't contain that table).
+
+        Raises:
+            StaleSilverError: the build layout exists but is unusable.
         """
-        from models.build import _current_link
+        from models.build import _builds_dir, _current_link
 
         current_link = _current_link(SILVER_DIR)
+        builds_dir = _builds_dir(SILVER_DIR)
+
         if current_link.is_symlink():
+            if not current_link.exists():  # dangling target
+                raise StaleSilverError(
+                    f"data/silver/current points at "
+                    f"{os.readlink(str(current_link))!r}, which does not exist. "
+                    f"The build was pruned, or the data lake was moved while "
+                    f"the symlink held an absolute path. Refusing to fall back "
+                    f"to unversioned Silver files, which would silently serve "
+                    f"stale data. Run 'cli.py silver rebuild' to republish."
+                )
             filepath = current_link / f"{entity_type}.parquet"
             if filepath.exists():
                 return pd.read_parquet(filepath)
+            # A published build legitimately omits tables that were empty at
+            # publish time (publish_silver_build skips empty frames).
+            return None
+
+        if builds_dir.exists() and any(builds_dir.iterdir()):
+            raise StaleSilverError(
+                f"{builds_dir} contains builds but data/silver/current does not "
+                f"exist, so there is no published build to read. A publish was "
+                f"likely interrupted. Run 'cli.py silver rebuild' to republish."
+            )
 
         filepath = SILVER_DIR / f"{entity_type}.parquet"
         if not filepath.exists():
             return None
+        logger.warning(
+            "Reading unversioned legacy Silver file %s - this data lake predates "
+            "versioned builds and has no provenance or atomicity guarantees. "
+            "Run 'cli.py silver rebuild' to publish a real build.",
+            filepath,
+        )
         return pd.read_parquet(filepath)
 
     def read_gold(self, entity_type: str) -> Optional[pd.DataFrame]:
@@ -257,18 +326,98 @@ class DataLake:
             return None
         return pd.read_parquet(filepath)
 
+    def _view_name(self, raw: str) -> str:
+        """DuckDB identifier for a source_type/entity ('monzo-pdf' is not a
+        bare identifier; 'monzo_pdf' is)."""
+        return re.sub(r"[^0-9a-zA-Z_]", "_", raw)
+
+    def refresh_views(self) -> List[str]:
+        """(Re)create DuckDB views over the current Silver build and Bronze.
+
+        Silver tables are exposed under their own names (`transactions`,
+        `account_ledger`, ...) and Bronze under `bronze_<source_type>`, so
+        callers write `SELECT * FROM transactions` rather than hand-rolling a
+        `read_parquet('<path>')` against a build directory whose name changes
+        on every rebuild.
+
+        Views are defined over the *resolved* build path, not the `current`
+        symlink, so a rebuild that swaps the symlink mid-session can never
+        leave a view silently straddling two builds - `query()` detects the
+        swap and calls this again.
+
+        Returns the view names created.
+        """
+        from models.build import _current_link
+
+        created: List[str] = []
+        current_link = _current_link(SILVER_DIR)
+
+        if current_link.is_symlink() and current_link.exists():
+            build_dir = current_link.resolve()
+            for parquet in sorted(build_dir.glob("*.parquet")):
+                view = self._view_name(parquet.stem)
+                self.conn.execute(
+                    f"CREATE OR REPLACE VIEW {view} AS "
+                    f"SELECT * FROM read_parquet({_sql_literal(str(parquet))})"
+                )
+                created.append(view)
+            self._views_build_path = build_dir
+        else:
+            self._views_build_path = None
+
+        if BRONZE_DIR.exists():
+            for source_dir in sorted(BRONZE_DIR.iterdir()):
+                if not source_dir.is_dir() or not any(source_dir.glob("*.parquet")):
+                    continue
+                view = f"bronze_{self._view_name(source_dir.name)}"
+                glob_path = _sql_literal(str(source_dir / "*.parquet"))
+                # union_by_name: a source's Bronze files can differ in columns
+                # (reconciliation_*/statement_period_* only appear when the
+                # adapter produced them - see write_bronze).
+                self.conn.execute(
+                    f"CREATE OR REPLACE VIEW {view} AS "
+                    f"SELECT * FROM read_parquet({glob_path}, union_by_name = true)"
+                )
+                created.append(view)
+
+        logger.debug("Registered %d DuckDB views", len(created))
+        return created
+
+    def _current_build_path(self) -> Optional[Path]:
+        from models.build import _current_link
+
+        link = _current_link(SILVER_DIR)
+        if link.is_symlink() and link.exists():
+            return link.resolve()
+        return None
+
     def query(self, sql: str) -> pd.DataFrame:
         """
-        Execute SQL query using DuckDB.
+        Execute SQL against the data lake.
 
-        Can query across Bronze/Silver/Gold Parquet files directly.
+        Silver tables from the current build, and Bronze per source_type, are
+        registered as named views before the query runs, and re-registered
+        whenever a rebuild swaps the current/ symlink:
 
-        Example:
             df = datalake.query('''
-                SELECT * FROM read_parquet('data/silver/transactions.parquet')
-                WHERE transaction_date >= '2024-01-01'
+                SELECT account_id, sum(amount_minor) AS spend_minor
+                FROM transactions
+                WHERE transaction_date >= '2026-01-01'
+                GROUP BY account_id
             ''')
+
+        Bronze is available as `bronze_<source_type>` with hyphens replaced by
+        underscores (`bronze_monzo_pdf`, `bronze_natwest_statement`).
+
+        Call `refresh_views()` directly to list what's available. Raw
+        `read_parquet('<path>')` still works, but note that
+        `data/silver/*.parquet` is the *legacy unversioned* location - querying
+        it reads whatever predates the build model, not the current build.
         """
+        build_path = self._current_build_path()
+        if not self._views_registered or build_path != self._views_build_path:
+            self.refresh_views()
+            self._views_registered = True
         return self.conn.execute(sql).df()
 
     def close(self):
@@ -287,4 +436,3 @@ def get_datalake() -> DataLake:
     if _datalake is None:
         _datalake = DataLake()
     return _datalake
-
