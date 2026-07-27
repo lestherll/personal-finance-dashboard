@@ -1,6 +1,7 @@
 """Tests for transformers/reconciliation_status.py (queryable B1 reconciliation status)."""
 
 import json
+from unittest.mock import MagicMock
 
 import pandas as pd
 
@@ -301,3 +302,41 @@ class TestFindReconciliationStatus:
 
         result = find_reconciliation_status(datalake, path=path)
         assert result.empty
+
+    def test_bronze_frames_bypasses_datalake_read(self, tmp_path):
+        """Passing bronze_frames must not touch datalake.read_bronze at all
+        (P2.2b) - same result as the datalake-driven path above."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_amex": {
+                    "account_id": "acc_amex",
+                    "display_name": "Amex",
+                    "account_type": "credit",
+                }
+            },
+        )
+        bronze_df = pd.DataFrame(
+            [
+                _bronze_row(
+                    "hash_amex",
+                    "jan.pdf",
+                    "amex_closing_balance",
+                    86304,
+                    86304,
+                    True,
+                )
+            ]
+        )
+        mock_dl = MagicMock()
+        mock_dl.read_bronze.side_effect = AssertionError(
+            "read_bronze should not be called when bronze_frames is provided"
+        )
+
+        result = find_reconciliation_status(
+            mock_dl, path=path, bronze_frames={"amex": bronze_df}
+        )
+
+        mock_dl.read_bronze.assert_not_called()
+        assert len(result) == 1
+        assert result.iloc[0]["account_id"] == "acc_amex"

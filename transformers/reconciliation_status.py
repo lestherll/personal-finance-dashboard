@@ -15,7 +15,7 @@ ISA + Personal Pension wrappers) carries a distinct value per
 account_identifier instead - see the drop_duplicates key below.
 """
 
-from typing import Optional, Set, Union
+from typing import Dict, Optional, Set, Union
 from pathlib import Path
 
 import pandas as pd
@@ -58,7 +58,9 @@ _STATUS_COLUMNS = [
 
 
 def find_reconciliation_status(
-    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+    datalake: Optional[DataLake] = None,
+    path: Optional[PathLike] = None,
+    bronze_frames: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Collect one row per ingested statement file that captured a
     reconciliation result, resolved to its canonical account_id.
@@ -66,12 +68,21 @@ def find_reconciliation_status(
     Accounts not yet registered in the account map are skipped rather than
     raising - this is a reporting command, not a pipeline pre-flight check,
     same rationale as find_statement_periods().
+
+    Pass an already-loaded `bronze_frames` dict (source_type -> DataFrame)
+    to avoid re-reading Bronze from disk when the caller already has it in
+    memory - falls back to reading from `datalake` per source_type when
+    omitted.
     """
     datalake = datalake or get_datalake()
     rows = []
 
     for source_type in _RECONCILIATION_SOURCE_TYPES:
-        df = datalake.read_bronze(source_type)
+        df = (
+            bronze_frames.get(source_type)
+            if bronze_frames is not None
+            else datalake.read_bronze(source_type)
+        )
         if df is None or df.empty or "reconciliation_check" not in df.columns:
             continue
 

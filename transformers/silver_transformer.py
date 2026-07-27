@@ -941,12 +941,13 @@ def run_bronze_to_silver(
     """
     datalake = datalake or get_datalake()
 
-    unmapped = find_unmapped_accounts(datalake)
+    transformer = SilverTransformer(datalake)
+    all_bronze_frames = transformer._read_bronze_frames()
+
+    unmapped = find_unmapped_accounts(datalake, bronze_frames=all_bronze_frames)
     if not unmapped.empty:
         raise UnmappedAccountsError(unmapped)
 
-    transformer = SilverTransformer(datalake)
-    all_bronze_frames = transformer._read_bronze_frames()
     bronze_frames = all_bronze_frames
 
     # Quality gate: quarantine reconciliation-mismatched ingestions.
@@ -986,7 +987,7 @@ def run_bronze_to_silver(
     # silently drops or duplicates a genuine transaction, which Bronze's
     # own pre-matching check can never see (item 3 of the reconciliation
     # hardening work; see transformers/silver_reconciliation.py).
-    bronze_anchors = find_reconciliation_status(datalake)
+    bronze_anchors = find_reconciliation_status(datalake, bronze_frames=all_bronze_frames)
     plan_it_adjustments = amex_plan_it_adjustment_by_ingestion(
         bronze_frames.get("amex")
     )
@@ -1014,7 +1015,7 @@ def run_bronze_to_silver(
     # Cross-file continuity (item 2): does one file's closing anchor equal
     # the next file's opening anchor, per account? Complements the two
     # per-file checks above, which can't see across file boundaries.
-    continuity_df = find_balance_continuity(datalake)
+    continuity_df = find_balance_continuity(datalake, bronze_frames=all_bronze_frames)
 
     # Collect build metadata from Bronze frames.
     ingestion_ids: List[str] = []

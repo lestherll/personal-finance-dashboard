@@ -5,6 +5,8 @@ See TODO.md item 6 for the acceptance criteria.
 """
 
 
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pytest
 
@@ -215,6 +217,27 @@ class TestEndToEnd:
         # Verify reconciliation is in pence (int).
         ledger = datalake.read_silver("account_ledger")
         assert ledger["balance_minor"].dtype.kind in ("i", "u")
+
+    def test_read_bronze_called_once_per_source_type_during_rebuild(
+        self, isolated, tmp_path
+    ):
+        """P2.2: a full rebuild used to call datalake.read_bronze() ~46
+        times for 9 source_types (once from find_unmapped_accounts, once
+        from _read_bronze_frames, twice from find_reconciliation_status,
+        plus once per account inside the rollforward loop). With Bronze
+        frames threaded through every call site, one rebuild should read
+        Bronze exactly once per source_type - a real, disk-backed proof,
+        not a mocked unit test."""
+        datalake = isolated
+        _ingest_bytes(datalake, _kroo_pdf_bytes(), "kroo_jul.pdf", tmp_path)
+
+        spy = MagicMock(wraps=datalake.read_bronze)
+        datalake.read_bronze = spy
+
+        run_bronze_to_silver(datalake)
+
+        all_source_types = AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        assert spy.call_count == len(all_source_types)
 
 
 class TestStrictReconciliationGate:

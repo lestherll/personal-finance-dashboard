@@ -202,13 +202,20 @@ def _sample_description(raw: Dict[str, Any]) -> str:
 
 
 def find_unmapped_accounts(
-    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+    datalake: Optional[DataLake] = None,
+    path: Optional[PathLike] = None,
+    bronze_frames: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Scan all Bronze data for (source_type, account_identifier) combos with
     no mapping yet.
 
     One row per unmapped combo, with a sample description and record count
     to help identify which real-world account it is before registering it.
+
+    Pass an already-loaded `bronze_frames` dict (source_type -> DataFrame) to
+    avoid re-reading Bronze from disk when the caller already has it in
+    memory (e.g. run_bronze_to_silver's pre-flight check) - falls back to
+    reading from `datalake` per source_type when omitted.
     """
     datalake = datalake or get_datalake()
     config = _load(path)
@@ -219,7 +226,11 @@ def find_unmapped_accounts(
     unmapped: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
 
     for source_type in all_source_types:
-        df = datalake.read_bronze(source_type)
+        df = (
+            bronze_frames.get(source_type)
+            if bronze_frames is not None
+            else datalake.read_bronze(source_type)
+        )
         if df is None or df.empty:
             continue
 

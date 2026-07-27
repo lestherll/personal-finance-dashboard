@@ -279,6 +279,29 @@ class TestFindUnmappedAccounts:
         result = find_unmapped_accounts(datalake, path=path)
         assert result.empty
 
+    def test_bronze_frames_bypasses_datalake_read(self, tmp_path):
+        """Passing bronze_frames must not touch datalake.read_bronze at all
+        (P2.2b) - same result as the datalake-driven path above."""
+        path = tmp_path / "account_map.json"
+        path.write_text(json.dumps({"identifiers": {}, "source_type_fallback": {}}))
+
+        bronze_df = pd.DataFrame(
+            [_bronze_row("brand_new_hash", {"description": "Test Merchant"})]
+        )
+        mock_dl = MagicMock()
+        mock_dl.read_bronze.side_effect = AssertionError(
+            "read_bronze should not be called when bronze_frames is provided"
+        )
+
+        result = find_unmapped_accounts(
+            mock_dl, path=path, bronze_frames={"kroo": bronze_df}
+        )
+
+        mock_dl.read_bronze.assert_not_called()
+        assert len(result) == 1
+        assert result.iloc[0]["source_type"] == "kroo"
+        assert result.iloc[0]["account_identifier"] == "brand_new_hash"
+
 
 class TestUnmappedAccountsError:
     def test_message_includes_registration_hint_and_details(self):

@@ -12,7 +12,7 @@ deliberately excluded here rather than producing empty/misleading rows.
 """
 
 from datetime import timedelta
-from typing import Optional, Set, Union
+from typing import Dict, Optional, Set, Union
 from pathlib import Path
 
 import pandas as pd
@@ -45,7 +45,9 @@ _GAPS_COLUMNS = ["account_id", "gap_start", "gap_end", "days"]
 
 
 def find_statement_periods(
-    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+    datalake: Optional[DataLake] = None,
+    path: Optional[PathLike] = None,
+    bronze_frames: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Collect one row per ingested statement file that has a captured
     statement period, resolved to its canonical account_id.
@@ -54,12 +56,21 @@ def find_statement_periods(
     transformers/account_config.py) are skipped rather than raising - this
     is a reporting command, not a pipeline pre-flight check, so an unmapped
     account just means one fewer row shown, not a failure.
+
+    Pass an already-loaded `bronze_frames` dict (source_type -> DataFrame)
+    to avoid re-reading Bronze from disk when the caller already has it in
+    memory - falls back to reading from `datalake` per source_type when
+    omitted.
     """
     datalake = datalake or get_datalake()
     rows = []
 
     for source_type in _PERIOD_SOURCE_TYPES:
-        df = datalake.read_bronze(source_type)
+        df = (
+            bronze_frames.get(source_type)
+            if bronze_frames is not None
+            else datalake.read_bronze(source_type)
+        )
         if df is None or df.empty or "statement_period_from" not in df.columns:
             continue
 
