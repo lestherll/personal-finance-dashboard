@@ -68,7 +68,7 @@ class TestSameFileDuplicateDisambiguation:
             {
                 "date": "02 June 2026",
                 "description": "Salary From Employer Ltd",
-                "amount": 500.0,
+                "amount_minor": 50000,
             },
             3,
             salary.account_identifier,

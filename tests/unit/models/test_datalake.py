@@ -3,8 +3,6 @@ column handling - both the existing single-result scalar broadcast and the
 new per-row `reconciliations` list path (see adapters.base.ReconciliationResult
 / DataSourceAdapter.last_reconciliations)."""
 
-from decimal import Decimal
-
 import pandas as pd
 import pytest
 
@@ -49,8 +47,8 @@ class TestWriteBronzeSingleReconciliation:
         )
         reconciliation = ReconciliationResult(
             check_name="amex_closing_balance",
-            expected_closing=Decimal("863.04"),
-            derived_closing=Decimal("863.04"),
+            expected_closing_minor=86304,
+            derived_closing_minor=86304,
             matches=True,
         )
         datalake.write_bronze(
@@ -79,15 +77,15 @@ class TestWriteBronzeMultipleReconciliations:
         reconciliations = [
             ReconciliationResult(
                 check_name="vanguard_account_summary_isa",
-                expected_closing=Decimal("500.15"),
-                derived_closing=Decimal("500.15"),
+                expected_closing_minor=50015,
+                derived_closing_minor=50015,
                 matches=True,
                 account_identifier="hash_isa",
             ),
             ReconciliationResult(
                 check_name="vanguard_account_summary_pension",
-                expected_closing=Decimal("501.00"),
-                derived_closing=Decimal("999.99"),
+                expected_closing_minor=50100,
+                derived_closing_minor=99999,
                 matches=False,
                 account_identifier="hash_pension",
             ),
@@ -126,8 +124,8 @@ class TestWriteBronzeMultipleReconciliations:
         reconciliations = [
             ReconciliationResult(
                 check_name="vanguard_account_summary_isa",
-                expected_closing=Decimal("500.15"),
-                derived_closing=Decimal("500.15"),
+                expected_closing_minor=50015,
+                derived_closing_minor=50015,
                 matches=True,
                 account_identifier="hash_isa",
             )
@@ -147,7 +145,7 @@ class TestWriteBronzeMultipleReconciliations:
     def test_both_reconciliation_and_reconciliations_raises(self, datalake):
         df = _df([{"source_key": "k1", "account_identifier": "hash_a"}])
         reconciliation = ReconciliationResult(
-            check_name="x", expected_closing=None, derived_closing=None, matches=None
+            check_name="x", expected_closing_minor=None, derived_closing_minor=None, matches=None
         )
         reconciliations = [reconciliation]
 

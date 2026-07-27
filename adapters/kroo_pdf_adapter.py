@@ -2,8 +2,9 @@
 
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
@@ -20,6 +21,8 @@ _PERIOD_RE = re.compile(
 
 class KrooPdfAdapter(PdfAdapter):
     """Parse Kroo PDF statements."""
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from Kroo statement.
@@ -150,15 +153,15 @@ class KrooPdfAdapter(PdfAdapter):
         if not match:
             return
         try:
-            expected = Decimal(match.group(1).replace(",", ""))
-            derived = Decimal(str(transactions[-1]["balance"]))
-        except InvalidOperation:
+            expected = parse_money_minor(match.group(1))
+            derived = transactions[-1]["balance_minor"]
+        except (MoneyParseError, KeyError):
             return
 
         self.last_reconciliation = ReconciliationResult(
             check_name="kroo_closing_balance",
-            expected_closing=expected,
-            derived_closing=derived,
+            expected_closing_minor=expected,
+            derived_closing_minor=derived,
             matches=derived == expected,
         )
 
@@ -187,7 +190,8 @@ class KrooPdfAdapter(PdfAdapter):
 
         # Collect description and amounts
         description_parts = []
-        amounts = []
+        amounts: List[int] = []
+        amount_texts: List[str] = []
 
         for line in lines[1:]:
             line = line.strip()
@@ -195,10 +199,11 @@ class KrooPdfAdapter(PdfAdapter):
                 # Extract amount
                 match = re.search(r"£\s*([0-9,]+\.?\d*)", line)
                 if match:
-                    amount_str = match.group(1).replace(",", "")
+                    amount_str = match.group(1)
                     try:
-                        amounts.append(float(amount_str))
-                    except ValueError:
+                        amounts.append(parse_money_minor("£" + amount_str))
+                        amount_texts.append(amount_str)
+                    except MoneyParseError:
                         pass
             else:
                 description_parts.append(line)
@@ -213,7 +218,7 @@ class KrooPdfAdapter(PdfAdapter):
         # Need to determine which amounts are Out, In, Balance
 
         # Balance is always the last amount
-        balance = amounts[-1]
+        balance_minor = amounts[-1]
 
         # If only 1 amount, it's opening/closing balance (skip these)
         if len(amounts) == 1:
@@ -253,24 +258,16 @@ class KrooPdfAdapter(PdfAdapter):
             # "Sent from Kroo" is ambiguous so check full pattern
             if has_out_indicator or ("to " in desc_lower and not has_in_indicator):
                 # It's outgoing
-                amount = -txn_amount
-                out_amount = txn_amount
-                in_amount = 0
+                amount_minor = -txn_amount
             elif has_in_indicator:
                 # It's incoming
-                amount = txn_amount
-                out_amount = 0
-                in_amount = txn_amount
+                amount_minor = txn_amount
             else:
                 # Default: assume outgoing for "To" and incoming for "From"
                 if desc_lower.startswith("from"):
-                    amount = txn_amount
-                    out_amount = 0
-                    in_amount = txn_amount
+                    amount_minor = txn_amount
                 else:
-                    amount = -txn_amount
-                    out_amount = txn_amount
-                    in_amount = 0
+                    amount_minor = -txn_amount
         else:
             # 3+ amounts: Out, In, Balance...
             out_amount = amounts[0]
@@ -278,18 +275,18 @@ class KrooPdfAdapter(PdfAdapter):
 
             # Determine net transaction
             if out_amount > 0 and in_amount == 0:
-                amount = -out_amount
+                amount_minor = -out_amount
             elif in_amount > 0 and out_amount == 0:
-                amount = in_amount
+                amount_minor = in_amount
             else:
                 # Both present (shouldn't normally happen for a single transaction)
-                amount = in_amount - out_amount
+                amount_minor = in_amount - out_amount
 
         return {
             "date": date_str,
             "description": description,
-            "amount": amount,
-            "balance": balance,
+            "amount_minor": amount_minor,
+            "balance_minor": balance_minor,
         }
 
     def generate_source_key(
@@ -301,7 +298,7 @@ class KrooPdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(txn.get("amount", 0)).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"kroo_txn_{account_part}{date_str}_{description}_{amount}"

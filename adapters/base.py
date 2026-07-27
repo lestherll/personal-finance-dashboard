@@ -5,7 +5,6 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 
@@ -50,11 +49,13 @@ class RawRecord:
 @dataclass
 class ReconciliationResult:
     """Per-file self-check: does a rolled-forward/derived balance match a
-    printed anchor (e.g. Closing/New Balance) on the statement itself?"""
+    printed anchor (e.g. Closing/New Balance) on the statement itself?
+
+    Monetary values are in integer minor units (e.g. GBP pence), never float."""
 
     check_name: str
-    expected_closing: Optional[Decimal]
-    derived_closing: Optional[Decimal]
+    expected_closing_minor: Optional[int]
+    derived_closing_minor: Optional[int]
     matches: Optional[bool]  # None = anchor not found in this file, inconclusive
     # Hashed account_identifier this result applies to (same value stored in
     # Bronze's account_identifier column). None means "applies to the whole

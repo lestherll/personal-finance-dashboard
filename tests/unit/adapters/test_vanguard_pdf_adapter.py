@@ -132,8 +132,8 @@ class TestVanguardMultiWrapper:
         ]
         assert len(isa_holdings) == 2
         fund = next(h for h in isa_holdings if "Test Fund One" in h["fund_name"])
-        assert fund["quantity"] == "5.00"
-        assert fund["total_value"] == "£500.00"
+        assert fund["quantity_text"] == "5.00"
+        assert fund["total_value_minor"] == 50000
 
     def test_pension_holdings_correct(self, adapter):
         records = adapter.parse_transactions(SAMPLE_TEXT)
@@ -154,11 +154,11 @@ class TestVanguardMultiWrapper:
         ]
         assert len(isa_txns) == 2
         deposit = next(t for t in isa_txns if "Regular Deposit" in t["description"])
-        assert deposit["amount"] == 50.00
-        assert deposit["cash_balance"] == 50.15
+        assert deposit["amount_minor"] == 5000
+        assert deposit["cash_balance_minor"] == 5015
         bought = next(t for t in isa_txns if "Bought" in t["description"])
-        assert bought["amount"] == -50.00
-        assert bought["cash_balance"] == 0.15
+        assert bought["amount_minor"] == -5000
+        assert bought["cash_balance_minor"] == 15
         # Boilerplate must not have leaked into the wrapped description.
         assert "Walbrook" not in bought["description"]
         assert "Financial Conduct" not in bought["description"]
@@ -172,8 +172,8 @@ class TestVanguardMultiWrapper:
             and r["_account_identifier_raw"] == "VG9999999_Test Pension"
         ]
         assert len(pension_txns) == 1
-        assert pension_txns[0]["amount"] == 500.00
-        assert pension_txns[0]["cash_balance"] == 500.00
+        assert pension_txns[0]["amount_minor"] == 50000
+        assert pension_txns[0]["cash_balance_minor"] == 50000
 
 
 class TestVanguardStatementPeriod:
@@ -291,7 +291,7 @@ class TestVanguardSourceKey:
             "record_type": "transaction",
             "date": "01/05/2026",
             "description": "Deposit",
-            "amount": 50.0,
+            "amount_minor": 5000,
         }
         holding_key = adapter.generate_source_key(holding_txn, 1, "VG9999999_ISA")
         txn_key = adapter.generate_source_key(transaction_txn, 1, "VG9999999_ISA")

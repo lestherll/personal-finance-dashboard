@@ -136,7 +136,7 @@ def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     if is_search_format:
         transaction_date = _parse_date(raw.get("created"))
         description = raw.get("title") or raw.get("subtitle") or ""
-        amount = float(raw.get("amount") or 0)
+        amount_minor = int(raw.get("amount_minor") or 0)
         currency = raw.get("currency") or "GBP"
         category = raw.get("categories")
         bank_transaction_id = _str_or_none(raw.get("id"))
@@ -147,14 +147,14 @@ def _normalize_monzo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
             f"{date_str} {time_str}".strip(), "%d/%m/%Y %H:%M:%S"
         ) or _parse_date(date_str, "%d/%m/%Y")
         description = raw.get("Name") or raw.get("Description") or ""
-        amount = float(raw.get("Amount") or 0)
+        amount_minor = int(raw.get("amount_minor") or 0)
         currency = raw.get("Currency") or "GBP"
         category = raw.get("Category")
         bank_transaction_id = _str_or_none(raw.get("Transaction ID"))
     return {
         "transaction_date": transaction_date,
         "description": description,
-        "amount": amount,
+        "amount_minor": amount_minor,
         "currency": currency,
         "category": category,
         "bank_transaction_id": bank_transaction_id,
@@ -168,7 +168,7 @@ def _normalize_pdf_full_month_year(
     return {
         "transaction_date": _parse_date(raw.get("date", ""), "%d %B %Y"),
         "description": raw.get("description", ""),
-        "amount": float(raw.get("amount") or 0),
+        "amount_minor": int(raw.get("amount_minor") or 0),
         "currency": "GBP",
         "category": None,
         "bank_transaction_id": None,
@@ -195,7 +195,7 @@ def _normalize_pdf_no_year(raw: Dict[str, Any], reference: Any) -> Dict[str, Any
     return {
         "transaction_date": transaction_date,
         "description": raw.get("description", ""),
-        "amount": float(raw.get("amount") or 0),
+        "amount_minor": int(raw.get("amount_minor") or 0),
         "currency": "GBP",
         "category": None,
         "bank_transaction_id": None,
@@ -207,7 +207,7 @@ def _normalize_pdf_short_year(raw: Dict[str, Any], reference: Any) -> Dict[str, 
     return {
         "transaction_date": _parse_date(raw.get("date", ""), "%d %b %y"),
         "description": raw.get("description", ""),
-        "amount": float(raw.get("amount") or 0),
+        "amount_minor": int(raw.get("amount_minor") or 0),
         "currency": "GBP",
         "category": None,
         "bank_transaction_id": None,
@@ -219,7 +219,7 @@ def _normalize_pdf_slash_date(raw: Dict[str, Any], reference: Any) -> Dict[str, 
     return {
         "transaction_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
         "description": raw.get("description", ""),
-        "amount": float(raw.get("amount") or 0),
+        "amount_minor": int(raw.get("amount_minor") or 0),
         "currency": "GBP",
         "category": None,
         "bank_transaction_id": None,
@@ -261,9 +261,9 @@ def _normalize_vanguard_pdf_holding(
     return {
         "isin": None,
         "fund_name": raw.get("fund_name"),
-        "quantity": _parse_money(raw.get("quantity")),
-        "unit_price": _parse_money(raw.get("unit_price")),
-        "total_value": _parse_money(raw.get("total_value")),
+        "quantity": raw.get("quantity_text") or str(raw.get("quantity") or ""),
+        "unit_price_minor": int(raw.get("unit_price_minor") or 0),
+        "total_value_minor": int(raw.get("total_value_minor") or 0),
         "currency": "GBP",
         "as_of_date": _parse_date(raw.get("as_of_date", ""), "%d %B %Y") or reference,
     }
@@ -281,12 +281,12 @@ def _normalize_amex_plan_it_instalment(
     return {
         "start_date": _parse_date(raw.get("start_date", ""), "%b %d %Y"),
         "description": raw.get("description"),
-        "plan_total": _parse_money(raw.get("plan_total")),
-        "plan_lifetime_fee": _parse_money(raw.get("plan_lifetime_fee")),
-        "remaining_balance": _parse_money(raw.get("remaining_balance")),
-        "due_this_month_plan": _parse_money(raw.get("due_this_month_plan")),
-        "due_this_month_fee": _parse_money(raw.get("due_this_month_fee")),
-        "due_this_month_total": _parse_money(raw.get("due_this_month_total")),
+        "plan_total_minor": int(raw.get("plan_total_minor") or 0),
+        "plan_lifetime_fee_minor": int(raw.get("plan_lifetime_fee_minor") or 0),
+        "remaining_balance_minor": int(raw.get("remaining_balance_minor") or 0),
+        "due_this_month_plan_minor": int(raw.get("due_this_month_plan_minor") or 0),
+        "due_this_month_fee_minor": int(raw.get("due_this_month_fee_minor") or 0),
+        "due_this_month_total_minor": int(raw.get("due_this_month_total_minor") or 0),
         "instalment_progress": raw.get("instalment_progress"),
         "as_of_date": _parse_date(raw.get("as_of_date") or "", "%d %b %Y") or reference,
     }
@@ -294,7 +294,7 @@ def _normalize_amex_plan_it_instalment(
 
 def _ledger_from_kroo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": _parse_date(raw.get("date", ""), "%d %B %Y"),
     }
 
@@ -314,14 +314,14 @@ def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     if as_of_date is None:
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": as_of_date,
     }
 
 
 def _ledger_from_firstdirect(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %y"),
     }
 
@@ -341,14 +341,14 @@ def _ledger_from_natwest_statement(
     if as_of_date is None:
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": as_of_date,
     }
 
 
 def _ledger_from_monzo_pdf(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
     }
 
@@ -359,7 +359,7 @@ def _ledger_from_chase(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     _ledger_from_amex/_ledger_from_natwest_statement (Gotcha #6/#7's
     date-year trap doesn't apply to Chase)."""
     return {
-        "balance": float(raw.get("balance") or 0),
+        "balance_minor": int(raw.get("balance_minor") or 0),
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %Y"),
     }
 
@@ -382,7 +382,7 @@ _TRANSACTIONS_COLUMNS = [
     "account_id",
     "transaction_date",
     "description",
-    "amount",
+    "amount_minor",
     "currency",
     "category",
     "bank_transaction_id",
@@ -399,8 +399,8 @@ _HOLDINGS_COLUMNS = [
     "isin",
     "fund_name",
     "quantity",
-    "unit_price",
-    "total_value",
+    "unit_price_minor",
+    "total_value_minor",
     "currency",
     "as_of_date",
 ]
@@ -410,7 +410,7 @@ _LEDGER_COLUMNS = [
     "bronze_source_key",
     "account_id",
     "source_type",
-    "balance",
+    "balance_minor",
     "as_of_date",
     "upload_timestamp",
     "statement_period_to",
@@ -424,12 +424,12 @@ _PLAN_IT_INSTALMENTS_COLUMNS = [
     "account_id",
     "start_date",
     "description",
-    "plan_total",
-    "plan_lifetime_fee",
-    "remaining_balance",
-    "due_this_month_plan",
-    "due_this_month_fee",
-    "due_this_month_total",
+    "plan_total_minor",
+    "plan_lifetime_fee_minor",
+    "remaining_balance_minor",
+    "due_this_month_plan_minor",
+    "due_this_month_fee_minor",
+    "due_this_month_total_minor",
     "instalment_progress",
     "as_of_date",
 ]

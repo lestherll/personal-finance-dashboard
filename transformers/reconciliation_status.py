@@ -49,8 +49,8 @@ _STATUS_COLUMNS = [
     "source_type",
     "filename",
     "check_name",
-    "expected_closing",
-    "derived_closing",
+    "expected_closing_minor",
+    "derived_closing_minor",
     "matches",
 ]
 
@@ -95,8 +95,8 @@ def find_reconciliation_status(
                     "source_type": source_type,
                     "filename": row.filename,
                     "check_name": row.reconciliation_check,
-                    "expected_closing": row.reconciliation_expected_closing,
-                    "derived_closing": row.reconciliation_derived_closing,
+                    "expected_closing_minor": row.reconciliation_expected_closing_minor,
+                    "derived_closing_minor": row.reconciliation_derived_closing_minor,
                     "matches": row.reconciliation_matches,
                 }
             )

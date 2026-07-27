@@ -83,8 +83,8 @@ class TestNatwestTransactionsParsing:
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         debit = next(t for t in txns if "TEST MERCHANT" in t["description"])
         credit = next(t for t in txns if "SALARY" in t["description"])
-        assert debit["amount"] == -25.00
-        assert credit["amount"] == 1000.00
+        assert debit["amount_minor"] == -2500
+        assert credit["amount_minor"] == 100000
 
     def test_detect_source_type(self, adapter):
         assert adapter.detect_source_type() == "natwest-transactions"

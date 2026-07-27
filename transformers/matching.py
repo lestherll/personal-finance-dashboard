@@ -41,24 +41,24 @@ def _normalize_description(desc: str) -> str:
 
 
 def _compute_fingerprint(
-    account_id: str, date: str, amount: float, description: str
+    account_id: str, date: str, amount_minor: int, description: str
 ) -> str:
     """Deterministic content fingerprint for same-source dedup."""
     normalized = _normalize_description(description)
-    material = f"{account_id}|{date}|{amount}|{normalized}".encode()
+    material = f"{account_id}|{date}|{amount_minor}|{normalized}".encode()
     return hashlib.sha256(material).hexdigest()
 
 
-def _loose_key(account_id: str, date: str, amount: float) -> Tuple[str, str, float]:
+def _loose_key(account_id: str, date: str, amount_minor: int) -> Tuple[str, str, int]:
     """Cross-source match key: account + date + amount (no description)."""
-    return (account_id, date, amount)
+    return (account_id, date, amount_minor)
 
 
 # Declared cross-source pairs with explicit match policy.
 # Key: frozenset of source_types; Value: (match_key_columns, prefer_source)
 _CROSS_SOURCE_POLICIES = {
     frozenset(["natwest-transactions", "natwest-statement"]): (
-        ["account_id", "transaction_date", "amount"],
+        ["account_id", "transaction_date", "amount_minor"],
         "natwest-statement",
     ),
 }
@@ -98,7 +98,7 @@ def match_transactions(
         _compute_fingerprint(
             row.account_id,
             str(row.transaction_date),
-            row.amount,
+            row.amount_minor,
             row.description,
         )
         for row in df.itertuples()

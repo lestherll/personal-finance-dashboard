@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 PathLike = Union[str, Path]
 
-_BALANCES_COLUMNS = ["account_id", "balance", "as_of_date", "balance_may_be_stale"]
+_BALANCES_COLUMNS = ["account_id", "balance_minor", "as_of_date", "balance_may_be_stale"]
 _BREAKDOWN_COLUMNS = [
     "account_id",
     "source",
@@ -141,7 +141,7 @@ def get_net_worth(
     datalake = datalake or get_datalake()
     balances = get_current_balances(datalake)
 
-    total = Decimal("0")
+    total_minor = 0
 
     # Sum account ledger balances (with sign adjustment for credit accounts)
     if not balances.empty:
@@ -151,22 +151,22 @@ def get_net_worth(
         )
 
         for row in merged.itertuples():
-            amount = Decimal(str(row.balance))
+            amount_minor = int(row.balance_minor)
             if row.account_type == "credit":
-                total -= amount
+                total_minor -= amount_minor
             else:
-                total += amount
+                total_minor += amount_minor
 
     # Sum holdings (always assets, never liabilities)
     holdings = datalake.read_silver("holdings")
     if holdings is not None and not holdings.empty:
         holdings_by_account = (
-            holdings.groupby("account_id")["total_value"].sum()
+            holdings.groupby("account_id")["total_value_minor"].sum()
         )
-        for value in holdings_by_account:
-            total += Decimal(str(value))
+        for value_minor in holdings_by_account:
+            total_minor += int(value_minor)
 
-    return total
+    return total_minor
 
 
 def get_net_worth_breakdown(
@@ -194,13 +194,13 @@ def get_net_worth_breakdown(
         )
 
         for row in merged.itertuples():
-            amount = Decimal(str(row.balance))
-            contribution = -amount if row.account_type == "credit" else amount
+            amount_minor = int(row.balance_minor)
+            contribution = -amount_minor if row.account_type == "credit" else amount_minor
             rows.append(
                 {
                     "account_id": row.account_id,
                     "source": row.account_id,
-                    "balance_or_value": row.balance,
+                    "balance_or_value": amount_minor,
                     "as_of_date": row.as_of_date,
                     "contribution_to_net_worth": contribution,
                     "balance_may_be_stale": row.balance_may_be_stale,
@@ -211,14 +211,14 @@ def get_net_worth_breakdown(
     holdings = datalake.read_silver("holdings")
     if holdings is not None and not holdings.empty:
         for holding_row in holdings.itertuples():
-            value = Decimal(str(holding_row.total_value))
+            value_minor = int(holding_row.total_value_minor)
             rows.append(
                 {
                     "account_id": holding_row.account_id,
                     "source": holding_row.fund_name,
-                    "balance_or_value": holding_row.total_value,
+                    "balance_or_value": value_minor,
                     "as_of_date": holding_row.as_of_date,
-                    "contribution_to_net_worth": value,
+                    "contribution_to_net_worth": value_minor,
                     "balance_may_be_stale": False,
                 }
             )

@@ -26,6 +26,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from models.money import parse_money_minor, MoneyParseError
+
 from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
 
@@ -37,6 +39,8 @@ _PERIOD_RE = re.compile(r"From\s+(\d{2}/\d{2}/\d{4})\s+To\s+(\d{2}/\d{2}/\d{4})"
 class NatwestTransactionsPdfAdapter(PdfAdapter):
     """Parse the Natwest online "Transactions" export PDF (not the quarterly
     Statement - see `NatwestStatementPdfAdapter` and the module docstring)."""
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from the Natwest online "Transactions" export.
@@ -173,7 +177,8 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
 
         # Collect description and amounts
         description_parts = []
-        amount = None
+        amount_minor = None
+        amount_text = None
 
         for line in lines[1:]:
             line = line.strip()
@@ -183,19 +188,19 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
                 match = re.search(r"([-+])?£\s*([0-9,]+\.?\d*)", line)
                 if match:
                     sign = match.group(1)
-                    amount_str = match.group(2).replace(",", "")
+                    amount_text = match.group(2)
                     try:
-                        amount = float(amount_str)
-                        if sign == "-":
-                            amount = -amount
-                    except ValueError:
+                        amount_minor = parse_money_minor(
+                            f"{sign or ''}£{amount_text}"
+                        )
+                    except MoneyParseError:
                         pass
                 break
             else:
                 # This is description or type
                 description_parts.append(line)
 
-        if not description_parts or amount is None:
+        if not description_parts or amount_minor is None:
             return None
 
         description = " ".join(description_parts)
@@ -203,7 +208,8 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
         return {
             "date": date_str,
             "description": description,
-            "amount": amount,
+            "amount_minor": amount_minor,
+            "amount_text": amount_text,
         }
 
     def generate_source_key(
@@ -215,7 +221,7 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return (

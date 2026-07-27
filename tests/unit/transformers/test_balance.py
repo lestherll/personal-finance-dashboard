@@ -28,7 +28,7 @@ def _account_map_path(tmp_path, identifiers=None):
 
 def _ledger_row(
     account_id,
-    balance,
+    balance_minor,
     as_of_date,
     upload_timestamp,
     statement_period_to=None,
@@ -38,7 +38,7 @@ def _ledger_row(
 ):
     return {
         "account_id": account_id,
-        "balance": balance,
+        "balance_minor": balance_minor,
         "as_of_date": as_of_date,
         "upload_timestamp": upload_timestamp,
         "statement_period_to": statement_period_to,
@@ -48,11 +48,11 @@ def _ledger_row(
     }
 
 
-def _holdings_row(account_id, total_value, fund_name="Test Fund", as_of_date=None):
+def _holdings_row(account_id, total_value_minor, fund_name="Test Fund", as_of_date=None):
     return {
         "account_id": account_id,
         "fund_name": fund_name,
-        "total_value": total_value,
+        "total_value_minor": total_value_minor,
         "as_of_date": as_of_date,
     }
 
@@ -63,7 +63,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_kroo",
-                    576.23,
+                    57623,
                     pd.Timestamp("2026-06-03"),
                     pd.Timestamp("2026-06-04"),
                 )
@@ -75,7 +75,7 @@ class TestGetCurrentBalances:
 
         assert len(result) == 1
         assert result.iloc[0]["account_id"] == "acc_kroo"
-        assert result.iloc[0]["balance"] == 576.23
+        assert result.iloc[0]["balance_minor"] == 57623
 
     def test_picks_later_row_across_files_by_statement_period_to(self):
         """The exact same-day-tie scenario that originally produced a wrong
@@ -87,7 +87,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_amex",
-                    678.04,
+                    67804,
                     pd.Timestamp("2026-01-31"),
                     upload_timestamp=pd.Timestamp("2026-02-01"),
                     statement_period_to=pd.Timestamp("2026-01-31"),
@@ -95,7 +95,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_amex",
-                    863.04,
+                    86304,
                     pd.Timestamp("2026-01-31"),
                     upload_timestamp=pd.Timestamp("2026-01-20"),  # uploaded earlier
                     statement_period_to=pd.Timestamp("2026-02-19"),  # later cycle
@@ -108,7 +108,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 863.04
+        assert result.iloc[0]["balance_minor"] == 86304
 
     def test_monzo_pdf_same_day_tie_picks_newest_not_last_parsed(self):
         """Monzo PDF prints transactions newest-first within a file (verified
@@ -124,7 +124,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_monzo",
-                    2255.37,
+                    225537,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -133,7 +133,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_monzo",
-                    2355.37,
+                    235537,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -142,7 +142,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_monzo",
-                    5.37,
+                    537,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -151,7 +151,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_monzo",
-                    49.8,
+                    4980,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -160,7 +160,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_monzo",
-                    95.59,
+                    9559,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -174,7 +174,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 2255.37
+        assert result.iloc[0]["balance_minor"] == 225537
 
     def test_monzo_flex_same_day_tie_picks_newest_not_last_parsed(self):
         """Monzo Flex prints transactions newest-first within a file too
@@ -190,7 +190,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_monzo_flex",
-                    1101.37,
+                    110137,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -199,7 +199,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_monzo_flex",
-                    1099.07,
+                    109907,
                     same_day,
                     same_day,
                     statement_period_to=period_to,
@@ -213,7 +213,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 1101.37
+        assert result.iloc[0]["balance_minor"] == 110137
 
     def test_falls_back_to_upload_timestamp_when_no_period(self):
         """Periodless sources (e.g. CSV) have no statement_period_to at all -
@@ -222,14 +222,14 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_natwest",
-                    100.00,
+                    10000,
                     pd.Timestamp("2026-03-01"),
                     upload_timestamp=pd.Timestamp("2026-03-02"),
                     line_number=1,
                 ),
                 _ledger_row(
                     "acc_natwest",
-                    150.00,
+                    15000,
                     pd.Timestamp("2026-03-01"),
                     upload_timestamp=pd.Timestamp("2026-03-05"),
                     line_number=1,
@@ -241,7 +241,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 150.00
+        assert result.iloc[0]["balance_minor"] == 15000
 
     def test_as_of_date_bumped_up_to_statement_period_end(self):
         """An account whose only transaction fell early in its statement
@@ -253,7 +253,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_chase",
-                    2750.0,
+                    275000,
                     pd.Timestamp("2026-06-02"),
                     upload_timestamp=pd.Timestamp("2026-07-25"),
                     statement_period_to=pd.Timestamp("2026-06-30"),
@@ -266,7 +266,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 2750.0
+        assert result.iloc[0]["balance_minor"] == 275000
         assert result.iloc[0]["as_of_date"] == pd.Timestamp("2026-06-30")
 
     def test_multiple_accounts_each_get_their_own_latest_row(self):
@@ -274,19 +274,19 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_kroo",
-                    100.0,
+                    10000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_kroo",
-                    200.0,
+                    20000,
                     pd.Timestamp("2026-06-02"),
                     pd.Timestamp("2026-06-02"),
                 ),
                 _ledger_row(
                     "acc_amex",
-                    50.0,
+                    5000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -297,10 +297,10 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 2
-        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0]["balance"]
-        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0]["balance"]
-        assert kroo_balance == 200.0
-        assert amex_balance == 50.0
+        kroo_balance = result[result["account_id"] == "acc_kroo"].iloc[0]["balance_minor"]
+        amex_balance = result[result["account_id"] == "acc_amex"].iloc[0]["balance_minor"]
+        assert kroo_balance == 20000
+        assert amex_balance == 5000
 
     def test_empty_ledger_returns_empty(self):
         datalake = _FakeDatalakeForBalance({"account_ledger": pd.DataFrame()})
@@ -320,7 +320,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_firstdirect",
-                    1526.77,
+                    152677,
                     pd.Timestamp("2026-05-05"),
                     pd.Timestamp("2026-05-05"),
                     statement_period_to=pd.Timestamp("2026-05-05"),
@@ -328,7 +328,7 @@ class TestGetCurrentBalances:
                 ),
                 _ledger_row(
                     "acc_firstdirect",
-                    1936.54,
+                    193654,
                     pd.Timestamp("2026-07-05"),
                     pd.Timestamp("2026-07-05"),
                     statement_period_to=pd.Timestamp("2026-07-05"),
@@ -341,7 +341,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 1526.77
+        assert result.iloc[0]["balance_minor"] == 152677
         assert result.iloc[0]["as_of_date"] == pd.Timestamp("2026-05-05")
         assert result.iloc[0]["balance_may_be_stale"] == True  # noqa: E712
 
@@ -353,14 +353,14 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_amex",
-                    678.04,
+                    67804,
                     pd.Timestamp("2026-01-31"),
                     pd.Timestamp("2026-02-01"),
                     reconciled=False,
                 ),
                 _ledger_row(
                     "acc_kroo",
-                    495.50,
+                    49550,
                     pd.Timestamp("2026-01-12"),
                     pd.Timestamp("2026-01-13"),
                     reconciled=True,
@@ -385,7 +385,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_kroo",
-                    495.50,
+                    49550,
                     pd.Timestamp("2026-01-12"),
                     pd.Timestamp("2026-01-13"),
                     reconciled=None,
@@ -397,7 +397,7 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
 
         assert len(result) == 1
-        assert result.iloc[0]["balance"] == 495.50
+        assert result.iloc[0]["balance_minor"] == 49550
         assert result.iloc[0]["balance_may_be_stale"] == False  # noqa: E712
 
     def test_balance_may_be_stale_true_when_newer_mismatch_exists(self):
@@ -405,14 +405,14 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_firstdirect",
-                    1526.77,
+                    152677,
                     pd.Timestamp("2026-05-05"),
                     pd.Timestamp("2026-05-05"),
                     reconciled=True,
                 ),
                 _ledger_row(
                     "acc_firstdirect",
-                    1936.54,
+                    193654,
                     pd.Timestamp("2026-07-05"),
                     pd.Timestamp("2026-07-05"),
                     reconciled=False,
@@ -430,7 +430,7 @@ class TestGetCurrentBalances:
             [
                 _ledger_row(
                     "acc_kroo",
-                    495.50,
+                    49550,
                     pd.Timestamp("2026-01-12"),
                     pd.Timestamp("2026-01-13"),
                     reconciled=True,
@@ -465,13 +465,13 @@ class TestGetNetWorth:
             [
                 _ledger_row(
                     "acc_kroo",
-                    100.0,
+                    10000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_vanguard",
-                    500.0,
+                    50000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -481,7 +481,7 @@ class TestGetNetWorth:
 
         net_worth = get_net_worth(datalake, path=path)
 
-        assert net_worth == Decimal("600.0")
+        assert net_worth == 60000
 
     def test_credit_accounts_are_subtracted(self, tmp_path):
         """A credit account's balance is stored as a positive "amount owed"
@@ -506,13 +506,13 @@ class TestGetNetWorth:
             [
                 _ledger_row(
                     "acc_kroo",
-                    1000.0,
+                    100000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_amex",
-                    300.0,
+                    30000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -522,13 +522,13 @@ class TestGetNetWorth:
 
         net_worth = get_net_worth(datalake, path=path)
 
-        assert net_worth == Decimal("700.0")
+        assert net_worth == 70000
 
     def test_empty_ledger_returns_zero(self, tmp_path):
         path = _account_map_path(tmp_path)
         datalake = _FakeDatalakeForBalance({})
 
-        assert get_net_worth(datalake, path=path) == Decimal("0")
+        assert get_net_worth(datalake, path=path) == 0
 
     def test_holdings_are_included_in_net_worth(self, tmp_path):
         """Holdings from the holdings table (investment accounts) are always
@@ -553,7 +553,7 @@ class TestGetNetWorth:
             [
                 _ledger_row(
                     "acc_kroo",
-                    1000.0,
+                    100000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -561,8 +561,8 @@ class TestGetNetWorth:
         )
         holdings = pd.DataFrame(
             [
-                _holdings_row("acc_vanguard_isa", 1500.0, "UK Index Fund"),
-                _holdings_row("acc_vanguard_isa", 500.0, "Global Fund"),
+                _holdings_row("acc_vanguard_isa", 150000, "UK Index Fund"),
+                _holdings_row("acc_vanguard_isa", 50000, "Global Fund"),
             ]
         )
         datalake = _FakeDatalakeForBalance(
@@ -571,7 +571,7 @@ class TestGetNetWorth:
 
         net_worth = get_net_worth(datalake, path=path)
 
-        assert net_worth == Decimal("3000.0")
+        assert net_worth == 300000
 
     def test_holdings_alone_included_in_net_worth(self, tmp_path):
         """If there are only holdings and no ledger balances, net worth is
@@ -588,7 +588,7 @@ class TestGetNetWorth:
         )
         holdings = pd.DataFrame(
             [
-                _holdings_row("acc_vanguard_pension", 3000.0, "Pension Fund"),
+                _holdings_row("acc_vanguard_pension", 300000, "Pension Fund"),
             ]
         )
         datalake = _FakeDatalakeForBalance(
@@ -597,7 +597,7 @@ class TestGetNetWorth:
 
         net_worth = get_net_worth(datalake, path=path)
 
-        assert net_worth == Decimal("3000.0")
+        assert net_worth == 300000
 
     def test_holdings_grouped_by_account_id(self, tmp_path):
         """Multiple holdings for the same account_id are grouped and summed
@@ -614,9 +614,9 @@ class TestGetNetWorth:
         )
         holdings = pd.DataFrame(
             [
-                _holdings_row("acc_vanguard_isa", 1000.0, "Fund A"),
-                _holdings_row("acc_vanguard_isa", 2000.0, "Fund B"),
-                _holdings_row("acc_vanguard_isa", 500.0, "Fund C"),
+                _holdings_row("acc_vanguard_isa", 100000, "Fund A"),
+                _holdings_row("acc_vanguard_isa", 200000, "Fund B"),
+                _holdings_row("acc_vanguard_isa", 50000, "Fund C"),
             ]
         )
         datalake = _FakeDatalakeForBalance(
@@ -625,7 +625,7 @@ class TestGetNetWorth:
 
         net_worth = get_net_worth(datalake, path=path)
 
-        assert net_worth == Decimal("3500.0")
+        assert net_worth == 350000
 
 
 class TestGetNetWorthBreakdown:
@@ -656,19 +656,19 @@ class TestGetNetWorthBreakdown:
             [
                 _ledger_row(
                     "acc_kroo",
-                    1000.0,
+                    100000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_amex",
-                    300.0,
+                    30000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_vanguard",
-                    200.0,
+                    20000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -676,8 +676,8 @@ class TestGetNetWorthBreakdown:
         )
         holdings = pd.DataFrame(
             [
-                _holdings_row("acc_vanguard", 1500.0, "Fund A"),
-                _holdings_row("acc_vanguard", 500.0, "Fund B"),
+                _holdings_row("acc_vanguard", 150000, "Fund A"),
+                _holdings_row("acc_vanguard", 50000, "Fund B"),
             ]
         )
         datalake = _FakeDatalakeForBalance(
@@ -688,21 +688,21 @@ class TestGetNetWorthBreakdown:
 
         assert len(breakdown) == 5
         assert "contribution_to_net_worth" in breakdown.columns
-        # Kroo 1000 + Vanguard 200 - Amex 300 + Fund A 1500 + Fund B 500 = 2900
-        assert breakdown["contribution_to_net_worth"].sum() == Decimal("2900.0")
+        # Kroo 100000 + Vanguard 20000 - Amex 30000 + Fund A 150000 + Fund B 50000 = 290000
+        assert breakdown["contribution_to_net_worth"].sum() == 290000
 
         kroo_row = breakdown[breakdown["account_id"] == "acc_kroo"].iloc[0]
-        assert kroo_row["contribution_to_net_worth"] == Decimal("1000.0")
+        assert kroo_row["contribution_to_net_worth"] == 100000
 
         amex_row = breakdown[breakdown["account_id"] == "acc_amex"].iloc[0]
-        assert amex_row["contribution_to_net_worth"] == Decimal("-300.0")
+        assert amex_row["contribution_to_net_worth"] == -30000
 
         fund_rows = breakdown[
             (breakdown["account_id"] == "acc_vanguard")
             & (breakdown["source"].isin(["Fund A", "Fund B"]))
         ]
         assert len(fund_rows) == 2
-        assert fund_rows["contribution_to_net_worth"].sum() == Decimal("2000.0")
+        assert fund_rows["contribution_to_net_worth"].sum() == 200000
 
     def test_breakdown_credit_accounts_negative_contribution(self, tmp_path):
         """Credit account balances show negative contribution to net worth."""
@@ -720,7 +720,7 @@ class TestGetNetWorthBreakdown:
             [
                 _ledger_row(
                     "acc_amex",
-                    500.0,
+                    50000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
@@ -731,8 +731,8 @@ class TestGetNetWorthBreakdown:
         breakdown = get_net_worth_breakdown(datalake, path=path)
 
         assert len(breakdown) == 1
-        assert breakdown.iloc[0]["balance_or_value"] == 500.0
-        assert breakdown.iloc[0]["contribution_to_net_worth"] == Decimal("-500.0")
+        assert breakdown.iloc[0]["balance_or_value"] == 50000
+        assert breakdown.iloc[0]["contribution_to_net_worth"] == -50000
 
     def test_breakdown_sorted_by_as_of_date_then_contribution(self, tmp_path):
         """Breakdown is sorted by as_of_date (descending) then contribution
@@ -751,13 +751,13 @@ class TestGetNetWorthBreakdown:
             [
                 _ledger_row(
                     "acc_kroo",
-                    100.0,
+                    10000,
                     pd.Timestamp("2026-06-01"),
                     pd.Timestamp("2026-06-01"),
                 ),
                 _ledger_row(
                     "acc_kroo",
-                    200.0,
+                    20000,
                     pd.Timestamp("2026-06-02"),
                     pd.Timestamp("2026-06-02"),
                 ),
@@ -768,7 +768,7 @@ class TestGetNetWorthBreakdown:
         breakdown = get_net_worth_breakdown(datalake, path=path)
 
         assert breakdown.iloc[0]["as_of_date"] == pd.Timestamp("2026-06-02")
-        assert breakdown.iloc[0]["balance_or_value"] == 200.0
+        assert breakdown.iloc[0]["balance_or_value"] == 20000
 
     def test_holdings_as_of_date_is_populated_not_blank(self, tmp_path):
         """A holding's as_of_date (populated by normalize_holdings() in
@@ -794,7 +794,7 @@ class TestGetNetWorthBreakdown:
             [
                 _ledger_row(
                     "acc_kroo",
-                    100.0,
+                    10000,
                     pd.Timestamp("2026-01-01"),
                     pd.Timestamp("2026-01-01"),
                 ),
@@ -804,7 +804,7 @@ class TestGetNetWorthBreakdown:
             [
                 _holdings_row(
                     "acc_vanguard_isa",
-                    1500.0,
+                    150000,
                     "Fund A",
                     as_of_date=pd.Timestamp("2026-07-08"),
                 ),

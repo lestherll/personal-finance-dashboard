@@ -100,15 +100,11 @@ class DataLake:
         # these columns rather than getting them NaN-filled.
         if reconciliation is not None:
             df["reconciliation_check"] = reconciliation.check_name
-            df["reconciliation_expected_closing"] = (
-                float(reconciliation.expected_closing)
-                if reconciliation.expected_closing is not None
-                else None
+            df["reconciliation_expected_closing_minor"] = (
+                reconciliation.expected_closing_minor
             )
-            df["reconciliation_derived_closing"] = (
-                float(reconciliation.derived_closing)
-                if reconciliation.derived_closing is not None
-                else None
+            df["reconciliation_derived_closing_minor"] = (
+                reconciliation.derived_closing_minor
             )
             df["reconciliation_matches"] = reconciliation.matches
 
@@ -128,15 +124,11 @@ class DataLake:
                     else df["account_identifier"] == rec.account_identifier
                 )
                 df.loc[mask, "reconciliation_check"] = rec.check_name
-                df.loc[mask, "reconciliation_expected_closing"] = (
-                    float(rec.expected_closing)
-                    if rec.expected_closing is not None
-                    else None
+                df.loc[mask, "reconciliation_expected_closing_minor"] = (
+                    rec.expected_closing_minor
                 )
-                df.loc[mask, "reconciliation_derived_closing"] = (
-                    float(rec.derived_closing)
-                    if rec.derived_closing is not None
-                    else None
+                df.loc[mask, "reconciliation_derived_closing_minor"] = (
+                    rec.derived_closing_minor
                 )
                 df.loc[mask, "reconciliation_matches"] = rec.matches
 

@@ -109,14 +109,14 @@ class TestMonzoParsing:
     def test_single_line_description(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "Jaylord" in t["description"])
-        assert payment["amount"] == 197.00
+        assert payment["amount_minor"] == 19700
 
     def test_captures_running_balance(self, adapter):
         """Balance is a direct read (like Kroo/Vanguard PDF), not derived -
         must not be dropped the way it originally was (see Gotcha #6)."""
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "Jaylord" in t["description"])
-        assert payment["balance"] == 3026.49
+        assert payment["balance_minor"] == 302649
 
     def test_reference_continuation_is_joined(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -125,18 +125,18 @@ class TestMonzoParsing:
             txn["description"]
             == "Lesther Llacuna (Faster Payments) Reference: vrp2524950438141"
         )
-        assert txn["amount"] == -100.00
+        assert txn["amount_minor"] == -10000
 
     def test_wrapped_description_without_reference_is_joined(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         txn = next(t for t in txns if "Ng Yinnee" in t["description"])
         assert txn["description"] == "Lesther Jr Llacuna & Ng Yinnee (P2P Payment)"
-        assert txn["amount"] == -20.00
+        assert txn["amount_minor"] == -2000
 
     def test_single_word_description(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         flex = next(t for t in txns if t["description"] == "Flex")
-        assert flex["amount"] == -651.12
+        assert flex["amount_minor"] == -65112
 
     def test_footer_block_does_not_pollute_descriptions(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -215,7 +215,7 @@ class TestMonzoReconciliation:
 
 class TestMonzoSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
-        txn = {"date": "30/06/2026", "description": "Test", "amount": -1.0}
+        txn = {"date": "30/06/2026", "description": "Test", "amount_minor": -100}
         key_with = adapter.generate_source_key(txn, 1, "04-00-04_10562844")
         key_without = adapter.generate_source_key(txn, 1, None)
         assert key_with != key_without

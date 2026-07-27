@@ -3,10 +3,11 @@
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import fitz
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
@@ -75,6 +76,8 @@ class AmexPdfAdapter(PdfAdapter):
     a single-line regex (`_TXN_LINE_RE`) rather than column reconstruction.
     """
 
+    PARSER_VERSION = "2"
+
     def validate_text(self, text: str) -> bool:
         """Check if text is from American Express statement."""
         return "American Express" in text and (
@@ -120,8 +123,8 @@ class AmexPdfAdapter(PdfAdapter):
             # negative, payments/credits positive), but Closing Balance is
             # a liability that moves the opposite way - spend increases what
             # you owe, payments decrease it - so it's subtracted, not added.
-            running -= Decimal(str(record.raw_data["amount"]))
-            record.raw_data["balance"] = float(running.quantize(Decimal("0.01")))
+            running -= record.raw_data["amount_minor"]
+            record.raw_data["balance_minor"] = running
 
         if plan_it_instalments_due is not None and transaction_records:
             # Months with an active Plan It installment plan add a further
@@ -136,32 +139,29 @@ class AmexPdfAdapter(PdfAdapter):
             # transaction record's balance rather than left unaccounted for.
             fees_already_captured = sum(
                 (
-                    -Decimal(str(record.raw_data["amount"]))
+                    -record.raw_data["amount_minor"]
                     for record in transaction_records
                     if record.raw_data.get("description") == "INSTALMENT PLAN FEE"
-                ),
-                Decimal("0"),
+                )
             )
             running += plan_it_instalments_due - fees_already_captured
-            transaction_records[-1].raw_data["balance"] = float(
-                running.quantize(Decimal("0.01"))
-            )
+            transaction_records[-1].raw_data["balance_minor"] = running
 
-        derived_closing = running.quantize(Decimal("0.01"))
+        derived_closing = running
         matches = derived_closing == statement_closing_balance
         self.last_reconciliation = ReconciliationResult(
             check_name="amex_closing_balance",
-            expected_closing=statement_closing_balance,
-            derived_closing=derived_closing,
+            expected_closing_minor=statement_closing_balance,
+            derived_closing_minor=derived_closing,
             matches=matches,
         )
         if not matches:
             logger.warning(
-                "Amex %s: derived closing balance %.2f does not match "
-                "statement's printed Closing Balance %.2f - transaction "
-                "amounts don't fully reconcile with the Account Summary box. "
-                "Balance fields on this statement's records may be "
-                "inaccurate.",
+                "Amex %s: derived closing balance %d minor units does not "
+                "match statement's printed Closing Balance %d minor units - "
+                "transaction amounts don't fully reconcile with the Account "
+                "Summary box. Balance fields on this statement's records "
+                "may be inaccurate.",
                 filename,
                 running,
                 statement_closing_balance,
@@ -172,7 +172,7 @@ class AmexPdfAdapter(PdfAdapter):
     @staticmethod
     def _extract_account_summary(
         file_content: bytes,
-    ) -> Optional[tuple[Decimal, Decimal, Optional[Decimal]]]:
+    ) -> Optional[tuple[int, int, Optional[int]]]:
         """Extract (previous_closing_balance, closing_balance,
         plan_it_instalments_due) from the Account Summary box on the
         statement's first page.
@@ -199,12 +199,12 @@ class AmexPdfAdapter(PdfAdapter):
         if len(values) not in (4, 5):
             return None
         try:
-            previous_balance = Decimal(values[0].replace(",", ""))
-            closing_balance = Decimal(values[-1].replace(",", ""))
+            previous_balance = parse_money_minor(values[0])
+            closing_balance = parse_money_minor(values[-1])
             plan_it_instalments_due = (
-                Decimal(values[3].replace(",", "")) if len(values) == 5 else None
+                parse_money_minor(values[3]) if len(values) == 5 else None
             )
-        except InvalidOperation:
+        except MoneyParseError:
             return None
         return previous_balance, closing_balance, plan_it_instalments_due
 
@@ -336,18 +336,19 @@ class AmexPdfAdapter(PdfAdapter):
             txn_date, description, amount_str = match.groups()
             month, day = txn_date.split()
             try:
-                amount = float(amount_str.replace(",", ""))
-            except ValueError:
+                amount_minor = parse_money_minor(amount_str)
+            except MoneyParseError:
                 continue
 
             if not self._is_credit_marked(lines, idx):
-                amount = -amount  # Amex lists spend as positive; we use signed debits
+                amount_minor = -amount_minor  # Amex lists spend as positive; we use signed debits
 
             transactions.append(
                 {
                     "date": f"{day} {month}",
                     "description": description,
-                    "amount": amount,
+                    "amount_minor": amount_minor,
+                    "amount_text": amount_str,
                 }
             )
 
@@ -383,14 +384,15 @@ class AmexPdfAdapter(PdfAdapter):
             txn_date, description, amount_str = match.groups()
             month, day = txn_date.split()
             try:
-                amount = float(amount_str.replace(",", ""))
-            except ValueError:
+                amount_minor = parse_money_minor(amount_str)
+            except MoneyParseError:
                 continue
             transactions.append(
                 {
                     "date": f"{day} {month}",
                     "description": description,
-                    "amount": amount,  # always a credit
+                    "amount_minor": amount_minor,  # always a credit
+                    "amount_text": amount_str,
                 }
             )
 
@@ -429,14 +431,15 @@ class AmexPdfAdapter(PdfAdapter):
                 continue
             month, day = txn_date.split()
             try:
-                amount = float(amount_str.replace(",", ""))
-            except ValueError:
+                amount_minor = parse_money_minor(amount_str)
+            except MoneyParseError:
                 continue
             transactions.append(
                 {
                     "date": f"{day} {month}",
                     "description": description,
-                    "amount": -amount,  # a fee is always a debit
+                    "amount_minor": -amount_minor,  # a fee is always a debit
+                    "amount_text": amount_str,
                 }
             )
 
@@ -539,7 +542,7 @@ class AmexPdfAdapter(PdfAdapter):
 
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
 
         return f"amex_txn_{account_part}{date_str}_{description}_{amount}"
 

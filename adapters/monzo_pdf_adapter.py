@@ -2,8 +2,9 @@
 
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
@@ -33,6 +34,8 @@ class MonzoPdfAdapter(PdfAdapter):
     also include a separate "Pot statement" section per Pot, which this
     adapter does not parse (stops at the first "Pot statement" marker).
     """
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from a Monzo Personal Account statement."""
@@ -155,15 +158,15 @@ class MonzoPdfAdapter(PdfAdapter):
         if not match:
             return
         try:
-            expected = Decimal(match.group(1).replace(",", ""))
-            derived = Decimal(str(transactions[0]["balance"]))
-        except InvalidOperation:
+            expected = parse_money_minor(match.group(1))
+            derived = transactions[0]["balance_minor"]
+        except (MoneyParseError, KeyError):
             return
 
         self.last_reconciliation = ReconciliationResult(
             check_name="monzo_pdf_personal_account_balance",
-            expected_closing=expected,
-            derived_closing=derived,
+            expected_closing_minor=expected,
+            derived_closing_minor=derived,
             matches=derived == expected,
         )
 
@@ -188,21 +191,24 @@ class MonzoPdfAdapter(PdfAdapter):
         for line in lines[1:]:
             line = line.strip()
             if amount_re.match(line):
-                amounts.append(float(line.replace(",", "")))
+                try:
+                    amounts.append(parse_money_minor(line))
+                except MoneyParseError:
+                    pass
             else:
                 description_parts.append(line)
 
         if not description_parts or len(amounts) != 2:
             return None
 
-        amount, balance = amounts
+        amount_minor, balance_minor = amounts
         description = " ".join(description_parts)
 
         return {
             "date": date_str,
             "description": description,
-            "amount": amount,
-            "balance": balance,
+            "amount_minor": amount_minor,
+            "balance_minor": balance_minor,
         }
 
     def generate_source_key(
@@ -214,7 +220,7 @@ class MonzoPdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace("/", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(txn.get("amount", 0)).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"monzo_pdf_txn_{account_part}{date_str}_{description}_{amount}"

@@ -73,12 +73,12 @@ class TestFirstDirectParsing:
     def test_cr_suffix_is_positive_credit(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "PAYMENT RECEIVED" in t["description"])
-        assert payment["amount"] == 47.22
+        assert payment["amount_minor"] == 4722
 
     def test_no_suffix_is_negative_debit(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         purchase = next(t for t in txns if "TEST MERCHANT" in t["description"])
-        assert purchase["amount"] == -15.50
+        assert purchase["amount_minor"] == -1550
 
     def test_detect_source_type(self, adapter):
         assert adapter.detect_source_type() == "firstdirect"
@@ -91,8 +91,8 @@ class TestFirstDirectDerivedBalance:
         purchase = next(t for t in txns if "TEST MERCHANT" in t["description"])
         # Previous Balance 1000.00; payment (credit) reduces what's owed,
         # purchase (debit) increases it.
-        assert payment["balance"] == 952.78
-        assert purchase["balance"] == 968.28
+        assert payment["balance_minor"] == 95278
+        assert purchase["balance_minor"] == 96828
 
     def test_no_account_summary_block_skips_balance_silently(self, adapter):
         text_without_summary = """first direct

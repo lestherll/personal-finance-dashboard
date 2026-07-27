@@ -67,26 +67,26 @@ class TestKrooParsing:
     def test_interest_deposit_is_positive(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         interest = next(t for t in txns if "interest" in t["description"].lower())
-        assert interest["amount"] == 1.23
+        assert interest["amount_minor"] == 123
 
     def test_faster_payment_out_is_negative(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "Test Merchant" in t["description"])
-        assert payment["amount"] == -25.00
+        assert payment["amount_minor"] == -2500
 
     def test_faster_payment_in_is_positive(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         salary = next(t for t in txns if "SALARY" in t["description"])
-        assert salary["amount"] == 500.00
+        assert salary["amount_minor"] == 50000
 
     def test_running_balance_captured(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         interest = next(t for t in txns if "interest" in t["description"].lower())
         payment = next(t for t in txns if "Test Merchant" in t["description"])
         salary = next(t for t in txns if "SALARY" in t["description"])
-        assert interest["balance"] == 101.23
-        assert payment["balance"] == 76.23
-        assert salary["balance"] == 576.23
+        assert interest["balance_minor"] == 10123
+        assert payment["balance_minor"] == 7623
+        assert salary["balance_minor"] == 57623
 
 
 TEXT_WITHOUT_CLOSING_BALANCE = SAMPLE_TEXT.replace("Closing balance\n£576.23\n", "")
@@ -163,7 +163,7 @@ class TestKrooReconciliation:
 
 class TestKrooSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
-        txn = {"date": "1June2026", "description": "Test", "amount": -1.0}
+        txn = {"date": "1June2026", "description": "Test", "amount_minor": -100}
         key_with = adapter.generate_source_key(txn, 1, "01-02-03_12345678")
         key_without = adapter.generate_source_key(txn, 1, None)
         assert key_with != key_without

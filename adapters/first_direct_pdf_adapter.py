@@ -3,10 +3,11 @@
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 from dateutil.relativedelta import relativedelta
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
@@ -32,6 +33,8 @@ _STATEMENT_DATE_RE = re.compile(r"Statement Date\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})
 
 class FirstDirectPdfAdapter(PdfAdapter):
     """Parse First Direct PDF statements."""
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from First Direct statement."""
@@ -159,39 +162,40 @@ class FirstDirectPdfAdapter(PdfAdapter):
             return
 
         try:
-            running = Decimal(previous_match.group(1).replace(",", ""))
-        except InvalidOperation:
+            running = parse_money_minor(previous_match.group(1))
+        except MoneyParseError:
             return
 
         for txn in transactions:
             # `amount` follows a cash-received convention (spend negative,
             # payments/credits positive), but the statement balance is a
             # liability that moves the opposite way - subtract, don't add.
-            running -= Decimal(str(txn["amount"]))
-            txn["balance"] = float(running.quantize(Decimal("0.01")))
+            running -= txn["amount_minor"]
+            txn["balance_minor"] = running
 
         new_balance_match = _NEW_BALANCE_RE.search(text)
         if not new_balance_match:
             return
         try:
-            expected = Decimal(new_balance_match.group(1).replace(",", ""))
-        except InvalidOperation:
+            expected = parse_money_minor(new_balance_match.group(1))
+        except MoneyParseError:
             return
 
-        derived_closing = running.quantize(Decimal("0.01"))
+        derived_closing = running
         matches = derived_closing == expected
         self.last_reconciliation = ReconciliationResult(
             check_name="first_direct_new_balance",
-            expected_closing=expected,
-            derived_closing=derived_closing,
+            expected_closing_minor=expected,
+            derived_closing_minor=derived_closing,
             matches=matches,
         )
         if not matches:
             logger.warning(
-                "First Direct statement: derived closing balance %.2f "
-                "does not match statement's printed New Balance %.2f - "
-                "transaction amounts don't fully reconcile with the "
-                "Account Summary block. Balance fields may be inaccurate.",
+                "First Direct statement: derived closing balance %d "
+                "minor units does not match statement's printed New "
+                "Balance %d minor units - transaction amounts don't fully "
+                "reconcile with the Account Summary block. Balance fields "
+                "may be inaccurate.",
                 running,
                 expected,
             )
@@ -244,10 +248,9 @@ class FirstDirectPdfAdapter(PdfAdapter):
             return None
 
         try:
-            amount = float(amount_str.replace(",", ""))
-            if not is_credit:
-                amount = -amount
-        except ValueError:
+            parsed = parse_money_minor(amount_str)
+            amount_minor = parsed if is_credit else -parsed
+        except MoneyParseError:
             return None
 
         description = " ".join(description_parts)
@@ -255,7 +258,8 @@ class FirstDirectPdfAdapter(PdfAdapter):
         return {
             "date": date_str,
             "description": description,
-            "amount": amount,
+            "amount_minor": amount_minor,
+            "amount_text": amount_str,
         }
 
     def generate_source_key(
@@ -267,7 +271,7 @@ class FirstDirectPdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"firstdirect_txn_{account_part}{date_str}_{description}_{amount}"

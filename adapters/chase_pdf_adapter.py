@@ -9,8 +9,9 @@ two Amex cards under one source_type (see CLAUDE.md Gotcha #5).
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
@@ -37,6 +38,8 @@ _CLOSING_BALANCE_RE = re.compile(r"Closing balance\s*\n\s*£\s*([\d,]+\.\d{2})")
 
 class ChasePdfAdapter(PdfAdapter):
     """Parse Chase PDF statements (current account or savings pot)."""
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from a Chase statement."""
@@ -154,9 +157,9 @@ class ChasePdfAdapter(PdfAdapter):
         cash/asset account, not a credit card liability, so its balance
         moves the SAME direction as the signed, cash-received `amount`
         convention used elsewhere (spend/transfer-out negative, in
-        positive): `running += amount`, not `-=`. Verified against both real
-        statements (Current: 0.00 + 200 - 200 = 0.00; Saver: 0.00 + 2,550 +
-        200 = 2,750.00).
+        positive): `running += amount_minor`, not `-=`. Verified against
+        both real statements (Current: 0.00 + 200 - 200 = 0.00; Saver:
+        0.00 + 2,550 + 200 = 2,750.00).
         """
         if not transactions:
             return
@@ -165,29 +168,29 @@ class ChasePdfAdapter(PdfAdapter):
         if not opening_match or not closing_match:
             return
         try:
-            running = Decimal(opening_match.group(1).replace(",", ""))
-            expected_closing = Decimal(closing_match.group(1).replace(",", ""))
-        except InvalidOperation:
+            running = parse_money_minor(opening_match.group(1))
+            expected_closing = parse_money_minor(closing_match.group(1))
+        except MoneyParseError:
             return
 
         for txn in transactions:
-            running += Decimal(str(txn["amount"]))
+            running += txn["amount_minor"]
 
-        derived_closing = running.quantize(Decimal("0.01"))
+        derived_closing = running
         matches = derived_closing == expected_closing
         self.last_reconciliation = ReconciliationResult(
             check_name="chase_closing_balance",
-            expected_closing=expected_closing,
-            derived_closing=derived_closing,
+            expected_closing_minor=expected_closing,
+            derived_closing_minor=derived_closing,
             matches=matches,
         )
         if not matches:
             logger.warning(
-                "Chase statement: derived closing balance %.2f does not "
-                "match statement's printed Closing balance %.2f - "
-                "transaction amounts don't fully reconcile with the "
-                "Opening/Closing balance block. Balance fields may be "
-                "inaccurate.",
+                "Chase statement: derived closing balance %d minor units "
+                "does not match statement's printed Closing balance %d "
+                "minor units - transaction amounts don't fully reconcile "
+                "with the Opening/Closing balance block. Balance fields "
+                "may be inaccurate.",
                 running,
                 expected_closing,
             )
@@ -217,7 +220,10 @@ class ChasePdfAdapter(PdfAdapter):
         for line in lines[1:]:
             line = line.strip()
             if _AMOUNT_RE.match(line):
-                amounts.append(float(line.replace("£", "").replace(",", "")))
+                try:
+                    amounts.append(parse_money_minor(line))
+                except MoneyParseError:
+                    pass
             else:
                 description_parts.append(line)
 
@@ -227,8 +233,8 @@ class ChasePdfAdapter(PdfAdapter):
         return {
             "date": date_str,
             "description": " ".join(description_parts),
-            "amount": amounts[0],
-            "balance": amounts[1],
+            "amount_minor": amounts[0],
+            "balance_minor": amounts[1],
         }
 
     def generate_source_key(
@@ -240,7 +246,7 @@ class ChasePdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(txn.get("amount", 0)).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"chase_txn_{account_part}{date_str}_{description}_{amount}"

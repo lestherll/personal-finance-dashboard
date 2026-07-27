@@ -25,8 +25,9 @@ prevents that from double-counting (see CLAUDE.md Gotcha #11).
 import logging
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
@@ -62,6 +63,8 @@ _PERIOD_COVERED_RE = re.compile(
 
 class NatwestStatementPdfAdapter(PdfAdapter):
     """Parse Natwest quarterly Statement PDFs."""
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from a Natwest quarterly Statement.
@@ -137,7 +140,7 @@ class NatwestStatementPdfAdapter(PdfAdapter):
 
         transactions: List[Dict[str, Any]] = []
         last_date: Optional[str] = None
-        running_balance: Optional[Decimal] = None
+        running_balance: Optional[int] = None
 
         i = 0
         n = len(lines)
@@ -181,29 +184,29 @@ class NatwestStatementPdfAdapter(PdfAdapter):
                 continue
 
             try:
-                balance = Decimal(numbers[-1].replace(",", ""))
-            except InvalidOperation:
+                balance_minor = parse_money_minor(numbers[-1])
+            except MoneyParseError:
                 continue
 
             description = " ".join(description_parts)
 
             if description == "BROUGHT FORWARD":
-                running_balance = balance
+                running_balance = balance_minor
                 continue
 
             if running_balance is None:
                 # No opening anchor seen yet - can't derive a signed amount.
-                running_balance = balance
+                running_balance = balance_minor
                 continue
 
-            amount = balance - running_balance
-            running_balance = balance
+            amount_minor = balance_minor - running_balance
+            running_balance = balance_minor
 
             txn: Dict[str, Any] = {
                 "date": last_date or "",
                 "description": description,
-                "amount": float(amount),
-                "balance": float(balance),
+                "amount_minor": amount_minor,
+                "balance_minor": balance_minor,
             }
             if account_identifier:
                 txn["_account_identifier_raw"] = account_identifier
@@ -225,7 +228,7 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         return transactions
 
     def _check_reconciliation(
-        self, text: str, computed_final: Optional[Decimal]
+        self, text: str, computed_final: Optional[int]
     ) -> None:
         """Non-blocking sanity check against the statement's own summary figures."""
         if computed_final is None:
@@ -235,22 +238,23 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         if not new_balance_match:
             return
         try:
-            expected = Decimal(new_balance_match.group(1).replace(",", ""))
-        except InvalidOperation:
+            expected = parse_money_minor(new_balance_match.group(1))
+        except MoneyParseError:
             return
 
         matches = computed_final == expected
         self.last_reconciliation = ReconciliationResult(
             check_name="natwest_statement_new_balance",
-            expected_closing=expected,
-            derived_closing=computed_final,
+            expected_closing_minor=expected,
+            derived_closing_minor=computed_final,
             matches=matches,
         )
         if not matches:
             logger.warning(
-                "Natwest statement: final parsed balance %.2f does not "
-                "match statement's printed New Balance %.2f - the "
-                "transaction table may not have parsed completely.",
+                "Natwest statement: final parsed balance %d minor units "
+                "does not match statement's printed New Balance %d minor "
+                "units - the transaction table may not have parsed "
+                "completely.",
                 computed_final,
                 expected,
             )
@@ -264,7 +268,7 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         """Generate deterministic key from account + date + description + amount."""
         date_str = txn.get("date", "").replace(" ", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"natwest_statement_txn_{account_part}{date_str}_{description}_{amount}"

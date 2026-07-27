@@ -2,7 +2,6 @@
 
 import json
 from datetime import datetime
-from decimal import Decimal
 
 import pandas as pd
 import pytest
@@ -197,8 +196,8 @@ class TestIngestCommand:
             records=[_make_record()],
             reconciliation=ReconciliationResult(
                 check_name="amex_closing_balance",
-                expected_closing=Decimal("863.04"),
-                derived_closing=Decimal("863.04"),
+                expected_closing_minor=86304,
+                derived_closing_minor=86304,
                 matches=True,
             ),
             statement_period=StatementPeriod(
@@ -227,8 +226,8 @@ class TestIngestCommand:
             records=[_make_record()],
             reconciliation=ReconciliationResult(
                 check_name="amex_closing_balance",
-                expected_closing=Decimal("863.04"),
-                derived_closing=Decimal("678.04"),
+                expected_closing_minor=86304,
+                derived_closing_minor=67804,
                 matches=False,
             ),
             statement_period=None,
@@ -262,15 +261,15 @@ class TestIngestCommand:
             reconciliations=[
                 ReconciliationResult(
                     check_name="vanguard_account_summary_isa",
-                    expected_closing=Decimal("500.15"),
-                    derived_closing=Decimal("500.15"),
+                    expected_closing_minor=50015,
+                    derived_closing_minor=50015,
                     matches=True,
                     account_identifier="hash_isa",
                 ),
                 ReconciliationResult(
                     check_name="vanguard_account_summary_pension",
-                    expected_closing=Decimal("501.00"),
-                    derived_closing=Decimal("501.00"),
+                    expected_closing_minor=50100,
+                    derived_closing_minor=50100,
                     matches=True,
                     account_identifier="hash_pension",
                 ),
@@ -308,15 +307,15 @@ class TestIngestCommand:
             reconciliations=[
                 ReconciliationResult(
                     check_name="vanguard_account_summary_isa",
-                    expected_closing=Decimal("999.99"),
-                    derived_closing=Decimal("500.15"),
+                    expected_closing_minor=99999,
+                    derived_closing_minor=50015,
                     matches=False,
                     account_identifier="hash_isa",
                 ),
                 ReconciliationResult(
                     check_name="vanguard_account_summary_pension",
-                    expected_closing=Decimal("501.00"),
-                    derived_closing=Decimal("501.00"),
+                    expected_closing_minor=50100,
+                    derived_closing_minor=50100,
                     matches=True,
                     account_identifier="hash_pension",
                 ),
@@ -345,8 +344,8 @@ class TestIngestCommand:
             records=[_make_record()],
             reconciliation=ReconciliationResult(
                 check_name="amex_closing_balance",
-                expected_closing=None,
-                derived_closing=None,
+                expected_closing_minor=None,
+                derived_closing_minor=None,
                 matches=None,
             ),
             statement_period=None,
@@ -376,8 +375,8 @@ class TestIngestCommand:
             records=[_make_record(filename="mismatched.pdf")],
             reconciliation=ReconciliationResult(
                 check_name="amex_closing_balance",
-                expected_closing=Decimal("863.04"),
-                derived_closing=Decimal("678.04"),
+                expected_closing_minor=86304,
+                derived_closing_minor=67804,
                 matches=False,
             ),
             statement_period=None,

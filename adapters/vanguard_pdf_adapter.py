@@ -2,8 +2,9 @@
 
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod, hash_account_identifier
 from adapters.pdf_adapter import PdfAdapter
@@ -51,6 +52,8 @@ class VanguardPdfAdapter(PdfAdapter):
     transaction-shaped dicts (tagged via "record_type"), unlike every other
     adapter which only produces transactions.
     """
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """Check if text is from Vanguard statement."""
@@ -131,7 +134,7 @@ class VanguardPdfAdapter(PdfAdapter):
         lines = self._strip_page_boilerplate(lines)
 
         records: List[Dict[str, Any]] = []
-        account_summary: Dict[str, Decimal] = {}
+        account_summary: Dict[str, int] = {}
         current_wrapper: Optional[str] = None
         i = 0
         while i < len(lines):
@@ -165,14 +168,14 @@ class VanguardPdfAdapter(PdfAdapter):
 
     def _parse_account_summary_block(
         self, lines: List[str], i: int
-    ) -> Tuple[int, Dict[str, Decimal]]:
+    ) -> Tuple[int, Dict[str, int]]:
         """Parse 'Your Vanguard account summary' (page 1): a per-wrapper
         table of 'Value on <date>' columns, one row per wrapper plus a
         trailing 'Account total' row. Returns the closing (rightmost)
         value per wrapper name - no new records, this is purely a
         reconciliation anchor consumed by _check_reconciliation, same
         pattern as Kroo's printed closing-balance search."""
-        summary: Dict[str, Decimal] = {}
+        summary: Dict[str, int] = {}
 
         if i < len(lines) and lines[i] == "Product":
             i += 1
@@ -215,10 +218,10 @@ class VanguardPdfAdapter(PdfAdapter):
             if len(values) == num_value_columns:
                 wrapper_name = " ".join(label_parts).strip()
                 try:
-                    summary[wrapper_name] = Decimal(
-                        values[-1].lstrip("£").replace(",", "")
+                    summary[wrapper_name] = parse_money_minor(
+                        values[-1]
                     )
-                except InvalidOperation:
+                except MoneyParseError:
                     pass
                 label_parts = []
                 values = []
@@ -230,7 +233,7 @@ class VanguardPdfAdapter(PdfAdapter):
     def _check_reconciliation(
         self,
         records: List[Dict[str, Any]],
-        account_summary: Dict[str, Decimal],
+        account_summary: Dict[str, int],
         account_number: Optional[str],
     ) -> None:
         """Compare each wrapper's 'Your Vanguard account summary' closing
@@ -249,8 +252,8 @@ class VanguardPdfAdapter(PdfAdapter):
             self.last_reconciliations.append(
                 ReconciliationResult(
                     check_name=f"vanguard_account_summary_{_slugify(wrapper_name)}",
-                    expected_closing=expected_closing,
-                    derived_closing=derived,
+                    expected_closing_minor=expected_closing,
+                    derived_closing_minor=derived,
                     matches=derived == expected_closing,
                     account_identifier=(
                         hash_account_identifier(raw_identifier)
@@ -263,12 +266,12 @@ class VanguardPdfAdapter(PdfAdapter):
     @staticmethod
     def _sum_wrapper_holdings_total(
         records: List[Dict[str, Any]], wrapper_name: str
-    ) -> Optional[Decimal]:
-        """Sum total_value across every holding row for this wrapper -
+    ) -> Optional[int]:
+        """Sum total_value_minor across every holding row for this wrapper -
         already includes the 'Cash account' row _parse_holdings_block
         emits alongside fund rows, so this sum *is* "fund total + cash
         total" with no separate split needed."""
-        total = Decimal("0")
+        total = 0
         found = False
         for record in records:
             if (
@@ -278,10 +281,8 @@ class VanguardPdfAdapter(PdfAdapter):
                 continue
             found = True
             try:
-                total += Decimal(
-                    str(record["total_value"]).lstrip("£").replace(",", "")
-                )
-            except (InvalidOperation, KeyError):
+                total += int(record["total_value_minor"])
+            except (KeyError, TypeError, ValueError):
                 return None
         return total if found else None
 
@@ -315,14 +316,29 @@ class VanguardPdfAdapter(PdfAdapter):
                 account_identifier = (
                     f"{account_number}_{wrapper}" if account_number else None
                 )
+                quantity_text = values[0]
+                unit_price_text = values[1]
+                total_value_text = values[2]
+                unit_price_minor: Optional[int] = None
+                total_value_minor: Optional[int] = None
+                if total_value_text != "-":
+                    try:
+                        total_value_minor = parse_money_minor(total_value_text)
+                    except MoneyParseError:
+                        pass
+                if unit_price_text != "-":
+                    try:
+                        unit_price_minor = parse_money_minor(unit_price_text)
+                    except MoneyParseError:
+                        pass
                 holdings.append(
                     {
                         "record_type": "holding",
                         "wrapper": wrapper,
                         "fund_name": " ".join(description_parts).strip(),
-                        "quantity": values[0],
-                        "unit_price": values[1],
-                        "total_value": values[2],
+                        "quantity_text": quantity_text,
+                        "unit_price_minor": unit_price_minor,
+                        "total_value_minor": total_value_minor,
                         "as_of_date": as_of_date,
                         "_account_identifier_raw": account_identifier,
                     }
@@ -381,34 +397,32 @@ class VanguardPdfAdapter(PdfAdapter):
         date_str = lines[0]
 
         description_parts = []
-        amounts = []
+        amounts_minor: List[int] = []
         for line in lines[1:]:
             if _ACTIVITY_AMOUNT_RE.match(line):
-                sign = -1 if line.startswith("-") else 1
-                amount_str = line.lstrip("+-").lstrip("£").replace(",", "")
                 try:
-                    amounts.append(sign * float(amount_str))
-                except ValueError:
+                    amounts_minor.append(parse_money_minor(line))
+                except MoneyParseError:
                     pass
             else:
                 description_parts.append(line)
 
-        if not description_parts or not amounts:
+        if not description_parts or not amounts_minor:
             return None
 
         account_identifier = f"{account_number}_{wrapper}" if account_number else None
-        record = {
+        record: Dict[str, Any] = {
             "record_type": "transaction",
             "date": date_str,
             "description": " ".join(description_parts),
-            "amount": amounts[0],  # cash amount
+            "amount_minor": amounts_minor[0],  # cash amount
             "_account_identifier_raw": account_identifier,
         }
-        if len(amounts) >= 2:
+        if len(amounts_minor) >= 2:
             # Cash balance within this wrapper - distinct from "Portfolio
             # Value" (the CSV ledger's balance metric), so kept as its own
             # field rather than fed into account_ledger.
-            record["cash_balance"] = amounts[1]
+            record["cash_balance_minor"] = amounts_minor[1]
         return record
 
     def generate_source_key(
@@ -427,7 +441,7 @@ class VanguardPdfAdapter(PdfAdapter):
 
         date_str = txn.get("date", "").replace("/", "")
         description = txn.get("description", "")[:15].replace(" ", "_")
-        amount = str(abs(txn.get("amount", 0))).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         return f"vanguard_txn_{account_part}{date_str}_{description}_{amount}"
 
     def detect_source_type(self) -> str:

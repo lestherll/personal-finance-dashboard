@@ -167,20 +167,20 @@ class TestChaseParsing:
     def test_incoming_payment_is_positive(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "Lesther NW" in t["description"])
-        assert payment["amount"] == 200.00
+        assert payment["amount_minor"] == 20000
         assert payment["date"] == "02 Jun 2026"
 
     def test_outgoing_transfer_is_negative(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         transfer = next(t for t in txns if "Chase Saver" in t["description"])
-        assert transfer["amount"] == -200.00
+        assert transfer["amount_minor"] == -20000
 
     def test_balance_captured(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         payment = next(t for t in txns if "Lesther NW" in t["description"])
         transfer = next(t for t in txns if "Chase Saver" in t["description"])
-        assert payment["balance"] == 200.00
-        assert transfer["balance"] == 0.00
+        assert payment["balance_minor"] == 20000
+        assert transfer["balance_minor"] == 0
 
     def test_saver_statement_parses(self, adapter):
         """Genuinely Saver-shaped content (different account, different
@@ -193,14 +193,14 @@ class TestChaseParsing:
         )
 
         kroo_deposit = next(t for t in txns if "Sent from Kroo" in t["description"])
-        assert kroo_deposit["amount"] == 2550.00
-        assert kroo_deposit["balance"] == 2550.00
+        assert kroo_deposit["amount_minor"] == 255000
+        assert kroo_deposit["balance_minor"] == 255000
 
         transfer_in = next(
             t for t in txns if "From Lesther Jr's Account" in t["description"]
         )
-        assert transfer_in["amount"] == 200.00
-        assert transfer_in["balance"] == 2750.00
+        assert transfer_in["amount_minor"] == 20000
+        assert transfer_in["balance_minor"] == 275000
 
     def test_stops_before_footer_disclaimer(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -230,7 +230,7 @@ class TestChaseTwoAccountsDisambiguation:
         assert current_ids != saver_ids
 
     def test_source_keys_differ_for_same_looking_transaction(self, adapter):
-        txn = {"date": "02 Jun 2026", "description": "Payment", "amount": 200.0}
+        txn = {"date": "02 Jun 2026", "description": "Payment", "amount_minor": 20000}
         current_key = adapter.generate_source_key(
             txn, 1, account_identifier="18492643_60-84-07"
         )
@@ -285,15 +285,15 @@ class TestChaseReconciliation:
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.check_name == "chase_closing_balance"
-        assert adapter.last_reconciliation.expected_closing == Decimal("0.00")
-        assert adapter.last_reconciliation.derived_closing == Decimal("0.00")
+        assert adapter.last_reconciliation.expected_closing_minor == 0
+        assert adapter.last_reconciliation.derived_closing_minor == 0
 
     def test_sets_last_reconciliation_on_match_saver(self, adapter):
         adapter.parse_transactions(SAMPLE_SAVER_TEXT)
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
-        assert adapter.last_reconciliation.expected_closing == Decimal("2750.00")
-        assert adapter.last_reconciliation.derived_closing == Decimal("2750.00")
+        assert adapter.last_reconciliation.expected_closing_minor == 275000
+        assert adapter.last_reconciliation.derived_closing_minor == 275000
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         mismatched_text = SAMPLE_TEXT.replace(
@@ -323,7 +323,7 @@ class TestChaseReconciliation:
 
 class TestChaseSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
-        txn = {"date": "02 Jun 2026", "description": "Test", "amount": -1.0}
+        txn = {"date": "02 Jun 2026", "description": "Test", "amount_minor": -100}
         key_with = adapter.generate_source_key(txn, 1, "18492643_60-84-07")
         key_without = adapter.generate_source_key(txn, 1, None)
         assert key_with != key_without

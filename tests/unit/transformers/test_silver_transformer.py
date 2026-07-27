@@ -72,7 +72,7 @@ class TestNormalizeTransactionsMonzo:
             "Date": "15/01/2024",
             "Time": "14:30:00",
             "Name": "Tesco Groceries",
-            "Amount": "-25.50",
+            "amount_minor": -2550,
             "Currency": "GBP",
             "Category": "Groceries",
         }
@@ -86,7 +86,7 @@ class TestNormalizeTransactionsMonzo:
             row["account_id"] == "acc_monzo_current"
         )  # no identifier -> source_type fallback
         assert row["description"] == "Tesco Groceries"
-        assert row["amount"] == -25.50
+        assert row["amount_minor"] == -2550
         assert row["currency"] == "GBP"
         assert row["category"] == "Groceries"
         assert row["transaction_date"] == pd.Timestamp("2024-01-15 14:30:00")
@@ -97,7 +97,7 @@ class TestNormalizeTransactionsMonzo:
             "created": "2024-01-15T14:30:00Z",
             "title": "Tesco Groceries",
             "subtitle": "Tesco Stores",
-            "amount": "-25.50",
+            "amount_minor": -2550,
             "currency": "GBP",
             "categories": "groceries",
         }
@@ -108,24 +108,24 @@ class TestNormalizeTransactionsMonzo:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["description"] == "Tesco Groceries"
-        assert row["amount"] == -25.50
+        assert row["amount_minor"] == -2550
         assert row["category"] == "groceries"
         assert row["transaction_date"] == pd.Timestamp("2024-01-15 14:30:00")
 
 
 class TestNormalizeTransactionsPdfSources:
     def test_kroo_full_date_and_identifier(self, transformer):
-        raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount": -4.50}
+        raw = {"date": "12 January 2026", "description": "Coffee Shop", "amount_minor": -450}
         bronze = _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)
         df, _ = transformer.normalize_transactions({"kroo": bronze})
 
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_KROO_ID, "kroo")
         assert row["transaction_date"] == pd.Timestamp("2026-01-12")
-        assert row["amount"] == -4.50
+        assert row["amount_minor"] == -450
 
     def test_natwest_transactions_infers_year_from_upload_timestamp(self, transformer):
-        raw = {"date": "15 Jan", "description": "Card Payment", "amount": -20.0}
+        raw = {"date": "15 Jan", "description": "Card Payment", "amount_minor": -2000}
         bronze = _bronze_frame(
             "natwest-transactions",
             [raw],
@@ -142,8 +142,8 @@ class TestNormalizeTransactionsPdfSources:
         raw = {
             "date": "26 FEB",
             "description": "Automated Credit 3305 JPMCB",
-            "amount": 2728.54,
-            "balance": 3738.54,
+            "amount_minor": 272854,
+            "balance_minor": 373854,
         }
         bronze = _bronze_frame(
             "natwest-statement",
@@ -155,11 +155,11 @@ class TestNormalizeTransactionsPdfSources:
 
         row = df.iloc[0]
         assert row["transaction_date"] == pd.Timestamp("2026-02-26")
-        assert row["amount"] == 2728.54
+        assert row["amount_minor"] == 272854
         assert row["account_id"] == get_account_id(_NATWEST_ID, "natwest-statement")
 
     def test_amex_infers_year_from_upload_timestamp(self, transformer):
-        raw = {"date": "28 Apr", "description": "Amazon", "amount": -99.99}
+        raw = {"date": "28 Apr", "description": "Amazon", "amount_minor": -9999}
         bronze = _bronze_frame(
             "amex",
             [raw],
@@ -173,7 +173,7 @@ class TestNormalizeTransactionsPdfSources:
 
     def test_amex_handles_year_boundary(self, transformer):
         """A December transaction uploaded in January should resolve to the prior year."""
-        raw = {"date": "20 Dec", "description": "Gift Shop", "amount": -15.0}
+        raw = {"date": "20 Dec", "description": "Gift Shop", "amount_minor": -1500}
         bronze = _bronze_frame(
             "amex",
             [raw],
@@ -190,7 +190,7 @@ class TestNormalizeTransactionsPdfSources:
         (resolve_year_in_period), the date string already carries it - the
         upload_timestamp fallback must not be consulted (and could give a
         wrong answer if it were, since it's unrelated to the real year)."""
-        raw = {"date": "28 Apr 2024", "description": "Amazon", "amount": -99.99}
+        raw = {"date": "28 Apr 2024", "description": "Amazon", "amount_minor": -9999}
         bronze = _bronze_frame(
             "amex",
             [raw],
@@ -211,12 +211,12 @@ class TestNormalizeTransactionsPdfSources:
         raw_2025 = {
             "date": "15 Jan 2025",
             "description": "NETFLIX.COM",
-            "amount": -10.99,
+            "amount_minor": -1099,
         }
         raw_2026 = {
             "date": "15 Jan 2026",
             "description": "NETFLIX.COM",
-            "amount": -10.99,
+            "amount_minor": -1099,
         }
         from adapters.amex_pdf_adapter import AmexPdfAdapter
 
@@ -241,7 +241,7 @@ class TestNormalizeTransactionsPdfSources:
         }
 
     def test_first_direct_two_digit_year(self, transformer):
-        raw = {"date": "15 Jan 24", "description": "Restaurant", "amount": -30.0}
+        raw = {"date": "15 Jan 24", "description": "Restaurant", "amount_minor": -3000}
         bronze = _bronze_frame("firstdirect", [raw], account_identifier=_FIRSTDIRECT_ID)
         df, _ = transformer.normalize_transactions({"firstdirect": bronze})
 
@@ -249,7 +249,7 @@ class TestNormalizeTransactionsPdfSources:
         assert row["transaction_date"] == pd.Timestamp("2024-01-15")
 
     def test_vanguard_pdf_slash_date(self, transformer):
-        raw = {"date": "15/01/2024", "description": "Fund Purchase", "amount": -500.0}
+        raw = {"date": "15/01/2024", "description": "Fund Purchase", "amount_minor": -50000}
         bronze = _bronze_frame(
             "vanguard-pdf", [raw], account_identifier=_VANGUARD_ISA_ID
         )
@@ -263,7 +263,7 @@ class TestNormalizeTransactionsPdfSources:
         raw = {
             "date": "30/06/2026",
             "description": "Lesther Llacuna (Faster Payments) Reference: vrp2524950438141",
-            "amount": -100.0,
+            "amount_minor": -10000,
         }
         bronze = _bronze_frame("monzo-pdf", [raw], account_identifier=_MONZO_PDF_ID)
         df, _ = transformer.normalize_transactions({"monzo-pdf": bronze})
@@ -271,16 +271,16 @@ class TestNormalizeTransactionsPdfSources:
         row = df.iloc[0]
         assert row["account_id"] == get_account_id(_MONZO_PDF_ID, "monzo-pdf")
         assert row["transaction_date"] == pd.Timestamp("2026-06-30")
-        assert row["amount"] == -100.0
+        assert row["amount_minor"] == -10000
 
     def test_vanguard_pdf_holdings_excluded_from_transactions(self, transformer):
         """A holding-record_type row must not leak into normalize_transactions."""
         holding_raw = {
             "wrapper": "ISA",
             "fund_name": "Some Fund",
-            "quantity": "5.00",
-            "unit_price": "£1.00",
-            "total_value": "£5.00",
+            "quantity_text": "5.00",
+            "unit_price_minor": 100,
+            "total_value_minor": 500,
             "as_of_date": "08 July 2026",
         }
         bronze = _bronze_frame(
@@ -306,9 +306,9 @@ class TestNormalizeHoldings:
         raw = {
             "wrapper": "ISA",
             "fund_name": "Vanguard FTSE Global All Cap Index Fund Accumulation",
-            "quantity": "5.68",
-            "unit_price": "£287.13",
-            "total_value": "£1,630.28",
+            "quantity_text": "5.68",
+            "unit_price_minor": 28713,
+            "total_value_minor": 163028,
             "as_of_date": "08 July 2026",
         }
         bronze = _bronze_frame(
@@ -325,9 +325,9 @@ class TestNormalizeHoldings:
         assert (
             row["fund_name"] == "Vanguard FTSE Global All Cap Index Fund Accumulation"
         )
-        assert row["quantity"] == 5.68
-        assert row["unit_price"] == 287.13
-        assert row["total_value"] == 1630.28
+        assert row["quantity"] == "5.68"
+        assert row["unit_price_minor"] == 28713
+        assert row["total_value_minor"] == 163028
         assert row["as_of_date"] == pd.Timestamp("2026-07-08")
         assert row["isin"] is None
 
@@ -336,9 +336,9 @@ class TestNormalizeHoldings:
         raw = {
             "wrapper": "ISA",
             "fund_name": "Cash account",
-            "quantity": "-",
-            "unit_price": "-",
-            "total_value": "£0.15",
+            "quantity_text": "-",
+            "unit_price_minor": 0,
+            "total_value_minor": 15,
             "as_of_date": "08 July 2026",
         }
         bronze = _bronze_frame(
@@ -350,13 +350,13 @@ class TestNormalizeHoldings:
         df = transformer.normalize_holdings({"vanguard-pdf": bronze})
 
         row = df.iloc[0]
-        assert row["quantity"] == 0.0
-        assert row["unit_price"] == 0.0
-        assert row["total_value"] == 0.15
+        assert row["quantity"] == "-"
+        assert row["unit_price_minor"] == 0
+        assert row["total_value_minor"] == 15
 
     def test_vanguard_pdf_transactions_excluded_from_holdings(self, transformer):
         """A transaction-record_type row must not leak into normalize_holdings."""
-        txn_raw = {"date": "15/01/2024", "description": "Deposit", "amount": 100.0}
+        txn_raw = {"date": "15/01/2024", "description": "Deposit", "amount_minor": 10000}
         bronze = _bronze_frame(
             "vanguard-pdf",
             [txn_raw],
@@ -377,12 +377,12 @@ class TestNormalizePlanItInstalments:
         raw = {
             "start_date": "Apr 12 2026",
             "description": "MALAYSIA AIRLINES KUALA KUALA LUMPUR",
-            "plan_total": "1,656.39",
-            "plan_lifetime_fee": "51.68",
-            "remaining_balance": "1,104.26",
-            "due_this_month_plan": "552.13",
-            "due_this_month_fee": "17.23",
-            "due_this_month_total": "569.36",
+            "plan_total_minor": 165639,
+            "plan_lifetime_fee_minor": 5168,
+            "remaining_balance_minor": 110426,
+            "due_this_month_plan_minor": 55213,
+            "due_this_month_fee_minor": 1723,
+            "due_this_month_total_minor": 56936,
             "instalment_progress": "1 OF 3",
             "as_of_date": "19 Apr 2026",
         }
@@ -399,19 +399,19 @@ class TestNormalizePlanItInstalments:
         assert row["account_id"] == get_account_id(_AMEX_ID, "amex")
         assert row["start_date"] == pd.Timestamp("2026-04-12")
         assert row["description"] == "MALAYSIA AIRLINES KUALA KUALA LUMPUR"
-        assert row["plan_total"] == 1656.39
-        assert row["plan_lifetime_fee"] == 51.68
-        assert row["remaining_balance"] == 1104.26
-        assert row["due_this_month_plan"] == 552.13
-        assert row["due_this_month_fee"] == 17.23
-        assert row["due_this_month_total"] == 569.36
+        assert row["plan_total_minor"] == 165639
+        assert row["plan_lifetime_fee_minor"] == 5168
+        assert row["remaining_balance_minor"] == 110426
+        assert row["due_this_month_plan_minor"] == 55213
+        assert row["due_this_month_fee_minor"] == 1723
+        assert row["due_this_month_total_minor"] == 56936
         assert row["instalment_progress"] == "1 OF 3"
         assert row["as_of_date"] == pd.Timestamp("2026-04-19")
 
     def test_amex_transactions_excluded_from_plan_it_instalments(self, transformer):
         """A transaction-record_type row must not leak into
         normalize_plan_it_instalments."""
-        txn_raw = {"date": "19 Apr 2026", "description": "COFFEE SHOP", "amount": -3.85}
+        txn_raw = {"date": "19 Apr 2026", "description": "COFFEE SHOP", "amount_minor": -385}
         bronze = _bronze_frame(
             "amex", [txn_raw], account_identifier=_AMEX_ID, record_type="transaction"
         )
@@ -429,8 +429,8 @@ class TestNormalizeAccountLedger:
         raw = {
             "date": "12 January 2026",
             "description": "Coffee Shop",
-            "amount": -4.50,
-            "balance": 495.50,
+            "amount_minor": -450,
+            "balance_minor": 49550,
         }
         df = transformer.normalize_account_ledger(
             {"kroo": _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)}
@@ -439,15 +439,15 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_kroo_current"
-        assert row["balance"] == 495.50
+        assert row["balance_minor"] == 49550
         assert row["as_of_date"] == pd.Timestamp("2026-01-12")
 
     def test_amex_balance_captured(self, transformer):
         raw = {
             "date": "31 Jan",
             "description": "PAYMENT RECEIVED - THANK YOU",
-            "amount": 769.58,
-            "balance": 0.0,
+            "amount_minor": 76958,
+            "balance_minor": 0,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -463,7 +463,7 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_amex_credit_1"
-        assert row["balance"] == 0.0
+        assert row["balance_minor"] == 0
         assert row["as_of_date"] == pd.Timestamp("2026-01-31")
 
     def test_amex_balance_captured_with_year_already_stamped(self, transformer):
@@ -474,8 +474,8 @@ class TestNormalizeAccountLedger:
         raw = {
             "date": "31 Jan 2026",
             "description": "PAYMENT RECEIVED - THANK YOU",
-            "amount": 769.58,
-            "balance": 0.0,
+            "amount_minor": 76958,
+            "balance_minor": 0,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -490,7 +490,7 @@ class TestNormalizeAccountLedger:
 
         assert len(df) == 1
         row = df.iloc[0]
-        assert row["balance"] == 0.0
+        assert row["balance_minor"] == 0
         assert row["as_of_date"] == pd.Timestamp("2026-01-31")
 
     def test_amex_plan_it_instalment_rows_excluded_from_ledger(self, transformer):
@@ -501,8 +501,8 @@ class TestNormalizeAccountLedger:
         txn_raw = {
             "date": "31 Jan",
             "description": "PAYMENT RECEIVED - THANK YOU",
-            "amount": 769.58,
-            "balance": 0.0,
+            "amount_minor": 76958,
+            "balance_minor": 0,
         }
         plan_it_raw = {
             "start_date": "Apr 12 2026",
@@ -529,14 +529,14 @@ class TestNormalizeAccountLedger:
         df = transformer.normalize_account_ledger({"amex": bronze})
 
         assert len(df) == 1
-        assert df.iloc[0]["balance"] == 0.0
+        assert df.iloc[0]["balance_minor"] == 0
 
     def test_monzo_pdf_balance_captured(self, transformer):
         raw = {
             "date": "30/06/2026",
             "description": "Lesther Llacuna (Faster Payments)",
-            "amount": -100.0,
-            "balance": 2255.37,
+            "amount_minor": -10000,
+            "balance_minor": 225537,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -549,15 +549,15 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_monzo_current"
-        assert row["balance"] == 2255.37
+        assert row["balance_minor"] == 225537
         assert row["as_of_date"] == pd.Timestamp("2026-06-30")
 
     def test_chase_balance_captured(self, transformer):
         raw = {
             "date": "02 Jun 2026",
             "description": "From LLACUNA L - Lesther NW Payment",
-            "amount": 200.0,
-            "balance": 200.0,
+            "amount_minor": 20000,
+            "balance_minor": 20000,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -570,15 +570,15 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_chase_current"
-        assert row["balance"] == 200.0
+        assert row["balance_minor"] == 20000
         assert row["as_of_date"] == pd.Timestamp("2026-06-02")
 
     def test_firstdirect_balance_captured(self, transformer):
         raw = {
             "date": "30 Apr 26",
             "description": "PAYMENT RECEIVED - THANK YOU",
-            "amount": 47.22,
-            "balance": 1526.77,
+            "amount_minor": 4722,
+            "balance_minor": 152677,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -591,15 +591,15 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_firstdirect_credit"
-        assert row["balance"] == 1526.77
+        assert row["balance_minor"] == 152677
         assert row["as_of_date"] == pd.Timestamp("2026-04-30")
 
     def test_natwest_statement_balance_captured(self, transformer):
         raw = {
             "date": "26 FEB",
             "description": "Automated Credit 3305 JPMCB",
-            "amount": 2728.54,
-            "balance": 3738.54,
+            "amount_minor": 272854,
+            "balance_minor": 373854,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -615,15 +615,15 @@ class TestNormalizeAccountLedger:
         assert len(df) == 1
         row = df.iloc[0]
         assert row["account_id"] == "acc_natwest_current"
-        assert row["balance"] == 3738.54
+        assert row["balance_minor"] == 373854
         assert row["as_of_date"] == pd.Timestamp("2026-02-26")
 
     def test_reconciled_true_captured_on_ledger_row(self, transformer):
         raw = {
             "date": "12 January 2026",
             "description": "Coffee Shop",
-            "amount": -4.50,
-            "balance": 495.50,
+            "amount_minor": -450,
+            "balance_minor": 49550,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -649,8 +649,8 @@ class TestNormalizeAccountLedger:
         raw = {
             "date": "12 January 2026",
             "description": "Coffee Shop",
-            "amount": -4.50,
-            "balance": 495.50,
+            "amount_minor": -450,
+            "balance_minor": 49550,
         }
         df = transformer.normalize_account_ledger(
             {
@@ -665,14 +665,14 @@ class TestNormalizeAccountLedger:
 
         assert len(df) == 1
         assert df.iloc[0]["reconciled"] == False  # noqa: E712 - may be numpy bool
-        assert df.iloc[0]["balance"] == 495.50
+        assert df.iloc[0]["balance_minor"] == 49550
 
     def test_reconciled_none_captured_when_no_reconciliation_column(self, transformer):
         raw = {
             "date": "12 January 2026",
             "description": "Coffee Shop",
-            "amount": -4.50,
-            "balance": 495.50,
+            "amount_minor": -450,
+            "balance_minor": 49550,
         }
         df = transformer.normalize_account_ledger(
             {"kroo": _bronze_frame("kroo", [raw], account_identifier=_KROO_ID)}
@@ -687,12 +687,12 @@ class TestNormalizeAccountLedger:
         natwest_transactions_raw = {
             "date": "26 May",
             "description": "KROO ACCOUNT",
-            "amount": -2745.33,
+            "amount_minor": -274533,
         }
         vanguard_pdf_raw = {
             "date": "21/04/2026",
             "description": "Regular Deposit",
-            "amount": 150.0,
+            "amount_minor": 15000,
             "cash_balance": 50.15,
         }
         df = transformer.normalize_account_ledger(
@@ -708,7 +708,7 @@ class TestNormalizeAccountLedger:
     def test_no_data_returns_empty_frame_with_schema(self, transformer):
         df = transformer.normalize_account_ledger({})
         assert df.empty
-        assert "balance" in df.columns
+        assert "balance_minor" in df.columns
 
     def test_same_day_rows_carry_ordering_columns(self, transformer):
         """S1: two rows for the same account sharing an as_of_date - here
@@ -720,14 +720,14 @@ class TestNormalizeAccountLedger:
         raw_first_file = {
             "date": "12 January 2026",
             "description": "Coffee Shop",
-            "amount": -4.50,
-            "balance": 495.50,
+            "amount_minor": -450,
+            "balance_minor": 49550,
         }
         raw_second_file = {
             "date": "12 January 2026",
             "description": "Later Deposit",
-            "amount": 100.00,
-            "balance": 595.50,
+            "amount_minor": 10000,
+            "balance_minor": 59550,
         }
         bronze = pd.concat(
             [
@@ -757,8 +757,8 @@ class TestNormalizeAccountLedger:
         assert len(df) == 2
         assert (df["as_of_date"] == pd.Timestamp("2026-01-12")).all()
 
-        first = df[df["balance"] == 495.50].iloc[0]
-        second = df[df["balance"] == 595.50].iloc[0]
+        first = df[df["balance_minor"] == 49550].iloc[0]
+        second = df[df["balance_minor"] == 59550].iloc[0]
         assert first["upload_timestamp"] == pd.Timestamp("2026-01-15 09:00:00")
         assert second["upload_timestamp"] == pd.Timestamp("2026-02-01 09:00:00")
         assert first["statement_period_to"] == pd.Timestamp("2026-01-12")

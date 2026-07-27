@@ -127,14 +127,14 @@ class TestMonzoFlexParsing:
     def test_debit_only_purchase_is_negative(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         txn = next(t for t in txns if "Corner Shop" in t["description"])
-        assert txn["amount"] == -5.00
-        assert txn["balance"] == 150.00
+        assert txn["amount_minor"] == -500
+        assert txn["balance_minor"] == 15000
 
     def test_credit_only_payment_is_positive(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         txn = next(t for t in txns if t["description"] == "Monthly payment")
-        assert txn["amount"] == 30.00
-        assert txn["balance"] == 134.80
+        assert txn["amount_minor"] == 3000
+        assert txn["balance_minor"] == 13480
 
     def test_foreign_currency_description_is_joined(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -143,8 +143,8 @@ class TestMonzoFlexParsing:
             txn["description"]
             == "Foreign Cafe Amount: EUR 12.00. Conversion rate: 0.85."
         )
-        assert txn["amount"] == -10.20
-        assert txn["balance"] == 145.00
+        assert txn["amount_minor"] == -1020
+        assert txn["balance_minor"] == 14500
 
     def test_stops_before_legal_footer(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -158,14 +158,14 @@ class TestMonzoFlexParsing:
         txns = adapter.parse_transactions(SAMPLE_TEXT)
 
         old_purchase = next(t for t in txns if "Old Purchase" in t["description"])
-        assert old_purchase["amount"] == -4.25
-        assert old_purchase["balance"] == 164.80
+        assert old_purchase["amount_minor"] == -425
+        assert old_purchase["balance_minor"] == 16480
         # The next row's trailing merchant name leaks into this description.
         assert "Corner Bakery" in old_purchase["description"]
 
         last_row = next(t for t in txns if t["date"] == "01/04/2026")
-        assert last_row["amount"] == -2.55
-        assert last_row["balance"] == 160.55
+        assert last_row["amount_minor"] == -255
+        assert last_row["balance_minor"] == 16055
         # Its own merchant name was lost to the row above.
         assert last_row["description"] == "Amount: EUR 3.00. Conversion rate: 0.85."
 
@@ -235,7 +235,7 @@ class TestMonzoFlexReconciliation:
 
 class TestMonzoFlexSourceKey:
     def test_source_key_format(self, adapter):
-        txn = {"date": "30/06/2026", "description": "Test", "amount": -1.0}
+        txn = {"date": "30/06/2026", "description": "Test", "amount_minor": -100}
         key = adapter.generate_source_key(txn, 1, None)
         assert key.startswith("monzo_flex_txn_")
 

@@ -2,8 +2,9 @@
 
 import re
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
+
+from models.money import parse_money_minor, MoneyParseError
 
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
@@ -39,6 +40,8 @@ class MonzoFlexPdfAdapter(PdfAdapter):
     (the same single-account-per-source_type pattern already used for Monzo
     CSV) - this assumes exactly one Flex account in practice.
     """
+
+    PARSER_VERSION = "2"
 
     def validate_text(self, text: str) -> bool:
         """ "Flex statement" is the page-1 header; "Balance at end" confirms
@@ -169,15 +172,17 @@ class MonzoFlexPdfAdapter(PdfAdapter):
             return None
 
         try:
-            debit, credit, balance = (Decimal(n.replace(",", "")) for n in numbers)
-        except InvalidOperation:
+            debit, credit, balance = (
+                parse_money_minor(n) for n in numbers
+            )
+        except MoneyParseError:
             return None
 
         return {
             "date": date_str,
             "description": " ".join(description_parts),
-            "amount": float(credit - debit),
-            "balance": float(balance),
+            "amount_minor": credit - debit,
+            "balance_minor": balance,
         }
 
     def _check_reconciliation(
@@ -196,15 +201,15 @@ class MonzoFlexPdfAdapter(PdfAdapter):
         if not match:
             return
         try:
-            expected = Decimal(match.group(1).replace(",", ""))
-            derived = Decimal(str(transactions[0]["balance"]))
-        except InvalidOperation:
+            expected = parse_money_minor(match.group(1))
+            derived = transactions[0]["balance_minor"]
+        except (MoneyParseError, KeyError):
             return
 
         self.last_reconciliation = ReconciliationResult(
             check_name="monzo_flex_balance_at_end",
-            expected_closing=expected,
-            derived_closing=derived,
+            expected_closing_minor=expected,
+            derived_closing_minor=derived,
             matches=derived == expected,
         )
 
@@ -222,7 +227,7 @@ class MonzoFlexPdfAdapter(PdfAdapter):
         """
         date_str = txn.get("date", "").replace("/", "")
         description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(txn.get("amount", 0)).replace(".", "_")
+        amount = str(abs(txn.get("amount_minor", 0)))
         account_part = f"{account_identifier}_" if account_identifier else ""
 
         return f"monzo_flex_txn_{account_part}{date_str}_{description}_{amount}"

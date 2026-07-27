@@ -25,13 +25,13 @@ def _account_map_path(tmp_path, identifiers=None):
     return path
 
 
-def _bronze_row(account_identifier, filename, check_name, expected, derived, matches):
+def _bronze_row(account_identifier, filename, check_name, expected_minor, derived_minor, matches):
     return {
         "account_identifier": account_identifier,
         "filename": filename,
         "reconciliation_check": check_name,
-        "reconciliation_expected_closing": expected,
-        "reconciliation_derived_closing": derived,
+        "reconciliation_expected_closing_minor": expected_minor,
+        "reconciliation_derived_closing_minor": derived_minor,
         "reconciliation_matches": matches,
     }
 
@@ -54,8 +54,8 @@ class TestFindReconciliationStatus:
                     "hash_amex",
                     "jan.pdf",
                     "amex_closing_balance",
-                    863.04,
-                    863.04,
+                    86304,
+                    86304,
                     True,
                 )
             ]
@@ -88,8 +88,8 @@ class TestFindReconciliationStatus:
                     "hash_amex",
                     "jan.pdf",
                     "amex_closing_balance",
-                    863.04,
-                    678.04,
+                    86304,
+                    67804,
                     False,
                 )
             ]
@@ -118,10 +118,10 @@ class TestFindReconciliationStatus:
         bronze_df = pd.DataFrame(
             [
                 _bronze_row(
-                    "hash_amex", "jan.pdf", "amex_closing_balance", 863.04, 863.04, True
+                    "hash_amex", "jan.pdf", "amex_closing_balance", 86304, 86304, True
                 ),
                 _bronze_row(
-                    "hash_amex", "jan.pdf", "amex_closing_balance", 863.04, 863.04, True
+                    "hash_amex", "jan.pdf", "amex_closing_balance", 86304, 86304, True
                 ),
             ]
         )
@@ -157,16 +157,16 @@ class TestFindReconciliationStatus:
                     "hash_isa",
                     "statement.pdf",
                     "vanguard_account_summary_isa",
-                    500.15,
-                    500.15,
+                    50015,
+                    50015,
                     True,
                 ),
                 _bronze_row(
                     "hash_pension",
                     "statement.pdf",
                     "vanguard_account_summary_pension",
-                    501.00,
-                    999.99,
+                    50100,
+                    99999,
                     False,
                 ),
             ]
@@ -210,8 +210,8 @@ class TestFindReconciliationStatus:
                     "hash_unmapped",
                     "jan.pdf",
                     "amex_closing_balance",
-                    863.04,
-                    863.04,
+                    86304,
+                    86304,
                     True,
                 )
             ]

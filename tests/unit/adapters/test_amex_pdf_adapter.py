@@ -73,14 +73,14 @@ class TestAmexTransactionParsing:
     def test_credit_marked_payment_is_positive(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_PAGE)
         payment = next(t for t in txns if "PAYMENT RECEIVED" in t["description"])
-        assert payment["amount"] == 50.00
+        assert payment["amount_minor"] == 5000
 
     def test_purchases_are_negative(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_PAGE)
         coffee = next(t for t in txns if "COFFEE SHOP" in t["description"])
         grocery = next(t for t in txns if "GROCERY STORE" in t["description"])
-        assert coffee["amount"] == -3.85
-        assert grocery["amount"] == -8.00
+        assert coffee["amount_minor"] == -385
+        assert grocery["amount_minor"] == -800
 
     def test_stamps_account_identifier_on_every_txn(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_PAGE)
@@ -115,8 +115,8 @@ Total of other account transactions                                      190.00
         txns = adapter.parse_transactions(page)
         deliveroo = next(t for t in txns if "DELIVEROO" in t["description"])
         fee = next(t for t in txns if "MEMBERSHIP FEE" in t["description"])
-        assert deliveroo["amount"] == 5.00
-        assert fee["amount"] == -195.00
+        assert deliveroo["amount_minor"] == 500
+        assert fee["amount_minor"] == -19500
 
     def test_plan_it_instalments_created_parsed_as_credit(self, adapter):
         """A "New Plan It Instalments Created" row has only one date (not
@@ -135,7 +135,7 @@ Total of New Plan It Instalments Created                               1656.39
         txns = adapter.parse_transactions(page)
         assert len(txns) == 2
         created = next(t for t in txns if t["date"] == "12 Apr")
-        assert created["amount"] == 1656.39
+        assert created["amount_minor"] == 165639
 
     def test_stops_plan_it_parsing_at_total_line(self, adapter):
         page = """xxxx-xxxxxx-12345
@@ -164,7 +164,7 @@ Total of New Instalment Plans and Fees                                       167
         fee = txns[0]
         assert fee["description"] == "INSTALMENT PLAN FEE"
         assert fee["date"] == "19 Apr"
-        assert fee["amount"] == -17.23
+        assert fee["amount_minor"] == -1723
 
     def test_instalment_plan_fee_parsed_without_new_plan_created(self, adapter):
         """An ongoing plan (no new plan created this month) still bills a
@@ -177,7 +177,7 @@ Total of New Instalment Plans and Fees                                          
 """
         txns = adapter.parse_transactions(page)
         assert len(txns) == 1
-        assert txns[0]["amount"] == -17.22
+        assert txns[0]["amount_minor"] == -1722
 
     def test_stops_plan_it_fees_parsing_at_total_line(self, adapter):
         page = """xxxx-xxxxxx-12345
@@ -238,12 +238,12 @@ Total Fees                                 51.68
         assert len(plans) == 1  # the two "Total"/"Total Fees" rows are not plans
 
     def test_plan_it_summary_records_excluded_from_balance_roll(self, adapter):
-        """plan_it_instalment dicts have no `amount` field - parse_transactions
+        """plan_it_instalment dicts have no `amount_minor` field - parse_transactions
         must not choke iterating them alongside real transactions."""
         page = SAMPLE_PAGE + "\n" + self.PAGE
         txns = adapter.parse_transactions(page)
         assert any(t.get("record_type") == "plan_it_instalment" for t in txns)
-        assert any("amount" in t for t in txns if t.get("record_type") is None)
+        assert any("amount_minor" in t for t in txns if t.get("record_type") is None)
 
 
 class TestAmexMultiPage:
@@ -297,8 +297,8 @@ class TestAmexDerivedBalance:
         anchors = adapter._extract_account_summary(content)
         assert anchors is not None
         previous, closing, plan_it_due = anchors
-        assert previous == 100.00
-        assert closing == 110.00
+        assert previous == 10000
+        assert closing == 11000
         assert plan_it_due is None
 
     def test_extracts_plan_it_instalments_due_when_present(self, adapter):
@@ -319,9 +319,9 @@ class TestAmexDerivedBalance:
         anchors = adapter._extract_account_summary(content)
         assert anchors is not None
         previous, closing, plan_it_due = anchors
-        assert previous == 100.00
-        assert closing == 125.00
-        assert plan_it_due == 15.00
+        assert previous == 10000
+        assert closing == 12500
+        assert plan_it_due == 1500
 
     def test_balance_rolls_forward_through_transactions(self, adapter):
         content = self._statement_bytes()
@@ -332,8 +332,8 @@ class TestAmexDerivedBalance:
         coffee = next(r for r in records if "COFFEE SHOP" in r.raw_data["description"])
         # Previous Closing Balance 100.00; payment (credit, +20.00) reduces
         # what's owed, coffee purchase (debit, -3.85) increases it.
-        assert payment.raw_data["balance"] == 80.00
-        assert coffee.raw_data["balance"] == 83.85
+        assert payment.raw_data["balance_minor"] == 8000
+        assert coffee.raw_data["balance_minor"] == 8385
 
     def test_no_account_summary_block_skips_balance_silently(self, adapter):
         content = _build_pdf_bytes(
@@ -382,13 +382,13 @@ class TestAmexDerivedBalance:
         fee = next(
             r for r in records if r.raw_data["description"] == "INSTALMENT PLAN FEE"
         )
-        assert fee.raw_data["amount"] == -17.23
+        assert fee.raw_data["amount_minor"] == -1723
         # Previous 100.00 - fee (a debit, +17.23 owed) then + remaining Plan
         # It Due (30.00 - 17.23 = 12.77 principal-only) = 130.00, matching
         # the printed Closing Balance exactly - not 100 + 17.23 + 30 = 147.23.
-        assert fee.raw_data["balance"] == 130.00
+        assert fee.raw_data["balance_minor"] == 13000
         assert adapter.last_reconciliation.matches is True
-        assert adapter.last_reconciliation.derived_closing == Decimal("130.00")
+        assert adapter.last_reconciliation.derived_closing_minor == 13000
 
 
 class TestAmexReconciliation:
@@ -418,8 +418,8 @@ class TestAmexReconciliation:
         adapter.parse(content, "test.pdf", "fakehash")
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
-        assert adapter.last_reconciliation.expected_closing == Decimal("103.85")
-        assert adapter.last_reconciliation.derived_closing == Decimal("103.85")
+        assert adapter.last_reconciliation.expected_closing_minor == 10385
+        assert adapter.last_reconciliation.derived_closing_minor == 10385
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         content = _build_pdf_bytes(
@@ -555,7 +555,7 @@ class TestAmexStatementPeriod:
 
 class TestAmexSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
-        txn = {"date": "19 Apr", "description": "Test", "amount": -1.0}
+        txn = {"date": "19 Apr", "description": "Test", "amount_minor": -100}
         key_with = adapter.generate_source_key(txn, 1, "xxxx-xxxxxx-12345")
         key_without = adapter.generate_source_key(txn, 1, None)
         assert key_with != key_without

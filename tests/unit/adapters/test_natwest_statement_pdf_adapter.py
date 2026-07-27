@@ -116,8 +116,8 @@ class TestNatwestStatementParsing:
     def test_amount_derived_from_balance_delta(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
         credit = next(t for t in txns if "Automated Credit" in t["description"])
-        assert credit["amount"] == 100.00
-        assert credit["balance"] == 1110.00
+        assert credit["amount_minor"] == 10000
+        assert credit["balance_minor"] == 111000
 
     def test_same_day_continuation_row_carries_forward_date(self, adapter):
         """The second '02 MAR' transaction omits its date line entirely -
@@ -129,10 +129,10 @@ class TestNatwestStatementParsing:
         food = next(t for t in txns if "Food" in t["description"])
         assert salary["date"] == "02 MAR 2026"
         assert food["date"] == "02 MAR 2026"
-        assert salary["amount"] == -100.00
-        assert salary["balance"] == 1010.00
-        assert food["amount"] == -50.00
-        assert food["balance"] == 960.00
+        assert salary["amount_minor"] == -10000
+        assert salary["balance_minor"] == 101000
+        assert food["amount_minor"] == -5000
+        assert food["balance_minor"] == 96000
 
     def test_stamps_account_identifier_on_every_txn(self, adapter):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
@@ -140,7 +140,7 @@ class TestNatwestStatementParsing:
 
     def test_final_balance_reconciles_with_no_warning(self, adapter, caplog):
         txns = adapter.parse_transactions(SAMPLE_TEXT)
-        assert txns[-1]["balance"] == 960.00
+        assert txns[-1]["balance_minor"] == 96000
         assert "does not match" not in caplog.text
 
     def test_reconciliation_mismatch_is_logged_not_raised(self, adapter, caplog):
@@ -263,7 +263,7 @@ class TestNatwestStatementYearInference:
 
 class TestNatwestStatementSourceKey:
     def test_source_key_includes_account_identifier(self, adapter):
-        txn = {"date": "26FEB", "description": "Test", "amount": 100.0}
+        txn = {"date": "26FEB", "description": "Test", "amount_minor": 10000}
         key_with = adapter.generate_source_key(txn, 1, "12345678_11-22-33")
         key_without = adapter.generate_source_key(txn, 1, None)
         assert key_with != key_without

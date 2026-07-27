@@ -329,9 +329,9 @@ class TestBronzeIngestion:
         result_2 = _ingest(datalake, factory, STATEMENT_2_TEXT, "stmt2.pdf")
 
         assert result_1.reconciliation.matches is True
-        assert float(result_1.reconciliation.expected_closing) == 1000.00
+        assert result_1.reconciliation.expected_closing_minor == 100000
         assert result_2.reconciliation.matches is True
-        assert float(result_2.reconciliation.expected_closing) == 950.00
+        assert result_2.reconciliation.expected_closing_minor == 95000
 
     def test_statements_chain_previous_to_new_balance(self, datalake):
         """Statement 1's New Balance must equal Statement 2's Previous
@@ -343,8 +343,8 @@ class TestBronzeIngestion:
         result_2 = _ingest(datalake, factory, STATEMENT_2_TEXT, "stmt2.pdf")
 
         assert (
-            float(result_1.reconciliation.derived_closing)
-            == float(result_2.reconciliation.derived_closing) + 50.00
+            result_1.reconciliation.derived_closing_minor
+            == result_2.reconciliation.derived_closing_minor + 5000
         )  # net movement in statement 2: -10.00 - 40.00
 
 
@@ -388,12 +388,12 @@ class TestCrossFormatDedup:
         coffee = account_txns[account_txns["description"].str.contains("COFFEE SHOP")]
         assert len(coffee) == 1
         assert coffee.iloc[0]["source_type"] == "natwest-statement"
-        assert coffee.iloc[0]["amount"] == -10.00
+        assert coffee.iloc[0]["amount_minor"] == -1000
 
         online = account_txns[account_txns["description"].str.contains("ONLINE SHOP")]
         assert len(online) == 1
         assert online.iloc[0]["source_type"] == "natwest-statement"
-        assert online.iloc[0]["amount"] == -40.00
+        assert online.iloc[0]["amount_minor"] == -4000
 
     def test_unmatched_transactions_export_row_survives(self, ingested):
         """GYM MEMBERSHIP has no statement counterpart at all (it's in the
@@ -405,7 +405,7 @@ class TestCrossFormatDedup:
         gym = account_txns[account_txns["description"].str.contains("GYM")]
         assert len(gym) == 1
         assert gym.iloc[0]["source_type"] == "natwest-transactions"
-        assert gym.iloc[0]["amount"] == -30.00
+        assert gym.iloc[0]["amount_minor"] == -3000
 
     def test_non_overlapping_statement_row_survives(self, ingested):
         """SALARY PAYMENT is only ever in Statement 1 - no transactions
@@ -417,7 +417,7 @@ class TestCrossFormatDedup:
         salary = account_txns[account_txns["description"].str.contains("SALARY")]
         assert len(salary) == 1
         assert salary.iloc[0]["source_type"] == "natwest-statement"
-        assert salary.iloc[0]["amount"] == 200.00
+        assert salary.iloc[0]["amount_minor"] == 20000
 
 
 class TestCurrentBalanceKnownLimitation:
@@ -443,5 +443,5 @@ class TestCurrentBalanceKnownLimitation:
 
         # Statement 2's own closing balance/date - correct, but stale: it
         # predates Export B's GYM MEMBERSHIP transaction by over a month.
-        assert account_balance["balance"] == 950.00
+        assert account_balance["balance_minor"] == 95000
         assert account_balance["as_of_date"] == pd.Timestamp("2026-05-13")

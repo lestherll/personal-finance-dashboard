@@ -20,6 +20,7 @@ import pandas as pd
 from adapters.base import ReconciliationResult, StatementPeriod
 from adapters.factory import AdapterDetectionError, AdapterFactory
 from models.datalake import get_datalake
+from models.money import format_minor
 from models.ingestion import (
     STATUS_BRONZE_FAILED,
     STATUS_COMPLETE,
@@ -105,12 +106,12 @@ def _echo_reconciliation(result: Optional[ReconciliationResult]) -> None:
     if result.matches:
         click.echo(
             f"  ✓ reconciles against printed closing balance "
-            f"(£{result.expected_closing:.2f})"
+            f"({format_minor(result.expected_closing_minor)})"
         )
     else:
         click.echo(
-            f"  ⚠ balance mismatch: derived £{result.derived_closing:.2f} vs "
-            f"statement's printed £{result.expected_closing:.2f} - balance "
+            f"  ⚠ balance mismatch: derived {format_minor(result.derived_closing_minor)} vs "
+            f"statement's printed {format_minor(result.expected_closing_minor)} - balance "
             "figures on this statement may be inaccurate, check manually"
         )
 
@@ -126,13 +127,13 @@ def _echo_reconciliations(results: List[ReconciliationResult]) -> None:
         if result.matches:
             click.echo(
                 f"  ✓ {result.check_name} reconciles "
-                f"(£{result.expected_closing:.2f})"
+                f"({format_minor(result.expected_closing_minor)})"
             )
         else:
             click.echo(
                 f"  ⚠ {result.check_name} mismatch: derived "
-                f"£{result.derived_closing:.2f} vs statement's printed "
-                f"£{result.expected_closing:.2f} - balance figures on this "
+                f"{format_minor(result.derived_closing_minor)} vs statement's printed "
+                f"{format_minor(result.expected_closing_minor)} - balance figures on this "
                 "statement may be inaccurate, check manually"
             )
 
@@ -301,12 +302,12 @@ def reconciliation():
         for row in group.itertuples():
             if row.matches:
                 click.echo(
-                    f"  ✓ {row.filename}: reconciles (£{row.expected_closing:.2f})"
+                    f"  ✓ {row.filename}: reconciles ({format_minor(row.expected_closing)})"
                 )
             else:
                 click.echo(
-                    f"  ⚠ {row.filename}: mismatch - derived £{row.derived_closing:.2f} "
-                    f"vs printed £{row.expected_closing:.2f}"
+                    f"  ⚠ {row.filename}: mismatch - derived {format_minor(row.derived_closing)} "
+                    f"vs printed {format_minor(row.expected_closing)}"
                 )
 
 @cli.group()

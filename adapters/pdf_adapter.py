@@ -202,9 +202,11 @@ class PdfAdapter(DataSourceAdapter):
         Should return list of dicts with at minimum:
         - date: str (transaction date)
         - description: str (merchant/transaction description)
-        - amount: float (transaction amount, signed)
+        - amount_minor: int (transaction amount in minor units, signed)
 
-        May also include (popped by parse() before reaching raw_data):
+        May also include:
+        - balance_minor: int (running balance in minor units)
+        - amount_text: str - original source text for the amount
         - _account_identifier_raw: str - unmasked account/card identifier,
           extracted from the statement text. Hashed by parse() before storage.
         - record_type: str - "transaction" (default) or "holding", for

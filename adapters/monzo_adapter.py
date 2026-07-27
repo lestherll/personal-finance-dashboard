@@ -5,11 +5,15 @@ from datetime import datetime
 from io import StringIO
 from typing import Any, Dict, List
 
+from models.money import try_parse_money_minor
+
 from adapters.base import DataSourceAdapter, RawRecord, make_bronze_record_id
 
 
 class MonzoAdapter(DataSourceAdapter):
     """Monzo CSV export format (supports both full and search export)."""
+
+    PARSER_VERSION = "2"
 
     FULL_EXPORT_COLUMNS = [
         "Transaction ID",
@@ -78,13 +82,22 @@ class MonzoAdapter(DataSourceAdapter):
             if not row or not any(row.values()):
                 continue
 
+            raw_data = dict(row)
+
+            amount_field = raw_data.get("Amount") or raw_data.get("amount") or ""
+            if amount_field:
+                amount_minor = try_parse_money_minor(amount_field)
+                if amount_minor is not None:
+                    raw_data["amount_minor"] = amount_minor
+                    raw_data["amount_text"] = amount_field
+
             source_key = self.generate_source_key(row, idx, is_search_format)
 
             records.append(
                 RawRecord(
                     source_key=source_key,
                     source_type="monzo",
-                    raw_data=dict(row),
+                    raw_data=raw_data,
                     filename=filename,
                     file_hash=file_hash,
                     upload_timestamp=datetime.now(),
