@@ -117,13 +117,12 @@ def _contribution_by_ingestion(
     simply drop out of an inner join, correctly not contributing, since the
     absorbed side is always a non-anchored source_type in the one declared
     cross-source policy today). bronze_record_id is the one thing guaranteed
-    unique on both sides; silver_transaction_id is NOT reliably unique in
-    `transactions` - two genuinely distinct same-day/same-amount/same-
-    description transactions can share one fingerprint-derived ID (matching.py
-    doesn't fold the occurrence number into it), which would silently
-    undercount a real transaction's contribution if joined on that column
-    instead (confirmed against real data: two real, distinct -£8.90 same-day
-    charges collapsed to one via a silver_transaction_id join).
+    unique on both sides, so it is the safe join key regardless of how
+    silver_transaction_id evolves. (Joining on silver_transaction_id once
+    caused a real undercount here, when that id didn't yet fold in the
+    occurrence number and two distinct -£8.90 same-day charges collapsed
+    into one - the id is now source-scoped and occurrence-suffixed, but
+    bronze_record_id remains the correct key by construction.)
     """
     merged = transaction_sources.merge(
         transactions[["bronze_record_id", "amount_minor"]],
