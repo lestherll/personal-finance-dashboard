@@ -135,14 +135,15 @@ def publish_silver_build(
         staging_dir = Path("")  # prevent cleanup of already-renamed dir
 
         # Swap the current/ symlink atomically.
+        absolute_build_dir = build_dir.resolve()
         if current_link.is_symlink() or current_link.exists():
             tmp_link = current_link.with_suffix(".tmp")
             if tmp_link.exists():
                 tmp_link.unlink()
-            tmp_link.symlink_to(str(build_dir), target_is_directory=False)
+            tmp_link.symlink_to(str(absolute_build_dir), target_is_directory=False)
             os.replace(str(tmp_link), str(current_link))
         else:
-            current_link.symlink_to(str(build_dir), target_is_directory=False)
+            current_link.symlink_to(str(absolute_build_dir), target_is_directory=False)
 
         # Prune old builds.
         _prune_old_builds(silver_dir)

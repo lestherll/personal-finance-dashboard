@@ -320,12 +320,12 @@ def reconciliation():
         for row in group.itertuples():
             if row.matches:
                 click.echo(
-                    f"  ✓ {row.filename}: reconciles ({format_minor(row.expected_closing)})"
+                    f"  ✓ {row.filename}: reconciles ({format_minor(row.expected_closing_minor)})"
                 )
             else:
                 click.echo(
-                    f"  ⚠ {row.filename}: mismatch - derived {format_minor(row.derived_closing)} "
-                    f"vs printed {format_minor(row.expected_closing)}"
+                    f"  ⚠ {row.filename}: mismatch - derived {format_minor(row.derived_closing_minor)} "
+                    f"vs printed {format_minor(row.expected_closing_minor)}"
                 )
 
 @cli.group()
