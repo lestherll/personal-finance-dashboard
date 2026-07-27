@@ -569,8 +569,8 @@ class TestReconciliationCommand:
                     "source_type",
                     "filename",
                     "check_name",
-                    "expected_closing",
-                    "derived_closing",
+                    "expected_closing_minor",
+                    "derived_closing_minor",
                     "matches",
                 ]
             ),
@@ -588,8 +588,8 @@ class TestReconciliationCommand:
                     "source_type": "amex",
                     "filename": "jan.pdf",
                     "check_name": "amex_closing_balance",
-                    "expected_closing": 863.04,
-                    "derived_closing": 863.04,
+                    "expected_closing_minor": 86304,
+                    "derived_closing_minor": 86304,
                     "matches": True,
                 },
                 {
@@ -597,8 +597,8 @@ class TestReconciliationCommand:
                     "source_type": "amex",
                     "filename": "feb.pdf",
                     "check_name": "amex_closing_balance",
-                    "expected_closing": 900.00,
-                    "derived_closing": 678.04,
+                    "expected_closing_minor": 90000,
+                    "derived_closing_minor": 67804,
                     "matches": False,
                 },
             ]
