@@ -202,6 +202,65 @@ class TestCrossSourceProvenance:
         ]
 
 
+class TestDedupeCrossSourceRedirectsAllSharers:
+    """P2.3 regression: the O(n^2) provenance rescan was replaced with an
+    index keyed by silver_transaction_id. If an absorbed row's id already
+    had multiple provenance rows pointing at it, the indexed redirect must
+    move all of them to the new survivor - not just the first one a linear
+    scan happened to find first."""
+
+    def test_all_provenance_rows_sharing_absorbed_id_get_redirected(self):
+        from transformers.matching import _dedupe_cross_source
+
+        preferred_row = _txn(
+            source_type="natwest-statement",
+            description="CARD PURCHASE SHOP A",
+            bronze_record_id="br_stmt_a",
+        )
+        preferred_row["_fingerprint"] = "fp_stmt"
+        preferred_row["_occurrence"] = 1
+
+        absorbed_row = _txn(
+            source_type="natwest-transactions",
+            description="SHOP A",
+            bronze_record_id="br_txn_a",
+        )
+        absorbed_row["_fingerprint"] = "fp_txn"
+        absorbed_row["_occurrence"] = 1
+
+        canonical = _make_frame([preferred_row, absorbed_row])
+        absorbed_id = "fp_txn_1"
+        survivor_id = "fp_stmt_1"
+
+        provenance_rows = [
+            {
+                "silver_transaction_id": absorbed_id,
+                "bronze_record_id": f"br_dup_{i}",
+                "ingestion_id": f"ingest_dup_{i}",
+                "source_type": "natwest-transactions",
+                "match_policy": "fingerprint",
+            }
+            for i in range(20)
+        ]
+
+        result = _dedupe_cross_source(
+            canonical,
+            {"natwest-transactions", "natwest-statement"},
+            ["account_id", "transaction_date", "amount_minor"],
+            "natwest-statement",
+            provenance_rows,
+        )
+
+        assert len(result) == 1
+        assert result.iloc[0]["source_type"] == "natwest-statement"
+
+        redirected = [
+            p for p in provenance_rows if p["bronze_record_id"].startswith("br_dup_")
+        ]
+        assert len(redirected) == 20
+        assert all(p["silver_transaction_id"] == survivor_id for p in redirected)
+
+
 class TestMatchTransactionsEmpty:
     def test_empty_input_returns_schema(self):
         canonical, sources = match_transactions(pd.DataFrame())

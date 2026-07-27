@@ -214,6 +214,14 @@ def _dedupe_cross_source(
         survivor_id = f"{row['_fingerprint']}_{row['_occurrence']}"
         preferred_ids.setdefault(key, []).append(survivor_id)
 
+    # Index existing provenance rows by silver_transaction_id, once, so the
+    # redirect step below is a dict lookup instead of a full rescan of the
+    # ever-growing provenance_rows list per absorbed row (was O(n^2) across
+    # a rebuild). Maintained incrementally as rows are appended.
+    prov_index: Dict[str, List[Dict]] = {}
+    for prov in provenance_rows:
+        prov_index.setdefault(prov["silver_transaction_id"], []).append(prov)
+
     drop_indices = []
     for idx, row in non_preferred.iterrows():
         key = tuple(row[col] for col in key_cols)
@@ -223,20 +231,21 @@ def _dedupe_cross_source(
             absorbed_id = f"{row['_fingerprint']}_{row['_occurrence']}"
             # Record provenance: this non-preferred row is absorbed
             # into the matching preferred row.
-            provenance_rows.append(
-                {
-                    "silver_transaction_id": survivor_id,
-                    "bronze_record_id": row.get("bronze_record_id", "") or "",
-                    "ingestion_id": row.get("ingestion_id", "") or "",
-                    "source_type": row.get("source_type", ""),
-                    "match_policy": f"cross-source({prefer_source}-preferred)",
-                }
-            )
+            new_entry = {
+                "silver_transaction_id": survivor_id,
+                "bronze_record_id": row.get("bronze_record_id", "") or "",
+                "ingestion_id": row.get("ingestion_id", "") or "",
+                "source_type": row.get("source_type", ""),
+                "match_policy": f"cross-source({prefer_source}-preferred)",
+            }
+            provenance_rows.append(new_entry)
+            prov_index.setdefault(survivor_id, []).append(new_entry)
             # Redirect any same-source provenance that pointed at the now-
-            # absorbed canonical row so transaction_sources stays fully joinable.
-            for prov in provenance_rows:
-                if prov["silver_transaction_id"] == absorbed_id:
-                    prov["silver_transaction_id"] = survivor_id
+            # absorbed canonical row so transaction_sources stays fully
+            # joinable - every row that shared the absorbed id, not just one.
+            for prov in prov_index.pop(absorbed_id, []):
+                prov["silver_transaction_id"] = survivor_id
+                prov_index.setdefault(survivor_id, []).append(prov)
 
     deduped_non_preferred = non_preferred.drop(index=drop_indices)
     return pd.concat(
