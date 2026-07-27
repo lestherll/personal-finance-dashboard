@@ -199,6 +199,14 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     if "balance_source" not in latest.columns:
         latest["balance_source"] = "printed"
 
+    # A build published before account_ledger gained a currency column
+    # (P1.1) has none at all - tolerate that rather than KeyError on the
+    # projection below, matching _assert_single_currency's deliberate
+    # no-op when no currency information exists (an unknown currency is
+    # never summed across, since dropna() excludes it there).
+    if "currency" not in latest.columns:
+        latest["currency"] = None
+
     return latest[_BALANCES_COLUMNS].reset_index(drop=True)
 
 

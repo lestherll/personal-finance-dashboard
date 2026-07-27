@@ -763,6 +763,56 @@ class TestMixedCurrencyGuard:
         assert get_net_worth(datalake, path=path) == 60000
 
 
+class TestPreCurrencyBuildCompatibility:
+    """Regression: a Silver build published before account_ledger gained a
+    currency column (P1.1) has no currency column at all. get_current_balances
+    used to project onto _BALANCES_COLUMNS blindly, so merely reading such a
+    build raised KeyError: "['currency'] not in index" - i.e. every
+    net-worth/breakdown CLI command broke until the user happened to run
+    `silver rebuild`. The projection must tolerate the missing column the
+    same way _assert_single_currency deliberately no-ops on it."""
+
+    def _old_schema_ledger(self):
+        row = _ledger_row(
+            "acc_kroo",
+            10000,
+            pd.Timestamp("2026-06-01"),
+            pd.Timestamp("2026-06-01"),
+        )
+        del row["currency"]  # simulate a pre-P1.1 build
+        return pd.DataFrame([row])
+
+    def test_get_current_balances_tolerates_missing_currency_column(self):
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": self._old_schema_ledger()}
+        )
+
+        result = get_current_balances(datalake)
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance_minor"] == 10000
+        assert result.iloc[0]["currency"] is None
+
+    def test_get_net_worth_does_not_raise_on_missing_currency_column(
+        self, tmp_path
+    ):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                }
+            },
+        )
+        datalake = _FakeDatalakeForBalance(
+            {"account_ledger": self._old_schema_ledger()}
+        )
+
+        assert get_net_worth(datalake, path=path) == 10000
+
+
 class TestGetNetWorthBreakdown:
     def test_breakdown_includes_ledger_and_holdings(self, tmp_path):
         """Breakdown shows both ledger balances and holdings with their
