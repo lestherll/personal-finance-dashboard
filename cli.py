@@ -419,7 +419,6 @@ def ingestions_list():
             overload = False
             override_flag = ""
             if m.get("promotion_override", {}).get("decision") == "allow":
-                overload = True
                 override_flag = " (overridden)"
             flagged = "⚠"
             flagged += override_flag

@@ -56,6 +56,28 @@ _BREAKDOWN_COLUMNS = [
 _REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf", "monzo-flex"}
 
 
+def get_latest_holdings_snapshot(
+    datalake: Optional[DataLake] = None,
+) -> pd.DataFrame:
+    """Return only the latest complete holdings snapshot per account_id.
+
+    Holdings are re-printed on every Vanguard statement. Summing all rows
+    across all as_of_dates would double-count. This returns only the rows
+    belonging to each account's most recent as_of_date, so get_net_worth
+    uses exactly one complete snapshot per investment account.
+    """
+    datalake = datalake or get_datalake()
+    holdings = datalake.read_silver("holdings")
+    if holdings is None or holdings.empty:
+        return pd.DataFrame()
+
+    latest_dates = (
+        holdings.groupby("account_id")["as_of_date"].max().reset_index()
+    )
+    return holdings.merge(latest_dates, on=["account_id", "as_of_date"])
+
+
+
 def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     """One row per account_id: its balance as of the most recent
     (as_of_date, statement_period_to-or-upload_timestamp, line_number).
@@ -157,11 +179,13 @@ def get_net_worth(
             else:
                 total_minor += amount_minor
 
-    # Sum holdings (always assets, never liabilities)
-    holdings = datalake.read_silver("holdings")
-    if holdings is not None and not holdings.empty:
+    # Sum holdings (always assets, never liabilities).
+    # Use the latest complete snapshot per account to avoid double-counting
+    # across statements (holdings are re-printed on every statement).
+    latest_holdings = get_latest_holdings_snapshot(datalake)
+    if not latest_holdings.empty:
         holdings_by_account = (
-            holdings.groupby("account_id")["total_value_minor"].sum()
+            latest_holdings.groupby("account_id")["total_value_minor"].sum()
         )
         for value_minor in holdings_by_account:
             total_minor += int(value_minor)
@@ -207,10 +231,10 @@ def get_net_worth_breakdown(
                 }
             )
 
-    # Add holdings-based rows
-    holdings = datalake.read_silver("holdings")
-    if holdings is not None and not holdings.empty:
-        for holding_row in holdings.itertuples():
+    # Add holdings-based rows (latest snapshot per account).
+    latest_holdings = get_latest_holdings_snapshot(datalake)
+    if not latest_holdings.empty:
+        for holding_row in latest_holdings.itertuples():
             value_minor = int(holding_row.total_value_minor)
             rows.append(
                 {
