@@ -35,6 +35,8 @@ from transformers.account_config import (
 from transformers.balance import get_net_worth_breakdown
 from transformers.coverage import find_coverage_gaps, find_statement_periods
 from transformers.reconciliation_status import find_reconciliation_status
+from transformers.silver_transformer import run_bronze_to_silver
+from models.build import list_builds, current_build_id
 
 ACCOUNT_TYPE_CHOICES = click.Choice(["current", "credit", "investment", "savings"])
 
@@ -306,6 +308,43 @@ def reconciliation():
                     f"  ⚠ {row.filename}: mismatch - derived £{row.derived_closing:.2f} "
                     f"vs printed £{row.expected_closing:.2f}"
                 )
+
+@cli.group()
+def silver():
+    """Manage Silver layer rebuilds."""
+
+
+@silver.command("rebuild")
+def silver_rebuild():
+    """Rebuild Silver from the current immutable Bronze set."""
+    result = run_bronze_to_silver()
+    build_id = result["build_id"]
+    click.echo(f"Published Silver build {build_id}")
+    click.echo(
+        f"  {result['transactions'].shape[0] if hasattr(result['transactions'], 'shape') else len(result['transactions'])} transactions, "
+        f"{len(result['account_ledger'])} ledger entries, "
+        f"{len(result['holdings'])} holdings"
+    )
+
+
+@silver.command("builds")
+def silver_builds():
+    """List published Silver builds."""
+    current = current_build_id()
+    builds = list_builds()
+    if not builds:
+        click.echo("No Silver builds published yet.")
+        return
+
+    for b in builds:
+        bid = b["build_id"]
+        marker = " *" if bid == current else ""
+        rows = b.get("row_counts", {})
+        txn = rows.get("transactions", 0)
+        led = rows.get("account_ledger", 0)
+        hold = rows.get("holdings", 0)
+        click.echo(f"  {bid}{marker}  {txn}t / {led}l / {hold}h")
+
 
 @accounts.command("breakdown")
 def get_breakdown():

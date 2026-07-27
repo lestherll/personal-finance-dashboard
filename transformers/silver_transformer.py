@@ -19,6 +19,7 @@ import pandas as pd
 
 from adapters.factory import AdapterFactory
 from models.datalake import DataLake, get_datalake
+from config import SILVER_DIR as _SILVER_DIR
 from transformers.account_config import (
     UnmappedAccountsError,
     build_accounts_table,
@@ -26,6 +27,7 @@ from transformers.account_config import (
     get_account_id,
 )
 from transformers.matching import match_transactions
+from models.build import publish_silver_build
 
 logger = logging.getLogger(__name__)
 
@@ -620,10 +622,11 @@ class SilverTransformer:
 def run_bronze_to_silver(
     datalake: Optional[DataLake] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """Run the full Bronze -> Silver transformation and write all four Silver tables.
+    """Run the full Bronze -> Silver transformation and publish a
+    versioned, atomic Silver build.
 
     Idempotent: re-running against unchanged Bronze data does not create
-    duplicate rows (dedup by bronze_source_key / account_id).
+    duplicate rows (canonicalized by the matching engine).
 
     Fails fast, but as a single pre-flight check: if any Bronze account isn't
     mapped yet, raises UnmappedAccountsError listing every unmapped account
@@ -645,19 +648,42 @@ def run_bronze_to_silver(
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     plan_it_df = transformer.normalize_plan_it_instalments(bronze_frames)
 
+    # Collect build metadata from Bronze frames.
+    ingestion_ids: List[str] = []
+    parser_versions: Dict[str, str] = {}
+    for source_type, df in bronze_frames.items():
+        if "ingestion_id" in df.columns:
+            ingestion_ids.extend(df["ingestion_id"].dropna().unique().tolist())
+        if "parser_version" in df.columns:
+            versions = df["parser_version"].dropna().unique()
+            if len(versions) > 0:
+                parser_versions[source_type] = versions[0]
+
+    input_ingestion_ids = sorted(set(ingestion_ids))
+
     # Silver is a materialization of the current immutable Bronze set. Never
     # merge with a prior build: that preserves stale rows after parser fixes.
+    tables = {
+        "accounts": accounts_df,
+        "transaction_sources": sources_df,
+        "transactions": transactions_df,
+        "holdings": holdings_df,
+        "account_ledger": ledger_df,
+        "plan_it_instalments": plan_it_df,
+    }
 
-    datalake.write_silver("accounts", accounts_df)
-    datalake.write_silver("transactions", transactions_df)
-    datalake.write_silver("transaction_sources", sources_df)
-    datalake.write_silver("holdings", holdings_df)
-    datalake.write_silver("account_ledger", ledger_df)
-    datalake.write_silver("plan_it_instalments", plan_it_df)
+    build_id = publish_silver_build(
+        tables=tables,
+        input_ingestion_ids=input_ingestion_ids,
+        parser_versions=parser_versions,
+        silver_dir=_SILVER_DIR,
+    )
 
     logger.info(
-        "Bronze->Silver complete: %d accounts, %d transactions, %d holdings, "
-        "%d ledger entries, %d plan-it instalments, %d provenance rows",
+        "Bronze->Silver complete: build %s - %d accounts, %d transactions, "
+        "%d holdings, %d ledger entries, %d plan-it instalments, "
+        "%d provenance rows",
+        build_id,
         len(accounts_df),
         len(transactions_df),
         len(holdings_df),
@@ -667,9 +693,10 @@ def run_bronze_to_silver(
     )
 
     return {
+        "build_id": build_id,
         "accounts": accounts_df,
-        "transactions": transactions_df,
         "transaction_sources": sources_df,
+        "transactions": transactions_df,
         "holdings": holdings_df,
         "account_ledger": ledger_df,
         "plan_it_instalments": plan_it_df,

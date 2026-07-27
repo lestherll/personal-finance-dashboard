@@ -204,6 +204,9 @@ def datalake(tmp_path, monkeypatch):
     monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
     monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
     monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
+    monkeypatch.setattr(
+        "transformers.silver_transformer._SILVER_DIR", tmp_path / "silver"
+    )
 
     # PdfAdapter.parse()/validate() start from real PDF bytes and call
     # PyMuPDF to extract text - this fixture's "raw data" is plain text

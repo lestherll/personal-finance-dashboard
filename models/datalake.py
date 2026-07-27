@@ -225,14 +225,18 @@ class DataLake:
 
     def read_silver(self, entity_type: str) -> Optional[pd.DataFrame]:
         """
-        Read Silver records.
-
-        Args:
-            entity_type: 'transactions', 'accounts', 'holdings', 'account_ledger'
-
-        Returns:
-            DataFrame or None if not found
+        Read Silver records. Resolves through the current/ build symlink
+        when available (atomic publish model), falling back to the flat
+        {entity_type}.parquet for compatibility with pre-build data.
         """
+        from models.build import _current_link
+
+        current_link = _current_link(SILVER_DIR)
+        if current_link.is_symlink():
+            filepath = current_link / f"{entity_type}.parquet"
+            if filepath.exists():
+                return pd.read_parquet(filepath)
+
         filepath = SILVER_DIR / f"{entity_type}.parquet"
         if not filepath.exists():
             return None
