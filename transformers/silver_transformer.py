@@ -342,6 +342,7 @@ def _normalize_amex_plan_it_instalment(
 def _ledger_from_kroo(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %B %Y"),
     }
 
@@ -362,6 +363,7 @@ def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": as_of_date,
     }
 
@@ -369,6 +371,7 @@ def _ledger_from_amex(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
 def _ledger_from_firstdirect(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %y"),
     }
 
@@ -389,6 +392,7 @@ def _ledger_from_natwest_statement(
         as_of_date = _infer_dated_with_year(date_str, "%d %b", reference)
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": as_of_date,
     }
 
@@ -396,6 +400,7 @@ def _ledger_from_natwest_statement(
 def _ledger_from_monzo_pdf(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d/%m/%Y"),
     }
 
@@ -407,6 +412,7 @@ def _ledger_from_chase(raw: Dict[str, Any], reference: Any) -> Dict[str, Any]:
     date-year trap doesn't apply to Chase)."""
     return {
         "balance_minor": int(raw.get("balance_minor") or 0),
+        "currency": "GBP",
         "as_of_date": _parse_date(raw.get("date", ""), "%d %b %Y"),
     }
 
@@ -458,6 +464,7 @@ _LEDGER_COLUMNS = [
     "account_id",
     "source_type",
     "balance_minor",
+    "currency",
     "as_of_date",
     "upload_timestamp",
     "statement_period_to",
@@ -803,6 +810,7 @@ def _derive_rollforward_ledger_rows(
                         "account_id": account_id,
                         "source_type": dependent_st,
                         "balance_minor": running,
+                        "currency": txn.get("currency") or "GBP",
                         "as_of_date": txn["transaction_date"],
                         "upload_timestamp": txn.get("upload_timestamp") or pd.NaT,
                         "statement_period_to": txn.get("statement_period_to") or pd.NaT,

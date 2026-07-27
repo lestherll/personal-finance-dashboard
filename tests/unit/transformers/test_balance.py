@@ -3,8 +3,14 @@
 import json
 
 import pandas as pd
+import pytest
 
-from transformers.balance import get_current_balances, get_net_worth, get_net_worth_breakdown
+from transformers.balance import (
+    MixedCurrencyError,
+    get_current_balances,
+    get_net_worth,
+    get_net_worth_breakdown,
+)
 
 
 class _FakeDatalakeForBalance:
@@ -34,10 +40,12 @@ def _ledger_row(
     line_number=1,
     source_type="kroo",
     reconciled=None,
+    currency="GBP",
 ):
     return {
         "account_id": account_id,
         "balance_minor": balance_minor,
+        "currency": currency,
         "as_of_date": as_of_date,
         "upload_timestamp": upload_timestamp,
         "statement_period_to": statement_period_to,
@@ -47,11 +55,14 @@ def _ledger_row(
     }
 
 
-def _holdings_row(account_id, total_value_minor, fund_name="Test Fund", as_of_date=None):
+def _holdings_row(
+    account_id, total_value_minor, fund_name="Test Fund", as_of_date=None, currency="GBP"
+):
     return {
         "account_id": account_id,
         "fund_name": fund_name,
         "total_value_minor": total_value_minor,
+        "currency": currency,
         "as_of_date": as_of_date,
     }
 
@@ -625,6 +636,121 @@ class TestGetNetWorth:
         net_worth = get_net_worth(datalake, path=path)
 
         assert net_worth == 350000
+
+
+class TestMixedCurrencyGuard:
+    def test_mixed_currency_ledger_raises(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_usd": {
+                    "account_id": "acc_usd",
+                    "display_name": "USD Account",
+                    "account_type": "current",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="GBP",
+                ),
+                _ledger_row(
+                    "acc_usd",
+                    5000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="USD",
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth(datalake, path=path)
+
+    def test_mixed_ledger_and_holdings_currency_raises(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard": {
+                    "account_id": "acc_vanguard",
+                    "display_name": "Vanguard",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                    currency="GBP",
+                ),
+            ]
+        )
+        holdings = pd.DataFrame(
+            [_holdings_row("acc_vanguard", 100000, "Fund A", currency="USD")]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger, "holdings": holdings})
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth(datalake, path=path)
+
+        with pytest.raises(MixedCurrencyError):
+            get_net_worth_breakdown(datalake, path=path)
+
+    def test_single_currency_all_gbp_unchanged(self, tmp_path):
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+                "hash_vanguard": {
+                    "account_id": "acc_vanguard",
+                    "display_name": "Vanguard",
+                    "account_type": "investment",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_vanguard",
+                    50000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        assert get_net_worth(datalake, path=path) == 60000
 
 
 class TestGetNetWorthBreakdown:

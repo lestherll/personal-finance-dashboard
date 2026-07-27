@@ -21,7 +21,6 @@ Monzo transaction instead of the newest.
 """
 
 import logging
-from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Union
 
@@ -37,6 +36,7 @@ PathLike = Union[str, Path]
 _BALANCES_COLUMNS = [
     "account_id",
     "balance_minor",
+    "currency",
     "as_of_date",
     "balance_may_be_stale",
     "balance_source",
@@ -60,6 +60,51 @@ _BREAKDOWN_COLUMNS = [
 # single real transaction per statement, so its direction is unverified -
 # revisit if a multi-transaction statement ever produces a wrong balance.
 _REVERSE_CHRONOLOGICAL_SOURCE_TYPES = {"monzo-pdf", "monzo-flex"}
+
+
+class MixedCurrencyError(Exception):
+    """Raised by get_net_worth/get_net_worth_breakdown when ledger balances
+    and/or holdings span more than one currency - summing across currencies
+    without FX conversion would produce a meaningless number. Mirrors
+    transformers.account_config.UnmappedAccountsError's DataFrame-carrying
+    shape."""
+
+    def __init__(self, currency_breakdown: pd.DataFrame):
+        self.currency_breakdown = currency_breakdown
+        lines = [
+            f"  - currency={row.currency!r}: {row.record_count} record(s), "
+            f"e.g. account_id={row.sample_account_id!r}"
+            for row in currency_breakdown.itertuples()
+        ]
+        message = (
+            f"{len(currency_breakdown)} distinct currencies found across "
+            "ledger balances/holdings - refusing to sum without FX "
+            "conversion:\n" + "\n".join(lines)
+        )
+        super().__init__(message)
+
+
+def _assert_single_currency(balances: pd.DataFrame, holdings: pd.DataFrame) -> None:
+    """Raise MixedCurrencyError if ledger balances and holdings together
+    span more than one currency. No-op (not an error) when neither frame
+    has a currency column at all, or both are empty."""
+    parts = []
+    if not balances.empty and "currency" in balances.columns:
+        parts.append(balances[["account_id", "currency"]])
+    if not holdings.empty and "currency" in holdings.columns:
+        parts.append(holdings[["account_id", "currency"]])
+    if not parts:
+        return
+
+    records = pd.concat(parts, ignore_index=True)
+    currencies = records["currency"].dropna().unique()
+    if len(currencies) > 1:
+        breakdown = (
+            records.groupby("currency")
+            .agg(record_count=("account_id", "size"), sample_account_id=("account_id", "first"))
+            .reset_index()
+        )
+        raise MixedCurrencyError(breakdown)
 
 
 def get_latest_holdings_snapshot(
@@ -156,7 +201,7 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
 
 def get_net_worth(
     datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
-) -> Decimal:
+) -> int:
     """Sum of current balances across accounts, sign-adjusted for
     account_type: credit accounts are a liability (subtracted), everything
     else - current/savings/investment - is an asset (added). Also includes
@@ -165,9 +210,15 @@ def get_net_worth(
 
     Per CLAUDE.md Gotcha #6, a credit account's `balance` is already stored
     as a positive "amount owed" figure, not a negative one.
+
+    Raises MixedCurrencyError if ledger balances/holdings span more than one
+    currency - this function refuses to sum across currencies rather than
+    silently returning a meaningless total.
     """
     datalake = datalake or get_datalake()
     balances = get_current_balances(datalake)
+    latest_holdings = get_latest_holdings_snapshot(datalake)
+    _assert_single_currency(balances, latest_holdings)
 
     total_minor = 0
 
@@ -188,7 +239,6 @@ def get_net_worth(
     # Sum holdings (always assets, never liabilities).
     # Use the latest complete snapshot per account to avoid double-counting
     # across statements (holdings are re-printed on every statement).
-    latest_holdings = get_latest_holdings_snapshot(datalake)
     if not latest_holdings.empty:
         holdings_by_account = latest_holdings.groupby("account_id")[
             "total_value_minor"
@@ -211,12 +261,18 @@ def get_net_worth_breakdown(
     (descending), then by contribution (descending for assets, ascending for
     liabilities). Holdings have no reconciliation concept, so their
     balance_may_be_stale is always False - see get_current_balances().
+
+    Raises MixedCurrencyError if ledger balances/holdings span more than one
+    currency - see get_net_worth().
     """
     datalake = datalake or get_datalake()
     rows = []
 
-    # Add ledger-based rows (account balances)
     balances = get_current_balances(datalake)
+    latest_holdings = get_latest_holdings_snapshot(datalake)
+    _assert_single_currency(balances, latest_holdings)
+
+    # Add ledger-based rows (account balances)
     if not balances.empty:
         accounts = build_accounts_table(path=path)
         merged = balances.merge(
@@ -240,7 +296,6 @@ def get_net_worth_breakdown(
             )
 
     # Add holdings-based rows (latest snapshot per account).
-    latest_holdings = get_latest_holdings_snapshot(datalake)
     if not latest_holdings.empty:
         for holding_row in latest_holdings.itertuples():
             value_minor = int(holding_row.total_value_minor)
