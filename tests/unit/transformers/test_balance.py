@@ -1,7 +1,6 @@
 """Tests for transformers/balance.py (current balance / net worth queries)."""
 
 import json
-from decimal import Decimal
 
 import pandas as pd
 

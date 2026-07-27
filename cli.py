@@ -25,6 +25,7 @@ from models.ingestion import (
     STATUS_BRONZE_FAILED,
     STATUS_COMPLETE,
     STATUS_PARSE_FAILED,
+    load_manifest,
     start_ingestion,
     write_manifest,
 )
@@ -233,6 +234,23 @@ def ingest(files):
             had_failure = True
             continue
 
+        if result.reconciliation is not None:
+            manifest.reconciliation_check_name = result.reconciliation.check_name
+            manifest.reconciliation_expected_minor = result.reconciliation.expected_closing_minor
+            manifest.reconciliation_derived_minor = result.reconciliation.derived_closing_minor
+            manifest.reconciliation_matches = result.reconciliation.matches
+        if result.reconciliations:
+            manifest.reconciliations = [
+                {
+                    "check_name": r.check_name,
+                    "expected_closing_minor": r.expected_closing_minor,
+                    "derived_closing_minor": r.derived_closing_minor,
+                    "matches": r.matches,
+                    "account_identifier": r.account_identifier,
+                }
+                for r in result.reconciliations
+            ]
+
         manifest.status = STATUS_COMPLETE
         manifest.record_count = len(records)
         manifest.bronze_path = filepath
@@ -360,8 +378,137 @@ def get_breakdown():
     click.echo(breakdown[["account_id", "as_of_date", "contribution_to_net_worth"]])
 
     click.echo("\nTotal contribution to net worth:")
-    #click.echo(breakdown[["contribution_to_net_worth"]].aggregate({"contribution_to_net_worth": np.sum}, axis=0))
-    click.echo(f"£{breakdown[["contribution_to_net_worth"]].sum().values[0]}")
+    click.echo(f"{breakdown[['contribution_to_net_worth']].sum().values[0]}")
+
+
+@cli.group()
+def ingestions():
+    """Manage individual ingestions (quarantine, override)."""
+
+
+@ingestions.command("list")
+def ingestions_list():
+    """List all known ingestion manifests."""
+    import json
+    from models.ingestion import INGESTIONS_DIR
+    manifests = sorted(
+        [p for p in INGESTIONS_DIR.glob("*.json") if p.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not manifests:
+        click.echo("No ingestion manifests found.")
+        return
+
+    for mp in manifests:
+        try:
+            m = json.loads(mp.read_text())
+        except json.JSONDecodeError:
+            click.echo(f"  {mp.stem}: unparseable manifest")
+            continue
+        iid = m.get("ingestion_id", mp.stem)[:12]
+        status = m.get("status", "?")
+        st = m.get("source_type") or "?"
+        rec_match = m.get("reconciliation_matches")
+        flagged = "!"
+        if rec_match is True:
+            flagged = "✓"
+        elif rec_match is None:
+            flagged = " "
+        elif rec_match is False:
+            overload = False
+            override_flag = ""
+            if m.get("promotion_override", {}).get("decision") == "allow":
+                overload = True
+                override_flag = " (overridden)"
+            flagged = "⚠"
+            flagged += override_flag
+        click.echo(f"  {iid}  {st:20s}  {status:14s}  {flagged}")
+
+
+@ingestions.command("show")
+@click.argument("ingestion_id_prefix")
+def ingestions_show(ingestion_id_prefix):
+    """Show a full ingestion manifest."""
+    from models.ingestion import INGESTIONS_DIR
+    for mp in INGESTIONS_DIR.glob("*.json"):
+        if mp.stem.startswith(ingestion_id_prefix):
+            click.echo(mp.read_text())
+            return
+    click.echo(f"No manifest found with id prefix {ingestion_id_prefix!r}")
+
+
+@ingestions.command("quarantined")
+def ingestions_quarantined():
+    """List quarantined ingestions (reconciliation mismatch, no override)."""
+    import json
+    from models.ingestion import INGESTIONS_DIR
+    found = False
+    for mp in sorted(INGESTIONS_DIR.glob("*.json"),
+                     key=lambda p: p.stat().st_mtime, reverse=True):
+        m = json.loads(mp.read_text())
+        rec_match = m.get("reconciliation_matches")
+        recs = m.get("reconciliations", [])
+        any_mismatch = (rec_match is False) or any(
+            r.get("matches") is False for r in recs
+        )
+        if not any_mismatch:
+            continue
+        override = m.get("promotion_override", {})
+        if override.get("decision") == "allow":
+            continue
+        found = True
+        iid = m.get("ingestion_id", mp.stem)[:12]
+        st = m.get("source_type") or "?"
+        check = m.get("reconciliation_check_name") or ""
+        expected = m.get("reconciliation_expected_minor")
+        derived = m.get("reconciliation_derived_minor")
+        click.echo(f"  {iid}  {st}  {check}")
+        if expected is not None and derived is not None:
+            click.echo(f"    expected: {_fmt_minor(expected)}  derived: {_fmt_minor(derived)}")
+        for rec in recs:
+            if rec.get("matches") is False:
+                click.echo(f"    {rec['check_name']}: expected {_fmt_minor(rec.get('expected_closing_minor'))}  derived {_fmt_minor(rec.get('derived_closing_minor'))}")
+    if not found:
+        click.echo("No quarantined ingestions.")
+
+
+@ingestions.command("override")
+@click.argument("ingestion_id_prefix")
+@click.option("--allow", "decision", flag_value="allow", help="Allow this ingestion into Silver despite reconciliation mismatch")
+@click.option("--reason", default="manual override", help="Reason for the override")
+def ingestions_override(ingestion_id_prefix, decision, reason):
+    """Override a quarantined ingestion's promotion decision."""
+    from models.ingestion import INGESTIONS_DIR
+    for mp in INGESTIONS_DIR.glob("*.json"):
+        if mp.stem.startswith(ingestion_id_prefix):
+            manifest = load_manifest(mp.stem)
+            if manifest is None:
+                click.echo(f"Failed to load manifest {mp.stem}")
+                return
+            from datetime import datetime, timezone
+            manifest.promotion_override = {
+                "decision": decision,
+                "reason": reason,
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            write_manifest(manifest)
+            click.echo(
+                f"Overridden {manifest.ingestion_id[:12]}: {decision} "
+                f"(reason: {reason})"
+            )
+            return
+    click.echo(f"No manifest found with id prefix {ingestion_id_prefix!r}")
+
+
+def _fmt_minor(minor: int) -> str:
+    """Format minor units for CLI display."""
+    if minor is None:
+        return "None"
+    from models.money import format_minor
+    return format_minor(minor)
+
+
 
 
 

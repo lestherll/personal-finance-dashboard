@@ -20,6 +20,8 @@ import pandas as pd
 from adapters.factory import AdapterFactory
 from models.datalake import DataLake, get_datalake
 from config import SILVER_DIR as _SILVER_DIR
+from models.ingestion import STATUS_COMPLETE, load_manifest, manifest_path
+from models.ingestion import IngestionManifest
 from transformers.account_config import (
     UnmappedAccountsError,
     build_accounts_table,
@@ -619,6 +621,75 @@ class SilverTransformer:
         return result
 
 
+def _eligible_ingestion_ids(
+    bronze_frames: Dict[str, pd.DataFrame],
+) -> tuple[set[str], list[dict[str, str]]]:
+    """Determine which ingestion_ids are eligible for Silver promotion.
+
+    Returns (eligible_ids, excluded_list) where excluded_list contains
+    dicts with {ingestion_id, source_type, reason} for each ingestion
+    quarantined due to reconciliation mismatch or missing manifest override.
+    """
+    all_ids: set[str] = set()
+    for df in bronze_frames.values():
+        if "ingestion_id" in df.columns:
+            all_ids.update(df["ingestion_id"].dropna().unique().tolist())
+
+    eligible: set[str] = set()
+    excluded: list[dict[str, str]] = []
+
+    for iid in all_ids:
+        manifest = load_manifest(iid)
+        if manifest is None:
+            eligible.add(iid)
+            continue
+
+        if manifest.status != STATUS_COMPLETE:
+            excluded.append(
+                {"ingestion_id": iid, "source_type": manifest.source_type or "unknown",
+                 "reason": f"manifest status is {manifest.status}, not complete"}
+            )
+            continue
+
+        # Determine if reconciliation failed.
+        rec_failed = False
+        if manifest.reconciliation_matches is False:
+            rec_failed = True
+        for rec in (manifest.reconciliations or []):
+            if rec.get("matches") is False:
+                rec_failed = True
+                break
+
+        if rec_failed:
+            override = manifest.promotion_override or {}
+            if override.get("decision") == "allow":
+                eligible.add(iid)
+            else:
+                excluded.append(
+                    {"ingestion_id": iid, "source_type": manifest.source_type or "unknown",
+                     "reason": "reconciliation mismatch, no allow override"}
+                )
+        else:
+            eligible.add(iid)
+
+    return eligible, excluded
+
+
+def _filter_to_eligible(
+    bronze_frames: Dict[str, pd.DataFrame], eligible_ids: set[str]
+) -> Dict[str, pd.DataFrame]:
+    """Return bronze_frames with only rows from eligible ingestion_ids."""
+    filtered: Dict[str, pd.DataFrame] = {}
+    for st, df in bronze_frames.items():
+        if "ingestion_id" not in df.columns:
+            filtered[st] = df
+        else:
+            df = df[df["ingestion_id"].isin(eligible_ids)]
+            if not df.empty:
+                filtered[st] = df
+    return filtered
+
+
 def run_bronze_to_silver(
     datalake: Optional[DataLake] = None,
 ) -> Dict[str, pd.DataFrame]:
@@ -641,6 +712,18 @@ def run_bronze_to_silver(
 
     transformer = SilverTransformer(datalake)
     bronze_frames = transformer._read_bronze_frames()
+
+    # Quality gate: quarantine reconciliation-mismatched ingestions.
+    eligible_ids, excluded_ingestions = _eligible_ingestion_ids(bronze_frames)
+    if excluded_ingestions:
+        logger.warning(
+            "Quarantining %d ingestion(s) due to reconciliation mismatch "
+            "(override with 'cli.py ingestions override'):",
+            len(excluded_ingestions),
+        )
+        for ex in excluded_ingestions:
+            logger.warning("  %s (%s): %s", ex["ingestion_id"][:12], ex["source_type"], ex["reason"])
+        bronze_frames = _filter_to_eligible(bronze_frames, eligible_ids)
 
     accounts_df = build_accounts_table()
     transactions_df, sources_df = transformer.normalize_transactions(bronze_frames)
@@ -675,6 +758,7 @@ def run_bronze_to_silver(
     build_id = publish_silver_build(
         tables=tables,
         input_ingestion_ids=input_ingestion_ids,
+        excluded_ingestions=excluded_ingestions,
         parser_versions=parser_versions,
         silver_dir=_SILVER_DIR,
     )

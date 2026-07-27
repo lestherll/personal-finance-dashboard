@@ -11,10 +11,10 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from config import INGESTIONS_DIR, RAW_DIR
 
@@ -39,6 +39,22 @@ class IngestionManifest:
     record_count: Optional[int] = None
     bronze_path: Optional[str] = None
     error: Optional[str] = None
+
+    # Reconciliation verdict — filled at ingest time from IngestResult.
+    # Single-result channel (most adapters).
+    reconciliation_check_name: Optional[str] = None
+    reconciliation_expected_minor: Optional[int] = None
+    reconciliation_derived_minor: Optional[int] = None
+    reconciliation_matches: Optional[bool] = None
+    # Multi-result channel (Vanguard per-wrapper).
+    reconciliations: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Quality override — set via CLI to override quarantine.
+    # {"decision": "allow", "reason": "...", "at": "iso-timestamp", "by": "user"}
+    promotion_override: Optional[Dict[str, Any]] = field(default_factory=dict)
+    def __post_init__(self) -> None:
+        if self.promotion_override is None:
+            self.promotion_override = {}
 
     @classmethod
     def from_dict(cls, data: dict) -> "IngestionManifest":

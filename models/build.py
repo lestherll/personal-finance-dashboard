@@ -8,7 +8,6 @@ staging directory, validate, then os.replace() the symlink.
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import logging
 import os

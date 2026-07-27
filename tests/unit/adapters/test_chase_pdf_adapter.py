@@ -1,7 +1,6 @@
 """Tests for Chase PDF adapter."""
 
 from datetime import datetime
-from decimal import Decimal
 
 import pytest
 

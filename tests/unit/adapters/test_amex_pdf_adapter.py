@@ -9,7 +9,6 @@ These fixtures mirror that single-line structure.
 """
 
 from datetime import datetime
-from decimal import Decimal
 
 import fitz
 import pytest
