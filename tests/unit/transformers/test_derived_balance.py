@@ -4,9 +4,11 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
+from adapters.factory import AdapterFactory
 from models.datalake import DataLake
 from transformers.silver_transformer import (
     _LEDGER_COLUMNS,
+    SilverTransformer,
     _contiguous_coverage_end,
     _derive_rollforward_ledger_rows,
 )
@@ -75,10 +77,7 @@ class TestDeriveRollforwardBasic:
         ledger = _ledger_df(
             [{"balance_minor": 95000, "as_of_date": pd.Timestamp("2026-05-13")}]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         assert not result.empty
         assert len(result) == 1
@@ -117,10 +116,7 @@ class TestDeriveRollforwardBasic:
         ledger = _ledger_df(
             [{"balance_minor": 100000, "as_of_date": pd.Timestamp("2026-05-01")}]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         assert len(result) == 3
         assert result.iloc[0]["balance_minor"] == 120000  # 100000 + 20000
@@ -141,10 +137,7 @@ class TestDeriveRollforwardBasic:
             ]
         )
         ledger = _ledger_df([{"balance_minor": 1000}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         # Should be sorted by date, so Jun 1 before Jun 30.
         assert result.iloc[0]["balance_minor"] == 3000  # 1000 + 2000
@@ -156,29 +149,20 @@ class TestDeriveRollforwardEdgeCases:
         txns = _transactions_df([{"amount_minor": -1000}])
         # Anchor with reconciled=None is NOT a confirmed anchor.
         ledger = _ledger_df([{"reconciled": None}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_returns_empty_when_anchor_reconciled_false(self):
         txns = _transactions_df([{"amount_minor": -1000}])
         ledger = _ledger_df([{"reconciled": False}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_returns_empty_when_no_anchor_source_in_ledger(self):
         txns = _transactions_df([{"amount_minor": -1000}])
         # Ledger has no natwest-statement rows at all.
         ledger = pd.DataFrame(columns=_LEDGER_COLUMNS)
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_returns_empty_when_no_transactions_after_anchor(self):
@@ -188,21 +172,15 @@ class TestDeriveRollforwardEdgeCases:
         ledger = _ledger_df(
             [{"balance_minor": 100000, "as_of_date": pd.Timestamp("2026-05-01")}]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_returns_empty_when_empty_dataframes(self):
         empty_txns = pd.DataFrame()
         empty_ledger = _ledger_df([])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        assert _derive_rollforward_ledger_rows(empty_txns, empty_ledger, mock_dl).empty
+        assert _derive_rollforward_ledger_rows(empty_txns, empty_ledger, {}).empty
         assert _derive_rollforward_ledger_rows(
-            _transactions_df([]), empty_ledger, mock_dl
+            _transactions_df([]), empty_ledger, {}
         ).empty
 
     def test_excludes_same_date_as_anchor(self):
@@ -218,10 +196,7 @@ class TestDeriveRollforwardEdgeCases:
         ledger = _ledger_df(
             [{"balance_minor": 100000, "as_of_date": pd.Timestamp("2026-05-01")}]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_multiple_accounts_derived_independently(self):
@@ -269,10 +244,7 @@ class TestDeriveRollforwardEdgeCases:
                 ),
             ]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         assert len(result) == 2
         row_a = result[result["account_id"] == "acc_a"].iloc[0]
@@ -310,10 +282,7 @@ class TestDeriveRollforwardEdgeCases:
                 ),
             ]
         )
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         assert len(result) == 1
         # Latest anchor is June with 80000, so derived = 80000 + (-500) = 79500.
@@ -332,10 +301,7 @@ class TestDeriveRollforwardEdgeCases:
             ]
         )
         ledger = _ledger_df([{"balance_minor": 95000}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
 
         assert not result.empty
         row = result.iloc[0]
@@ -347,10 +313,7 @@ class TestDeriveRollforwardEdgeCases:
         txns = _transactions_df([{"account_id": "acc_test", "amount_minor": -1000}])
         # Ledger only has a different account.
         ledger = _ledger_df([{"account_id": "acc_other"}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
     def test_no_dependent_transactions_in_df(self):
@@ -365,10 +328,7 @@ class TestDeriveRollforwardEdgeCases:
             ]
         )
         ledger = _ledger_df([{"balance_minor": 95000}])
-        mock_dl = MagicMock(spec=DataLake)
-        mock_dl.read_bronze.return_value = None
-
-        result = _derive_rollforward_ledger_rows(txns, ledger, mock_dl)
+        result = _derive_rollforward_ledger_rows(txns, ledger, {})
         assert result.empty
 
 
@@ -378,87 +338,33 @@ class TestDeriveRollforwardEdgeCases:
 
 
 class TestContiguousCoverageEnd:
+    """_contiguous_coverage_end now takes an already-loaded Bronze DataFrame
+    directly (P2.2a) instead of a live DataLake it would call read_bronze()
+    on itself - these tests build that frame in-memory, no Parquet/DataLake
+    roundtrip needed."""
+
     _SOURCE = "natwest-transactions"
     _ACCOUNT = "acc_test"
 
-    def _mk_datalake(self, tmp_path, monkeypatch, df):
-        """Create a DataLake with a real Bronze dir that contains test
-        parquet data for the coverage function to read."""
-        monkeypatch.setattr(
-            "transformers.silver_transformer.get_account_id",
-            lambda ai, st, path=None: self._ACCOUNT,
-        )
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
-        from models.ingestion import IngestionManifest
-
-        manifest = IngestionManifest(
-            ingestion_id="test_hash",
-            original_filename="test.pdf",
-            raw_artifact_path="/test/raw/test.pdf",
-            status="complete",
-            created_at="2026-01-01T00:00:00+00:00",
-            source_type=self._SOURCE,
-        )
-        dl.write_bronze(manifest, df)
-        return dl
-
-    def test_returns_max_when_no_bronze_data(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "transformers.silver_transformer.get_account_id",
-            lambda ai, st, path=None: self._ACCOUNT,
-        )
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
+    def test_returns_max_when_no_bronze_data(self):
         result = _contiguous_coverage_end(
-            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, dl
+            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, None
         )
         assert result == pd.Timestamp.max
-        dl.close()
 
-    def test_returns_max_when_no_period_columns(self, tmp_path, monkeypatch):
-        from models.ingestion import IngestionManifest
-
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
-        manifest = IngestionManifest(
-            ingestion_id="test_hash",
-            original_filename="test.pdf",
-            raw_artifact_path="/test/raw/test.pdf",
-            status="complete",
-            created_at="2026-01-01T00:00:00+00:00",
-            source_type=self._SOURCE,
-        )
+    def test_returns_max_when_no_period_columns(self):
         # DataFrame without statement_period_from/to columns.
         df = pd.DataFrame([{"source_type": self._SOURCE, "account_identifier": "id1"}])
-        dl.write_bronze(manifest, df)
         result = _contiguous_coverage_end(
-            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, dl
+            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, df
         )
         assert result == pd.Timestamp.max
-        dl.close()
 
-    def test_continuous_periods_return_last_end(self, tmp_path, monkeypatch):
+    def test_continuous_periods_return_last_end(self, monkeypatch):
         monkeypatch.setattr(
             "transformers.silver_transformer.get_account_id",
             lambda ai, st, path=None: self._ACCOUNT,
         )
-        from models.ingestion import IngestionManifest
-
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
-
         df = pd.DataFrame(
             [
                 {
@@ -479,36 +385,18 @@ class TestContiguousCoverageEnd:
                 },
             ]
         )
-        manifest = IngestionManifest(
-            ingestion_id="h",
-            original_filename="test.pdf",
-            raw_artifact_path="/test/raw/test.pdf",
-            status="complete",
-            created_at="2026-01-01T00:00:00+00:00",
-            source_type=self._SOURCE,
-        )
-        dl.write_bronze(manifest, df)
 
         result = _contiguous_coverage_end(
-            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, dl
+            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, df
         )
         # May→Jun→Jul periods are contiguous (1-day gap ≤ tolerance).
         assert result == pd.Timestamp("2026-07-26")
-        dl.close()
 
-    def test_gap_truncates_coverage(self, tmp_path, monkeypatch):
+    def test_gap_truncates_coverage(self, monkeypatch):
         monkeypatch.setattr(
             "transformers.silver_transformer.get_account_id",
             lambda ai, st, path=None: self._ACCOUNT,
         )
-        from models.ingestion import IngestionManifest
-
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
-
         df = pd.DataFrame(
             [
                 {
@@ -530,40 +418,22 @@ class TestContiguousCoverageEnd:
                 },
             ]
         )
-        manifest = IngestionManifest(
-            ingestion_id="h",
-            original_filename="test.pdf",
-            raw_artifact_path="/test/raw/test.pdf",
-            status="complete",
-            created_at="2026-01-01T00:00:00+00:00",
-            source_type=self._SOURCE,
-        )
-        dl.write_bronze(manifest, df)
 
         result = _contiguous_coverage_end(
-            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, dl
+            self._ACCOUNT, pd.Timestamp("2026-05-01"), self._SOURCE, df
         )
         # First period (May 1-13) = contiguous from anchor.
         # Second period (Jul 1-26) has gap: May 13 → Jul 1 = 49 days > 3.
         # Contiguous window stops at May 13.
         assert result == pd.Timestamp("2026-05-13")
-        dl.close()
 
     def test_anchor_date_after_first_period_correctly_shifts_window(
-        self, tmp_path, monkeypatch
+        self, monkeypatch
     ):
         monkeypatch.setattr(
             "transformers.silver_transformer.get_account_id",
             lambda ai, st, path=None: self._ACCOUNT,
         )
-        from models.ingestion import IngestionManifest
-
-        monkeypatch.setattr("models.datalake.BRONZE_DIR", tmp_path / "bronze")
-        monkeypatch.setattr("models.datalake.SILVER_DIR", tmp_path / "silver")
-        monkeypatch.setattr("models.datalake.GOLD_DIR", tmp_path / "gold")
-
-        dl = DataLake(db_path=str(tmp_path / "test.duckdb"))
-
         df = pd.DataFrame(
             [
                 {
@@ -584,22 +454,75 @@ class TestContiguousCoverageEnd:
                 },
             ]
         )
-        manifest = IngestionManifest(
-            ingestion_id="h",
-            original_filename="test.pdf",
-            raw_artifact_path="/test/raw/test.pdf",
-            status="complete",
-            created_at="2026-01-01T00:00:00+00:00",
-            source_type=self._SOURCE,
-        )
-        dl.write_bronze(manifest, df)
 
         # Anchor (2026-04-01) lies between the two periods.
         # Sorted: Mar 29–Apr 15, then Jun 1–Jul 26.
         # The Mar period extends max_to through Apr 15; June starts just
         # 47 days later (> 3 day tolerance) → gap detected at Apr 15.
         result = _contiguous_coverage_end(
-            self._ACCOUNT, pd.Timestamp("2026-04-01"), self._SOURCE, dl
+            self._ACCOUNT, pd.Timestamp("2026-04-01"), self._SOURCE, df
         )
         assert result == pd.Timestamp("2026-04-15")
-        dl.close()
+
+
+# ---------------------------------------------------------------------------
+# P2.2a regression: bronze_frames threading must not reintroduce re-reads
+# ---------------------------------------------------------------------------
+
+
+class TestBronzeReadCountAcrossRollforward:
+    """Once bronze_frames is loaded once (via _read_bronze_frames), deriving
+    rollforward rows for multiple accounts under one dependent source_type
+    must not trigger any additional datalake.read_bronze calls - previously,
+    _contiguous_coverage_end re-read Bronze itself inside the per-account
+    loop in _derive_rollforward_ledger_rows."""
+
+    def test_multiple_accounts_do_not_trigger_additional_bronze_reads(self):
+        dependent_df = pd.DataFrame(
+            [
+                {
+                    "source_type": "natwest-transactions",
+                    "account_identifier": "id1",
+                }
+            ]
+        )
+        mock_dl = MagicMock(spec=DataLake)
+        mock_dl.read_bronze.side_effect = (
+            lambda st: dependent_df if st == "natwest-transactions" else None
+        )
+
+        transformer = SilverTransformer(datalake=mock_dl)
+        bronze_frames = transformer._read_bronze_frames()
+        all_source_types = AdapterFactory.CSV_SOURCE_TYPES | AdapterFactory.PDF_SOURCE_TYPES
+        assert mock_dl.read_bronze.call_count == len(all_source_types)
+
+        txns = _transactions_df(
+            [
+                {
+                    "account_id": "acc_1",
+                    "transaction_date": pd.Timestamp("2026-06-15"),
+                    "amount_minor": -1000,
+                },
+                {
+                    "account_id": "acc_2",
+                    "transaction_date": pd.Timestamp("2026-06-16"),
+                    "amount_minor": -2000,
+                    "bronze_record_id": "rid_2",
+                    "bronze_source_key": "rsk_2",
+                    "silver_transaction_id": "stid_2",
+                },
+            ]
+        )
+        ledger = _ledger_df(
+            [
+                {"account_id": "acc_1"},
+                {"account_id": "acc_2"},
+            ]
+        )
+
+        _derive_rollforward_ledger_rows(txns, ledger, bronze_frames)
+
+        # No extra read_bronze calls, regardless of how many accounts were
+        # derived - bronze_frames (already in memory) is reused, never
+        # re-fetched from the datalake.
+        assert mock_dl.read_bronze.call_count == len(all_source_types)

@@ -682,20 +682,19 @@ def _contiguous_coverage_end(
     account_id: str,
     anchor_date: pd.Timestamp,
     dependent_source_type: str,
-    datalake: DataLake,
+    bronze: Optional[pd.DataFrame],
 ) -> pd.Timestamp:
     """Find the latest date up to which the dependent source_type's
     statement-period coverage is contiguous starting from `anchor_date`.
 
-    Reads Bronze `statement_period_from/to` columns for all files of the
-    given source_type that belong to this account_id, sorts them by
-    period start, and walks forward: any gap (period i+1's start > the
-    running max_to + tolerance) truncates the window. Returns the end of
-    the first contiguous segment after anchor_date, or
-    `pd.Timestamp.max` if coverage is fully contiguous (or no period
-    data exists to judge gaps at all).
+    Reads `statement_period_from/to` columns from the given (already-loaded)
+    Bronze frame for all files of the given source_type that belong to this
+    account_id, sorts them by period start, and walks forward: any gap
+    (period i+1's start > the running max_to + tolerance) truncates the
+    window. Returns the end of the first contiguous segment after
+    anchor_date, or `pd.Timestamp.max` if coverage is fully contiguous (or
+    no period data exists to judge gaps at all).
     """
-    bronze = datalake.read_bronze(dependent_source_type)
     if bronze is None or bronze.empty or "statement_period_from" not in bronze.columns:
         return pd.Timestamp.max
 
@@ -736,7 +735,7 @@ def _contiguous_coverage_end(
 def _derive_rollforward_ledger_rows(
     transactions_df: pd.DataFrame,
     ledger_df: pd.DataFrame,
-    datalake: DataLake,
+    bronze_frames: Dict[str, pd.DataFrame],
 ) -> pd.DataFrame:
     """For each dependent→anchor pair declared in _DERIVED_BALANCE_ANCHORS,
     take the anchor source's latest confirmed balance per account and roll
@@ -790,7 +789,7 @@ def _derive_rollforward_ledger_rows(
                 continue
 
             contiguous_end = _contiguous_coverage_end(
-                account_id, anchor_date, dependent_st, datalake
+                account_id, anchor_date, dependent_st, bronze_frames.get(dependent_st)
             )
             account_txns = account_txns[
                 pd.to_datetime(account_txns["transaction_date"]) <= contiguous_end
@@ -947,7 +946,8 @@ def run_bronze_to_silver(
         raise UnmappedAccountsError(unmapped)
 
     transformer = SilverTransformer(datalake)
-    bronze_frames = transformer._read_bronze_frames()
+    all_bronze_frames = transformer._read_bronze_frames()
+    bronze_frames = all_bronze_frames
 
     # Quality gate: quarantine reconciliation-mismatched ingestions.
     eligible_ids, excluded_ingestions = _eligible_ingestion_ids(bronze_frames)
@@ -971,7 +971,7 @@ def run_bronze_to_silver(
     holdings_df = transformer.normalize_holdings(bronze_frames)
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     derived_ledger = _derive_rollforward_ledger_rows(
-        transactions_df, ledger_df, datalake
+        transactions_df, ledger_df, all_bronze_frames
     )
     if not derived_ledger.empty:
         assert list(derived_ledger.columns) == _LEDGER_COLUMNS, (
