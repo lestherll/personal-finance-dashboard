@@ -16,10 +16,12 @@ separate adapters - the naming is deliberately explicit about which is which
 Because both can cover overlapping dates for the same account (e.g. this
 export re-covers a month a Statement later also covers), the same real
 transaction can appear under both source_types with two different
-`bronze_source_key`s. `transformers/silver_transformer.py::_dedupe_natwest_cross_format()`
-is what prevents that from double-counting - matched by
-`(account_id, transaction_date, amount)`, preferring the `natwest-statement`
-row (it carries real balance data). See CLAUDE.md Gotcha #11.
+`bronze_source_key`s. The declared cross-source policy in
+`transformers/matching.py` (`_CROSS_SOURCE_POLICIES`) is what prevents
+that from double-counting - matched by
+`(account_id, transaction_date, amount_minor)`, preferring the
+`natwest-statement` row (it carries real balance data). See CLAUDE.md
+Gotcha #11.
 """
 
 import re

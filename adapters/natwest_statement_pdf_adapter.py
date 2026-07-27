@@ -18,8 +18,10 @@ table instead of a single signed-amount-per-line format, and a full
 adapter/source_type rather than a branch inside the other one. Because they
 can cover overlapping dates for the same account, the same real transaction
 can appear under both source_types with two different `bronze_source_key`s -
-`transformers/silver_transformer.py::_dedupe_natwest_cross_format()` is what
-prevents that from double-counting (see CLAUDE.md Gotcha #11).
+the declared cross-source policy in `transformers/matching.py`
+(`_CROSS_SOURCE_POLICIES`: loose-key match on `(account_id,
+transaction_date, amount_minor)`, preferring the `natwest-statement` row)
+is what prevents that from double-counting (see CLAUDE.md Gotcha #11).
 """
 
 import logging

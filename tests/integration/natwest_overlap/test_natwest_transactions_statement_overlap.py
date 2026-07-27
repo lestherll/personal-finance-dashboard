@@ -32,7 +32,8 @@ Scenario timeline (one real account, `acc_natwest_test`):
 Export A's transaction and one of Export B's transactions each duplicate a
 transaction the relevant statement's own table also prints (same date +
 amount, different wording) - real-world cross-format overlap, resolved by
-`transformers/silver_transformer.py::_dedupe_natwest_cross_format()`.
+the declared cross-source policy in `transformers/matching.py`
+(`_CROSS_SOURCE_POLICIES`).
 Export B's second transaction (GYM MEMBERSHIP) has no statement counterpart
 at all - it's in the still-uncovered gap after Statement 2, which is
 exactly the case `NATWEST_TRANSACTIONS_BALANCE_DESIGN.md` is about.
@@ -436,9 +437,10 @@ class TestSilverReconciliation:
 
 class TestCrossFormatDedup:
     """The core thing this scenario is designed to exercise:
-    _dedupe_natwest_cross_format() collapsing the same real-world
-    transaction reported under both source_types down to one row, while
-    leaving genuinely unique transactions (on either side) untouched."""
+    matching.py's declared natwest-transactions/natwest-statement
+    cross-source policy collapsing the same real-world transaction
+    reported under both source_types down to one row, while leaving
+    genuinely unique transactions (on either side) untouched."""
 
     def test_four_distinct_transactions_survive(self, ingested):
         transactions = ingested["transactions"]
