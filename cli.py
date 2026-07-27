@@ -540,7 +540,6 @@ def ingestions_list():
         elif rec_match is None:
             flagged = " "
         elif rec_match is False:
-            overload = False
             override_flag = ""
             if m.get("promotion_override", {}).get("decision") == "allow":
                 override_flag = " (overridden)"
