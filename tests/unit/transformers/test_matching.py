@@ -67,8 +67,9 @@ class TestSameFingerprintUniqueSilverId:
         ids = set(canonical["silver_transaction_id"])
         assert len(ids) == 2
 
-        # Both ids follow fingerprint_occurrence shape.
+        # Both ids follow the source_type:fingerprint_occurrence shape.
         for stid in ids:
+            assert stid.startswith("kroo:")
             assert stid.endswith("_1") or stid.endswith("_2")
 
     def test_provenance_for_repeats_points_at_distinct_ids(self):
@@ -145,9 +146,9 @@ class TestCrossSourceProvenance:
         )
 
         # Every silver_transaction_id in provenance must reference a real
-        # canonical row (the survivor); the absorbed row's own fingerprint
-        # provenance may still exist but now points at a dangling id - this
-        # is pre-existing behaviour outside the two bugs being fixed here.
+        # canonical row (the survivor): the absorbed row's own fingerprint
+        # provenance was redirected to the survivor id, so nothing is left
+        # pointing at the dropped row.
         canonical_ids = set(canonical["silver_transaction_id"])
         for stid in sources["silver_transaction_id"]:
             assert stid in canonical_ids, f"dangling provenance id: {stid}"
@@ -229,8 +230,8 @@ class TestDedupeCrossSourceRedirectsAllSharers:
         absorbed_row["_occurrence"] = 1
 
         canonical = _make_frame([preferred_row, absorbed_row])
-        absorbed_id = "fp_txn_1"
-        survivor_id = "fp_stmt_1"
+        absorbed_id = "natwest-transactions:fp_txn_1"
+        survivor_id = "natwest-statement:fp_stmt_1"
 
         provenance_rows = [
             {
@@ -259,6 +260,42 @@ class TestDedupeCrossSourceRedirectsAllSharers:
         ]
         assert len(redirected) == 20
         assert all(p["silver_transaction_id"] == survivor_id for p in redirected)
+
+
+class TestSilverIdIsScopedBySourceType:
+    """Regression: the content fingerprint deliberately excludes source_type
+    (it hashes content only), and occurrence numbers count per (source_type,
+    fingerprint) group - so two source_types producing identical normalized
+    content for one account used to mint the *same* silver_transaction_id
+    for two distinct canonical rows (duplicate primary key, fan-out joins).
+    The Monzo CSV x Monzo PDF overlap is the real case: same account_id,
+    no declared cross-source policy."""
+
+    def test_identical_content_across_source_types_gets_distinct_ids(self):
+        csv_row = _txn(
+            source_type="monzo",
+            account_id="acc_monzo_current",
+            description="TESCO STORES",
+            bronze_record_id="br_csv",
+        )
+        pdf_row = _txn(
+            source_type="monzo-pdf",
+            account_id="acc_monzo_current",
+            description="TESCO STORES",
+            bronze_record_id="br_pdf",
+        )
+
+        canonical, sources = match_transactions(_make_frame([csv_row, pdf_row]))
+
+        # Both survive (no cross-source policy pairs these source_types)...
+        assert len(canonical) == 2
+        # ...with genuinely distinct ids, and provenance agrees with the
+        # canonical frame.
+        ids = set(canonical["silver_transaction_id"])
+        assert len(ids) == 2
+        assert any(i.startswith("monzo:") for i in ids)
+        assert any(i.startswith("monzo-pdf:") for i in ids)
+        assert set(sources["silver_transaction_id"]) == ids
 
 
 class TestMatchTransactionsEmpty:
