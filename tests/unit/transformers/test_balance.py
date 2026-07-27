@@ -793,9 +793,7 @@ class TestPreCurrencyBuildCompatibility:
         assert result.iloc[0]["balance_minor"] == 10000
         assert result.iloc[0]["currency"] is None
 
-    def test_get_net_worth_does_not_raise_on_missing_currency_column(
-        self, tmp_path
-    ):
+    def test_get_net_worth_does_not_raise_on_missing_currency_column(self, tmp_path):
         path = _account_map_path(
             tmp_path,
             {
