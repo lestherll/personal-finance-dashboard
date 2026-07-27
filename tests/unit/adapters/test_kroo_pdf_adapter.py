@@ -134,6 +134,7 @@ class TestKrooReconciliation:
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.check_name == "kroo_closing_balance"
+        assert adapter.last_reconciliation.expected_opening_minor == 10000
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         mismatched_text = SAMPLE_TEXT.replace(

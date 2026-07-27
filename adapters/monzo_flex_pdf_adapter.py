@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+from adapters.reconciliation import build_reconciliation_result
 
 # e.g. "01/04/2026 - 30/06/2026" - printed once directly under "The amounts
 # you'll see below are for these dates", itself under the "Flex statement"
@@ -26,6 +27,11 @@ _AMOUNT_RE = re.compile(r"^-?[\d,]+\.\d{2}$")
 # earlier in the same summary block - requiring the literal "end" is what
 # keeps this from matching that anchor instead.
 _BALANCE_AT_END_RE = re.compile(r"£\s*([\d,]+\.\d{2})\s*\n\s*Balance at end\b")
+# "£1217.07\nBalance at start" - same amount-precedes-label order as
+# _BALANCE_AT_END_RE, captured purely for cross-file continuity checking
+# (this adapter's own `matches` check only ever compares against the "end"
+# anchor, since the table is a direct read, nothing rolled forward).
+_BALANCE_AT_START_RE = re.compile(r"£\s*([\d,]+\.\d{2})\s*\n\s*Balance at start\b")
 
 
 class MonzoFlexPdfAdapter(PdfAdapter):
@@ -206,11 +212,19 @@ class MonzoFlexPdfAdapter(PdfAdapter):
         except (MoneyParseError, KeyError):
             return
 
-        self.last_reconciliation = ReconciliationResult(
+        start_match = _BALANCE_AT_START_RE.search(text)
+        opening = None
+        if start_match:
+            try:
+                opening = parse_money_minor(start_match.group(1))
+            except MoneyParseError:
+                opening = None
+
+        self.last_reconciliation = build_reconciliation_result(
             check_name="monzo_flex_balance_at_end",
             expected_closing_minor=expected,
             derived_closing_minor=derived,
-            matches=derived == expected,
+            expected_opening_minor=opening,
         )
 
     def generate_source_key(

@@ -37,6 +37,11 @@ from transformers.silver_transformer import (
 _RECONCILIATION_MARKERS = (
     "self.last_reconciliation = ReconciliationResult(",
     "self.last_reconciliations.append(ReconciliationResult(",
+    # adapters/reconciliation.py's shared tail (build_reconciliation_result) -
+    # most PDF adapters construct their ReconciliationResult through this
+    # helper now rather than the dataclass directly; see its module docstring.
+    "self.last_reconciliation = build_reconciliation_result(",
+    "self.last_reconciliations.append(build_reconciliation_result(",
 )
 _STATEMENT_PERIOD_MARKER = "self.last_statement_period = StatementPeriod("
 
@@ -62,11 +67,12 @@ def _adapter_ids(adapter):
 
 class TestReconciliationRegistration:
     """An adapter "implements reconciliation" iff its class source ever sets
-    self.last_reconciliation = ReconciliationResult(...) (single-result
-    adapters) or self.last_reconciliations.append(ReconciliationResult(...))
-    (multi-result adapters, e.g. Vanguard's per-wrapper checks) somewhere
-    (any method - Amex's lives in an overridden parse(), not
-    parse_transactions()). That must match _RECONCILIATION_SOURCE_TYPES
+    self.last_reconciliation = ReconciliationResult(...) or
+    build_reconciliation_result(...) (single-result adapters) or
+    self.last_reconciliations.append(...) of either (multi-result adapters,
+    e.g. Vanguard's per-wrapper checks) somewhere (any method - Amex's lives
+    in an overridden parse(), not parse_transactions()). That must match
+    _RECONCILIATION_SOURCE_TYPES
     exactly, both directions: implements-but-unregistered silently hides
     real data (the monzo-flex bug); registered-but-not-implemented would
     silently query a source that can never produce a result."""

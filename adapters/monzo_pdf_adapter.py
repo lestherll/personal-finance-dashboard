@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+from adapters.reconciliation import build_reconciliation_result
 
 # e.g. "01/04/2026 - 30/06/2026" - printed once right under the "Personal
 # Account statement" header, and again under "Pot statement" (same range in
@@ -163,11 +164,10 @@ class MonzoPdfAdapter(PdfAdapter):
         except (MoneyParseError, KeyError):
             return
 
-        self.last_reconciliation = ReconciliationResult(
+        self.last_reconciliation = build_reconciliation_result(
             check_name="monzo_pdf_personal_account_balance",
             expected_closing_minor=expected,
             derived_closing_minor=derived,
-            matches=derived == expected,
         )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:

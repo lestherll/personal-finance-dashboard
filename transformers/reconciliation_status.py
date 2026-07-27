@@ -48,7 +48,9 @@ _STATUS_COLUMNS = [
     "account_id",
     "source_type",
     "filename",
+    "ingestion_id",
     "check_name",
+    "expected_opening_minor",
     "expected_closing_minor",
     "derived_closing_minor",
     "matches",
@@ -73,11 +75,11 @@ def find_reconciliation_status(
         if df is None or df.empty or "reconciliation_check" not in df.columns:
             continue
 
-        # Keyed on (filename, account_identifier), not filename alone: a
-        # source like vanguard-pdf can carry two genuinely different
-        # reconciliation verdicts (one per wrapper) within one file - a
-        # filename-only key would silently collapse to one row and drop
-        # the other wrapper's status.
+        # Keyed on (ingestion_id, account_identifier), not ingestion_id
+        # alone: a source like vanguard-pdf can carry two genuinely
+        # different reconciliation verdicts (one per wrapper) within one
+        # file - an ingestion_id-only key would silently collapse to one
+        # row and drop the other wrapper's status.
         per_file = df.dropna(subset=["reconciliation_check"]).drop_duplicates(
             ["ingestion_id", "account_identifier"]
         )
@@ -94,7 +96,11 @@ def find_reconciliation_status(
                     "account_id": account_id,
                     "source_type": source_type,
                     "filename": row.filename,
+                    "ingestion_id": row.ingestion_id,
                     "check_name": row.reconciliation_check,
+                    "expected_opening_minor": getattr(
+                        row, "reconciliation_expected_opening_minor", None
+                    ),
                     "expected_closing_minor": row.reconciliation_expected_closing_minor,
                     "derived_closing_minor": row.reconciliation_derived_closing_minor,
                     "matches": row.reconciliation_matches,

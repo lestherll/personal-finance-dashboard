@@ -286,6 +286,7 @@ class TestChaseReconciliation:
         assert adapter.last_reconciliation.check_name == "chase_closing_balance"
         assert adapter.last_reconciliation.expected_closing_minor == 0
         assert adapter.last_reconciliation.derived_closing_minor == 0
+        assert adapter.last_reconciliation.expected_opening_minor == 0
 
     def test_sets_last_reconciliation_on_match_saver(self, adapter):
         adapter.parse_transactions(SAMPLE_SAVER_TEXT)
@@ -293,6 +294,7 @@ class TestChaseReconciliation:
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.expected_closing_minor == 275000
         assert adapter.last_reconciliation.derived_closing_minor == 275000
+        assert adapter.last_reconciliation.expected_opening_minor == 0
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         mismatched_text = SAMPLE_TEXT.replace(

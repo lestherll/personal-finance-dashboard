@@ -6,10 +6,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+from adapters.reconciliation import build_reconciliation_result
 
 _CLOSING_BALANCE_RE = re.compile(r"Closing balance\s*\n\s*£\s*([\d,]+\.\d{2})")
+_TOTAL_OPENING_BALANCE_RE = re.compile(
+    r"Total opening balance\s*\n\s*£\s*([\d,]+\.\d{2})"
+)
 # e.g. "1 June 2026 to 30 June 2026" - printed once right under the "Account
 # transactions" header, unpadded day (no leading zero, unlike the per-
 # transaction "01 June 2026"-style dates below). Anchored to a whole line so
@@ -158,11 +162,19 @@ class KrooPdfAdapter(PdfAdapter):
         except (MoneyParseError, KeyError):
             return
 
-        self.last_reconciliation = ReconciliationResult(
+        opening_match = _TOTAL_OPENING_BALANCE_RE.search(text)
+        opening = None
+        if opening_match:
+            try:
+                opening = parse_money_minor(opening_match.group(1))
+            except MoneyParseError:
+                opening = None
+
+        self.last_reconciliation = build_reconciliation_result(
             check_name="kroo_closing_balance",
             expected_closing_minor=expected,
             derived_closing_minor=derived,
-            matches=derived == expected,
+            expected_opening_minor=opening,
         )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:

@@ -5,8 +5,12 @@ Usage:
     uv run python cli.py accounts register <account_identifier> <account_id> <display_name> <account_type>
     uv run python cli.py accounts register-fallback <source_type> <account_id> <display_name> <account_type>
     uv run python cli.py accounts coverage
-    uv run python cli.py accounts reconciliation
+    uv run python cli.py accounts reconciliation [--fail-on-mismatch]
+    uv run python cli.py accounts continuity [--fail-on-mismatch]
+    uv run python cli.py accounts reconciliation-log
     uv run python cli.py ingest <file> [<file> ...]
+    uv run python cli.py silver rebuild [--strict]
+    uv run python cli.py silver builds
 """
 
 import hashlib
@@ -35,7 +39,9 @@ from transformers.account_config import (
     register_source_type_fallback,
 )
 from transformers.balance import get_net_worth_breakdown
+from transformers.continuity import find_balance_continuity
 from transformers.coverage import find_coverage_gaps, find_statement_periods
+from transformers.reconciliation_log import ReconciliationMismatchError
 from transformers.reconciliation_status import find_reconciliation_status
 from transformers.silver_transformer import run_bronze_to_silver
 from models.build import list_builds, current_build_id
@@ -302,7 +308,14 @@ def coverage():
 
 
 @accounts.command("reconciliation")
-def reconciliation():
+@click.option(
+    "--fail-on-mismatch",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero if any file's reconciliation mismatches - for "
+    "scripting/CI use, independent of the Silver-build strict gate.",
+)
+def reconciliation(fail_on_mismatch):
     """Show balance-reconciliation status per account."""
     datalake = get_datalake()
     statuses = find_reconciliation_status(datalake)
@@ -315,6 +328,7 @@ def reconciliation():
         )
         return
 
+    any_mismatch = False
     for account_id, group in statuses.groupby("account_id"):
         click.echo(f"{account_id}:")
         for row in group.itertuples():
@@ -323,10 +337,91 @@ def reconciliation():
                     f"  ✓ {row.filename}: reconciles ({format_minor(row.expected_closing_minor)})"
                 )
             else:
+                any_mismatch = True
                 click.echo(
                     f"  ⚠ {row.filename}: mismatch - derived {format_minor(row.derived_closing_minor)} "
                     f"vs printed {format_minor(row.expected_closing_minor)}"
                 )
+
+    if fail_on_mismatch and any_mismatch:
+        sys.exit(1)
+
+
+@accounts.command("continuity")
+@click.option(
+    "--fail-on-mismatch",
+    is_flag=True,
+    default=False,
+    help="Exit non-zero if any consecutive pair of statements breaks "
+    "continuity - for scripting/CI use, independent of the Silver-build "
+    "strict gate.",
+)
+def continuity(fail_on_mismatch):
+    """Check that each account's consecutive statements connect (closing
+    balance of one file matches the opening balance of the next)."""
+    datalake = get_datalake()
+    breaks = find_balance_continuity(datalake)
+
+    if breaks.empty:
+        click.echo(
+            "No continuity data found yet (needs at least two anchored "
+            "statements for the same account - see 'accounts reconciliation')."
+        )
+        return
+
+    any_mismatch = False
+    for account_id, group in breaks.groupby("account_id"):
+        click.echo(f"{account_id}:")
+        for row in group.itertuples():
+            if row.matches is True:
+                click.echo(f"  ✓ {row.filename} -> {row.next_filename}: continuous")
+            elif row.gap_related:
+                click.echo(
+                    f"  ? {row.filename} -> {row.next_filename}: known coverage "
+                    "gap between statements, not comparable"
+                )
+            elif row.matches is None:
+                click.echo(
+                    f"  ? {row.filename} -> {row.next_filename}: no opening/"
+                    "closing anchor on one side, not comparable"
+                )
+            else:
+                any_mismatch = True
+                click.echo(
+                    f"  ⚠ {row.filename} -> {row.next_filename}: mismatch - "
+                    f"closing {format_minor(row.expected_closing_minor)} vs next "
+                    f"opening {format_minor(row.expected_opening_minor)}"
+                )
+
+    if fail_on_mismatch and any_mismatch:
+        sys.exit(1)
+
+
+@accounts.command("reconciliation-log")
+def reconciliation_log():
+    """Show the persisted, build-versioned reconciliation history (all
+    three check types: bronze self-check, continuity, Silver rollforward) -
+    distinct from 'accounts reconciliation'/'accounts continuity', which
+    query live Bronze and don't require a Silver build to have run."""
+    datalake = get_datalake()
+    log = datalake.read_silver("reconciliation_log")
+
+    if log is None or log.empty:
+        click.echo(
+            "No reconciliation log found yet - run 'cli.py silver rebuild' "
+            "at least once."
+        )
+        return
+
+    for check_type, group in log.groupby("check_type"):
+        click.echo(f"{check_type}:")
+        for matches, sub_group in group.groupby("matches", dropna=False):
+            if pd.isna(matches):
+                label = "inconclusive"
+            else:
+                label = "match" if bool(matches) else "mismatch"
+            click.echo(f"  {label}: {len(sub_group)}")
+
 
 @cli.group()
 def silver():
@@ -334,9 +429,26 @@ def silver():
 
 
 @silver.command("rebuild")
-def silver_rebuild():
+@click.option(
+    "--strict",
+    "strict_reconciliation",
+    is_flag=True,
+    default=False,
+    help=(
+        "Refuse to publish a new build if any reconciliation check "
+        "(bronze self-check/continuity/silver rollforward) mismatches. "
+        "Gates on every historical mismatch in the current Bronze set, "
+        "not just newly-ingested files."
+    ),
+)
+def silver_rebuild(strict_reconciliation):
     """Rebuild Silver from the current immutable Bronze set."""
-    result = run_bronze_to_silver()
+    try:
+        result = run_bronze_to_silver(strict_reconciliation=strict_reconciliation)
+    except ReconciliationMismatchError as e:
+        click.echo(f"✗ {e}")
+        sys.exit(1)
+
     build_id = result["build_id"]
     click.echo(f"Published Silver build {build_id}")
     click.echo(
@@ -344,6 +456,18 @@ def silver_rebuild():
         f"{len(result['account_ledger'])} ledger entries, "
         f"{len(result['holdings'])} holdings"
     )
+
+    log = result["reconciliation_log"]
+    if not log.empty:
+        click.echo("  reconciliation summary:")
+        for (check_type, matches), count in log.groupby(
+            ["check_type", "matches"], dropna=False
+        ).size().items():
+            if pd.isna(matches):
+                label = "inconclusive"
+            else:
+                label = "match" if bool(matches) else "mismatch"
+            click.echo(f"    {check_type}: {count} {label}")
 
 
 @silver.command("builds")

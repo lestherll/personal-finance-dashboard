@@ -568,7 +568,9 @@ class TestReconciliationCommand:
                     "account_id",
                     "source_type",
                     "filename",
+                    "ingestion_id",
                     "check_name",
+                    "expected_opening_minor",
                     "expected_closing_minor",
                     "derived_closing_minor",
                     "matches",
@@ -613,3 +615,317 @@ class TestReconciliationCommand:
         assert "acc_amex" in result.output
         assert "✓ jan.pdf" in result.output
         assert "⚠ feb.pdf" in result.output
+
+
+class TestContinuityCommand:
+    def test_no_continuity_data_found(self, runner, monkeypatch):
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module,
+            "find_balance_continuity",
+            lambda datalake: pd.DataFrame(
+                columns=[
+                    "account_id",
+                    "source_type",
+                    "next_source_type",
+                    "filename",
+                    "next_filename",
+                    "expected_closing_minor",
+                    "expected_opening_minor",
+                    "matches",
+                    "gap_related",
+                ]
+            ),
+        )
+
+        result = runner.invoke(cli, ["accounts", "continuity"])
+        assert result.exit_code == 0
+        assert "No continuity data found" in result.output
+
+    def test_lists_continuity_per_account(self, runner, monkeypatch):
+        breaks = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "next_source_type": "amex",
+                    "filename": "jan.pdf",
+                    "next_filename": "feb.pdf",
+                    "expected_closing_minor": 86304,
+                    "expected_opening_minor": 86304,
+                    "matches": True,
+                    "gap_related": False,
+                },
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "next_source_type": "amex",
+                    "filename": "feb.pdf",
+                    "next_filename": "mar.pdf",
+                    "expected_closing_minor": 90000,
+                    "expected_opening_minor": 12000,
+                    "matches": False,
+                    "gap_related": False,
+                },
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "next_source_type": "amex",
+                    "filename": "mar.pdf",
+                    "next_filename": "jul.pdf",
+                    "expected_closing_minor": 12000,
+                    "expected_opening_minor": None,
+                    "matches": None,
+                    "gap_related": True,
+                },
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_balance_continuity", lambda datalake: breaks
+        )
+
+        result = runner.invoke(cli, ["accounts", "continuity"])
+        assert result.exit_code == 0
+        assert "acc_amex" in result.output
+        assert "✓ jan.pdf -> feb.pdf: continuous" in result.output
+        assert "⚠ feb.pdf -> mar.pdf: mismatch" in result.output
+        assert "? mar.pdf -> jul.pdf: known coverage gap" in result.output
+
+
+class TestSilverRebuildCommand:
+    def _fake_result(self, log_rows=None):
+        return {
+            "build_id": "build_1",
+            "transactions": pd.DataFrame([{"amount_minor": 100}]),
+            "account_ledger": pd.DataFrame([{"balance_minor": 100}]),
+            "holdings": pd.DataFrame(),
+            "reconciliation_log": pd.DataFrame(
+                log_rows or [],
+                columns=["check_type", "matches"],
+            ),
+        }
+
+    def test_strict_flag_threaded_to_run_bronze_to_silver(self, runner, monkeypatch):
+        captured = {}
+
+        def fake_run(strict_reconciliation=False):
+            captured["strict_reconciliation"] = strict_reconciliation
+            return self._fake_result()
+
+        monkeypatch.setattr(cli_module, "run_bronze_to_silver", fake_run)
+
+        result = runner.invoke(cli, ["silver", "rebuild", "--strict"])
+        assert result.exit_code == 0
+        assert captured["strict_reconciliation"] is True
+        assert "Published Silver build build_1" in result.output
+
+    def test_default_is_non_strict(self, runner, monkeypatch):
+        captured = {}
+
+        def fake_run(strict_reconciliation=False):
+            captured["strict_reconciliation"] = strict_reconciliation
+            return self._fake_result()
+
+        monkeypatch.setattr(cli_module, "run_bronze_to_silver", fake_run)
+
+        result = runner.invoke(cli, ["silver", "rebuild"])
+        assert result.exit_code == 0
+        assert captured["strict_reconciliation"] is False
+
+    def test_mismatch_error_exits_nonzero(self, runner, monkeypatch):
+        from transformers.reconciliation_log import ReconciliationMismatchError
+
+        mismatches = pd.DataFrame(
+            [
+                {
+                    "check_type": "bronze_self_check",
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "next_filename": None,
+                    "expected_closing_minor": 12000,
+                    "derived_closing_minor": 99999,
+                }
+            ]
+        )
+
+        def fake_run(strict_reconciliation=False):
+            raise ReconciliationMismatchError(mismatches)
+
+        monkeypatch.setattr(cli_module, "run_bronze_to_silver", fake_run)
+
+        result = runner.invoke(cli, ["silver", "rebuild", "--strict"])
+        assert result.exit_code == 1
+        assert "reconciliation mismatch" in result.output
+
+    def test_reconciliation_summary_printed(self, runner, monkeypatch):
+        def fake_run(strict_reconciliation=False):
+            return self._fake_result(
+                log_rows=[
+                    {"check_type": "bronze_self_check", "matches": True},
+                    {"check_type": "continuity", "matches": False},
+                    {"check_type": "silver_rollforward", "matches": None},
+                ]
+            )
+
+        monkeypatch.setattr(cli_module, "run_bronze_to_silver", fake_run)
+
+        result = runner.invoke(cli, ["silver", "rebuild"])
+        assert result.exit_code == 0
+        assert "bronze_self_check: 1 match" in result.output
+        assert "continuity: 1 mismatch" in result.output
+        assert "silver_rollforward: 1 inconclusive" in result.output
+
+
+class TestReconciliationFailOnMismatch:
+    def test_no_flag_exits_zero_on_mismatch(self, runner, monkeypatch):
+        statuses = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "check_name": "amex_closing_balance",
+                    "expected_closing_minor": 90000,
+                    "derived_closing_minor": 67804,
+                    "matches": False,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_reconciliation_status", lambda datalake: statuses
+        )
+
+        result = runner.invoke(cli, ["accounts", "reconciliation"])
+        assert result.exit_code == 0
+
+    def test_flag_exits_nonzero_on_mismatch(self, runner, monkeypatch):
+        statuses = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "check_name": "amex_closing_balance",
+                    "expected_closing_minor": 90000,
+                    "derived_closing_minor": 67804,
+                    "matches": False,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_reconciliation_status", lambda datalake: statuses
+        )
+
+        result = runner.invoke(
+            cli, ["accounts", "reconciliation", "--fail-on-mismatch"]
+        )
+        assert result.exit_code == 1
+
+    def test_flag_exits_zero_when_all_match(self, runner, monkeypatch):
+        statuses = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "filename": "jan.pdf",
+                    "check_name": "amex_closing_balance",
+                    "expected_closing_minor": 86304,
+                    "derived_closing_minor": 86304,
+                    "matches": True,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_reconciliation_status", lambda datalake: statuses
+        )
+
+        result = runner.invoke(
+            cli, ["accounts", "reconciliation", "--fail-on-mismatch"]
+        )
+        assert result.exit_code == 0
+
+
+class TestContinuityFailOnMismatch:
+    def test_flag_exits_nonzero_on_mismatch(self, runner, monkeypatch):
+        breaks = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "next_source_type": "amex",
+                    "filename": "feb.pdf",
+                    "next_filename": "mar.pdf",
+                    "expected_closing_minor": 90000,
+                    "expected_opening_minor": 12000,
+                    "matches": False,
+                    "gap_related": False,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_balance_continuity", lambda datalake: breaks
+        )
+
+        result = runner.invoke(cli, ["accounts", "continuity", "--fail-on-mismatch"])
+        assert result.exit_code == 1
+
+    def test_flag_exits_zero_on_gap_related_inconclusive(self, runner, monkeypatch):
+        breaks = pd.DataFrame(
+            [
+                {
+                    "account_id": "acc_amex",
+                    "source_type": "amex",
+                    "next_source_type": "amex",
+                    "filename": "mar.pdf",
+                    "next_filename": "jul.pdf",
+                    "expected_closing_minor": 12000,
+                    "expected_opening_minor": None,
+                    "matches": None,
+                    "gap_related": True,
+                }
+            ]
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: object())
+        monkeypatch.setattr(
+            cli_module, "find_balance_continuity", lambda datalake: breaks
+        )
+
+        result = runner.invoke(cli, ["accounts", "continuity", "--fail-on-mismatch"])
+        assert result.exit_code == 0
+
+
+class TestReconciliationLogCommand:
+    def test_no_log_found(self, runner, monkeypatch):
+        fake_datalake = type("D", (), {"read_silver": lambda self, entity: None})()
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+
+        result = runner.invoke(cli, ["accounts", "reconciliation-log"])
+        assert result.exit_code == 0
+        assert "No reconciliation log found" in result.output
+
+    def test_lists_summary_by_check_type(self, runner, monkeypatch):
+        log = pd.DataFrame(
+            [
+                {"check_type": "bronze_self_check", "matches": True},
+                {"check_type": "bronze_self_check", "matches": False},
+                {"check_type": "continuity", "matches": None},
+            ]
+        )
+        fake_datalake = type(
+            "D", (), {"read_silver": lambda self, entity: log}
+        )()
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+
+        result = runner.invoke(cli, ["accounts", "reconciliation-log"])
+        assert result.exit_code == 0
+        assert "bronze_self_check:" in result.output
+        assert "match: 1" in result.output
+        assert "mismatch: 1" in result.output
+        assert "continuity:" in result.output
+        assert "inconclusive: 1" in result.output

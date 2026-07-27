@@ -29,8 +29,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
+from adapters.reconciliation import build_reconciliation_result
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,14 @@ class NatwestStatementPdfAdapter(PdfAdapter):
     def _check_reconciliation(
         self, text: str, computed_final: Optional[int]
     ) -> None:
-        """Non-blocking sanity check against the statement's own summary figures."""
+        """Non-blocking sanity check against the statement's own summary figures.
+
+        Also captures the statement's "Previous Balance" anchor (previously
+        parsed by _PREVIOUS_BALANCE_RE but never referenced anywhere) purely
+        for cross-file continuity checking - `amount` here is already
+        derived from balance deltas during parsing, so unlike every other
+        adapter this opening figure plays no part in computing `matches`.
+        """
         if computed_final is None:
             return
 
@@ -242,14 +250,21 @@ class NatwestStatementPdfAdapter(PdfAdapter):
         except MoneyParseError:
             return
 
-        matches = computed_final == expected
-        self.last_reconciliation = ReconciliationResult(
+        previous_match = _PREVIOUS_BALANCE_RE.search(text)
+        opening = None
+        if previous_match:
+            try:
+                opening = parse_money_minor(previous_match.group(1))
+            except MoneyParseError:
+                opening = None
+
+        self.last_reconciliation = build_reconciliation_result(
             check_name="natwest_statement_new_balance",
             expected_closing_minor=expected,
             derived_closing_minor=computed_final,
-            matches=matches,
+            expected_opening_minor=opening,
         )
-        if not matches:
+        if not self.last_reconciliation.matches:
             logger.warning(
                 "Natwest statement: final parsed balance %d minor units "
                 "does not match statement's printed New Balance %d minor "

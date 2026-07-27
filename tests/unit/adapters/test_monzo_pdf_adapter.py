@@ -192,6 +192,12 @@ class TestMonzoReconciliation:
             adapter.last_reconciliation.check_name
             == "monzo_pdf_personal_account_balance"
         )
+        # Unlike every other reconciling PDF source, Monzo's Personal
+        # Account statement genuinely prints no opening/previous-balance
+        # anchor anywhere - only "Personal Account balance"/"Total balance",
+        # both closing-style. This must stay None permanently, not be
+        # mistaken for a not-yet-implemented gap.
+        assert adapter.last_reconciliation.expected_opening_minor is None
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         adapter.parse_transactions(TEXT_MISMATCHED_PERSONAL_ACCOUNT_BALANCE)

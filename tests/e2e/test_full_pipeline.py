@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from adapters.factory import AdapterFactory
+from models.build import current_build_id, list_builds
 from models.datalake import DataLake
 from models.ingestion import (
     STATUS_COMPLETE,
@@ -18,6 +19,7 @@ from models.ingestion import (
 )
 from transformers.account_config import register_account
 from transformers.balance import get_net_worth
+from transformers.reconciliation_log import ReconciliationMismatchError
 from transformers.silver_transformer import run_bronze_to_silver
 
 _KROO_ID = "4672409adb18"
@@ -51,6 +53,18 @@ def _kroo_pdf_bytes() -> bytes:
         "Closing balance\n"
         "\u00a31,805.00\n"
     ).encode("utf-8")
+
+
+def _kroo_pdf_bytes_mismatched() -> bytes:
+    """Same as _kroo_pdf_bytes() but with a printed Closing balance that
+    doesn't match the transactions' own running total (1,806.00 printed
+    instead of the true 1,805.00) - a genuine B1 mismatch for the
+    strict-gate tests. Only the anchor line (after "Closing balance\n") is
+    changed - the per-transaction running balance above it is untouched."""
+    return _kroo_pdf_bytes().replace(
+        "Closing balance\n£1,805.00\n".encode("utf-8"),
+        "Closing balance\n£1,806.00\n".encode("utf-8"),
+    )
 
 
 @pytest.fixture
@@ -153,6 +167,19 @@ class TestEndToEnd:
         assert len(result["transactions"]) == 2
         assert len(result["account_ledger"]) == 2
 
+        # Reconciliation log (item 5): the fixture's own "Total opening
+        # balance"/"Closing balance" anchors should produce a matching
+        # bronze_self_check row, end-to-end through the real pipeline -
+        # not just a hand-built DataFrame in a unit test.
+        log = result["reconciliation_log"]
+        self_check_rows = log[log["check_type"] == "bronze_self_check"]
+        assert len(self_check_rows) == 1
+        row = self_check_rows.iloc[0]
+        assert row["account_id"] == _ACC_ID
+        assert row["expected_opening_minor"] == 80000
+        assert row["expected_closing_minor"] == 180500
+        assert bool(row["matches"]) is True
+
         # Net worth
         net_worth = get_net_worth(datalake)
         assert net_worth == 180500  # pence
@@ -188,3 +215,45 @@ class TestEndToEnd:
         # Verify reconciliation is in pence (int).
         ledger = datalake.read_silver("account_ledger")
         assert ledger["balance_minor"].dtype.kind in ("i", "u")
+
+
+class TestStrictReconciliationGate:
+    """Item 1: run_bronze_to_silver(strict_reconciliation=True) refuses to
+    publish a new Silver build when the reconciliation_log contains any
+    genuine mismatch - real disk-backed proof, not a mocked unit test."""
+
+    def test_strict_raises_and_does_not_publish(self, isolated, tmp_path):
+        datalake = isolated
+        _ingest_bytes(datalake, _kroo_pdf_bytes_mismatched(), "kroo_bad.pdf", tmp_path)
+
+        builds_before = list_builds(silver_dir=datalake.SILVER_DIR)
+        current_before = current_build_id(silver_dir=datalake.SILVER_DIR)
+
+        with pytest.raises(ReconciliationMismatchError) as excinfo:
+            run_bronze_to_silver(datalake, strict_reconciliation=True)
+
+        assert "acc_kroo_test" in str(excinfo.value)
+        assert list_builds(silver_dir=datalake.SILVER_DIR) == builds_before
+        assert current_build_id(silver_dir=datalake.SILVER_DIR) == current_before
+
+    def test_non_strict_publishes_with_mismatch_recorded(self, isolated, tmp_path):
+        datalake = isolated
+        _ingest_bytes(datalake, _kroo_pdf_bytes_mismatched(), "kroo_bad.pdf", tmp_path)
+
+        result = run_bronze_to_silver(datalake)  # strict_reconciliation=False (default)
+
+        log = result["reconciliation_log"]
+        self_check = log[log["check_type"] == "bronze_self_check"]
+        assert len(self_check) == 1
+        assert bool(self_check.iloc[0]["matches"]) is False
+        assert current_build_id(silver_dir=datalake.SILVER_DIR) == result["build_id"]
+
+    def test_strict_publishes_normally_when_clean(self, isolated, tmp_path):
+        datalake = isolated
+        _ingest_bytes(datalake, _kroo_pdf_bytes(), "kroo_good.pdf", tmp_path)
+
+        result = run_bronze_to_silver(datalake, strict_reconciliation=True)
+
+        assert current_build_id(silver_dir=datalake.SILVER_DIR) == result["build_id"]
+        log = result["reconciliation_log"]
+        assert (log["matches"] != False).all()  # noqa: E712

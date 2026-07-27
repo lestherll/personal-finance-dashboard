@@ -190,6 +190,7 @@ class TestNatwestStatementReconciliation:
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.check_name == "natwest_statement_new_balance"
+        assert adapter.last_reconciliation.expected_opening_minor == 101000
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         mismatched_text = SAMPLE_TEXT.replace(

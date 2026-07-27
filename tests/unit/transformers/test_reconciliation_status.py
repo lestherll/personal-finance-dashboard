@@ -25,11 +25,22 @@ def _account_map_path(tmp_path, identifiers=None):
     return path
 
 
-def _bronze_row(account_identifier, filename, check_name, expected_minor, derived_minor, matches):
+def _bronze_row(
+    account_identifier,
+    filename,
+    check_name,
+    expected_minor,
+    derived_minor,
+    matches,
+    ingestion_id=None,
+    expected_opening_minor=None,
+):
     return {
         "account_identifier": account_identifier,
-        "filename": filename, "ingestion_id": filename,
+        "filename": filename,
+        "ingestion_id": ingestion_id or f"ingestion_{filename}",
         "reconciliation_check": check_name,
+        "reconciliation_expected_opening_minor": expected_opening_minor,
         "reconciliation_expected_closing_minor": expected_minor,
         "reconciliation_derived_closing_minor": derived_minor,
         "reconciliation_matches": matches,
@@ -70,6 +81,76 @@ class TestFindReconciliationStatus:
         assert row["source_type"] == "amex"
         assert row["filename"] == "jan.pdf"
         assert bool(row["matches"]) is True
+
+    def test_surfaces_ingestion_id_and_opening_anchor(self, tmp_path):
+        """ingestion_id and expected_opening_minor feed the continuity check
+        (transformers/continuity.py) - both must round-trip through here."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_amex": {
+                    "account_id": "acc_amex",
+                    "display_name": "Amex",
+                    "account_type": "credit",
+                }
+            },
+        )
+        bronze_df = pd.DataFrame(
+            [
+                _bronze_row(
+                    "hash_amex",
+                    "jan.pdf",
+                    "amex_closing_balance",
+                    86304,
+                    86304,
+                    True,
+                    ingestion_id="abc123",
+                    expected_opening_minor=76958,
+                )
+            ]
+        )
+        datalake = _FakeDatalakeForReconciliation({"amex": bronze_df})
+
+        result = find_reconciliation_status(datalake, path=path)
+
+        assert len(result) == 1
+        row = result.iloc[0]
+        assert row["ingestion_id"] == "abc123"
+        assert row["expected_opening_minor"] == 76958
+
+    def test_missing_opening_anchor_column_defaults_to_none(self, tmp_path):
+        """Monzo PDF never captures an opening anchor at all - a Bronze
+        parquet written before this column existed, or by an adapter that
+        never sets it, should surface as None, not raise."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_monzo": {
+                    "account_id": "acc_monzo",
+                    "display_name": "Monzo",
+                    "account_type": "current",
+                }
+            },
+        )
+        bronze_df = pd.DataFrame(
+            [
+                {
+                    "account_identifier": "hash_monzo",
+                    "filename": "q2.pdf",
+                    "ingestion_id": "xyz",
+                    "reconciliation_check": "monzo_pdf_personal_account_balance",
+                    "reconciliation_expected_closing_minor": 225537,
+                    "reconciliation_derived_closing_minor": 225537,
+                    "reconciliation_matches": True,
+                }
+            ]
+        )
+        datalake = _FakeDatalakeForReconciliation({"monzo-pdf": bronze_df})
+
+        result = find_reconciliation_status(datalake, path=path)
+
+        assert len(result) == 1
+        assert result.iloc[0]["expected_opening_minor"] is None
 
     def test_mismatch_is_reported(self, tmp_path):
         path = _account_map_path(

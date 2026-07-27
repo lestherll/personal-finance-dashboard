@@ -9,8 +9,9 @@ import fitz
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter, resolve_year_in_period
+from adapters.reconciliation import build_reconciliation_result
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +149,13 @@ class AmexPdfAdapter(PdfAdapter):
             transaction_records[-1].raw_data["balance_minor"] = running
 
         derived_closing = running
-        matches = derived_closing == statement_closing_balance
-        self.last_reconciliation = ReconciliationResult(
+        self.last_reconciliation = build_reconciliation_result(
             check_name="amex_closing_balance",
             expected_closing_minor=statement_closing_balance,
             derived_closing_minor=derived_closing,
-            matches=matches,
+            expected_opening_minor=previous_balance,
         )
+        matches = self.last_reconciliation is not None and self.last_reconciliation.matches
         if not matches:
             logger.warning(
                 "Amex %s: derived closing balance %d minor units does not "

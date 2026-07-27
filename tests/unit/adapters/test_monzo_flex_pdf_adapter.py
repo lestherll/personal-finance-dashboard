@@ -212,6 +212,7 @@ class TestMonzoFlexReconciliation:
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.check_name == "monzo_flex_balance_at_end"
+        assert adapter.last_reconciliation.expected_opening_minor == 121707
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         adapter.parse_transactions(TEXT_MISMATCHED_BALANCE_AT_END)

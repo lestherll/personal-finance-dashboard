@@ -9,8 +9,9 @@ from dateutil.relativedelta import relativedelta
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+from adapters.reconciliation import build_reconciliation_result
 
 logger = logging.getLogger(__name__)
 
@@ -162,10 +163,11 @@ class FirstDirectPdfAdapter(PdfAdapter):
             return
 
         try:
-            running = parse_money_minor(previous_match.group(1))
+            opening = parse_money_minor(previous_match.group(1))
         except MoneyParseError:
             return
 
+        running = opening
         for txn in transactions:
             # `amount` follows a cash-received convention (spend negative,
             # payments/credits positive), but the statement balance is a
@@ -182,14 +184,13 @@ class FirstDirectPdfAdapter(PdfAdapter):
             return
 
         derived_closing = running
-        matches = derived_closing == expected
-        self.last_reconciliation = ReconciliationResult(
+        self.last_reconciliation = build_reconciliation_result(
             check_name="first_direct_new_balance",
             expected_closing_minor=expected,
             derived_closing_minor=derived_closing,
-            matches=matches,
+            expected_opening_minor=opening,
         )
-        if not matches:
+        if not self.last_reconciliation.matches:
             logger.warning(
                 "First Direct statement: derived closing balance %d "
                 "minor units does not match statement's printed New "

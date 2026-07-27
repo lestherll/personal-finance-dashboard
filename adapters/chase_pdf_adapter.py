@@ -13,8 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import ReconciliationResult, StatementPeriod
+from adapters.base import StatementPeriod
 from adapters.pdf_adapter import PdfAdapter
+from adapters.reconciliation import build_reconciliation_result, roll_forward_balance
 
 logger = logging.getLogger(__name__)
 
@@ -168,30 +169,28 @@ class ChasePdfAdapter(PdfAdapter):
         if not opening_match or not closing_match:
             return
         try:
-            running = parse_money_minor(opening_match.group(1))
+            opening = parse_money_minor(opening_match.group(1))
             expected_closing = parse_money_minor(closing_match.group(1))
         except MoneyParseError:
             return
 
-        for txn in transactions:
-            running += txn["amount_minor"]
-
-        derived_closing = running
-        matches = derived_closing == expected_closing
-        self.last_reconciliation = ReconciliationResult(
+        derived_closing = roll_forward_balance(
+            opening, (txn["amount_minor"] for txn in transactions), sign=1
+        )
+        self.last_reconciliation = build_reconciliation_result(
             check_name="chase_closing_balance",
             expected_closing_minor=expected_closing,
             derived_closing_minor=derived_closing,
-            matches=matches,
+            expected_opening_minor=opening,
         )
-        if not matches:
+        if not self.last_reconciliation.matches:
             logger.warning(
                 "Chase statement: derived closing balance %d minor units "
                 "does not match statement's printed Closing balance %d "
                 "minor units - transaction amounts don't fully reconcile "
                 "with the Opening/Closing balance block. Balance fields "
                 "may be inaccurate.",
-                running,
+                derived_closing,
                 expected_closing,
             )
 

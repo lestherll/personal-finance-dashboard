@@ -28,8 +28,15 @@ from transformers.account_config import (
     find_unmapped_accounts,
     get_account_id,
 )
+from transformers.continuity import find_balance_continuity
 from transformers.matching import match_transactions
-from models.build import publish_silver_build
+from transformers.reconciliation_log import (
+    ReconciliationMismatchError,
+    build_reconciliation_log,
+)
+from transformers.reconciliation_status import find_reconciliation_status
+from transformers.silver_reconciliation import find_silver_reconciliation_breaks
+from models.build import generate_build_id, publish_silver_build
 
 logger = logging.getLogger(__name__)
 
@@ -692,6 +699,7 @@ def _filter_to_eligible(
 
 def run_bronze_to_silver(
     datalake: Optional[DataLake] = None,
+    strict_reconciliation: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """Run the full Bronze -> Silver transformation and publish a
     versioned, atomic Silver build.
@@ -703,6 +711,30 @@ def run_bronze_to_silver(
     mapped yet, raises UnmappedAccountsError listing every unmapped account
     found (not just the first one), before writing anything. See
     transformers/account_config.py::find_unmapped_accounts / register_account.
+
+    `strict_reconciliation` (default False, non-blocking - see item 1 of the
+    reconciliation hardening work): by default, a reconciliation mismatch of
+    any check_type (bronze_self_check/continuity/silver_rollforward) is only
+    logged/recorded in the published reconciliation_log - the build still
+    publishes (per-file bronze_self_check mismatches are additionally
+    quarantined out of the transaction set entirely by
+    _eligible_ingestion_ids, independent of this flag). This mirrors the
+    project's explicit historical decision (RECONCILIATION_MISMATCH_CONTEXT.md)
+    against hard-failing ingestion on any mismatch, since the real historical
+    Amex bug would have made the tool unable to ingest Amex data at all for
+    the period it existed. Passing `strict_reconciliation=True` opts into a
+    stricter mode instead: if the assembled reconciliation_log contains any
+    genuine mismatch (matches == False, across any check_type), raises
+    ReconciliationMismatchError - collecting every offending row at once,
+    same shape as UnmappedAccountsError - *before* publish_silver_build() is
+    called, so nothing new is published and data/silver/current stays on the
+    last good build.
+
+    Because every rebuild recomputes bronze_self_check rows from the
+    *entire* current Bronze set (not just newly-ingested files),
+    `strict_reconciliation=True` gates on every historical mismatch ever
+    ingested, not only new ones - a single old, unresolved mismatch blocks
+    the very first strict run until it's fixed or excluded.
     """
     datalake = datalake or get_datalake()
 
@@ -731,6 +763,38 @@ def run_bronze_to_silver(
     ledger_df = transformer.normalize_account_ledger(bronze_frames)
     plan_it_df = transformer.normalize_plan_it_instalments(bronze_frames)
 
+    # Re-verify Bronze's own per-file B1 self-check still holds after
+    # match_transactions() has run - catches a dedup/matching bug that
+    # silently drops or duplicates a genuine transaction, which Bronze's
+    # own pre-matching check can never see (item 3 of the reconciliation
+    # hardening work; see transformers/silver_reconciliation.py).
+    bronze_anchors = find_reconciliation_status(datalake)
+    silver_breaks_df = find_silver_reconciliation_breaks(
+        bronze_anchors, sources_df, transactions_df
+    )
+    silver_mismatches = silver_breaks_df[silver_breaks_df["matches"] == False]  # noqa: E712
+    if not silver_mismatches.empty:
+        logger.warning(
+            "%d ingestion(s) reconcile against their own Bronze anchor but "
+            "no longer roll forward correctly after Silver transaction "
+            "matching - the matching/dedup step may have dropped or "
+            "duplicated a genuine transaction:",
+            len(silver_mismatches),
+        )
+        for row in silver_mismatches.itertuples():
+            logger.warning(
+                "  %s (%s): expected %s, derived %s",
+                row.ingestion_id[:12],
+                row.source_type,
+                row.expected_closing_minor,
+                row.silver_derived_closing_minor,
+            )
+
+    # Cross-file continuity (item 2): does one file's closing anchor equal
+    # the next file's opening anchor, per account? Complements the two
+    # per-file checks above, which can't see across file boundaries.
+    continuity_df = find_balance_continuity(datalake)
+
     # Collect build metadata from Bronze frames.
     ingestion_ids: List[str] = []
     parser_versions: Dict[str, str] = {}
@@ -744,6 +808,21 @@ def run_bronze_to_silver(
 
     input_ingestion_ids = sorted(set(ingestion_ids))
 
+    # A stable build_id, generated once, stamps both the reconciliation_log
+    # rows below and the published build itself - so a build's log is
+    # always identifiable by the same id the build directory/manifest uses.
+    build_id = generate_build_id()
+    reconciliation_log_df = build_reconciliation_log(
+        bronze_anchors, continuity_df, silver_breaks_df, build_id
+    )
+
+    if strict_reconciliation:
+        genuine_mismatches = reconciliation_log_df[
+            reconciliation_log_df["matches"] == False  # noqa: E712
+        ]
+        if not genuine_mismatches.empty:
+            raise ReconciliationMismatchError(genuine_mismatches)
+
     # Silver is a materialization of the current immutable Bronze set. Never
     # merge with a prior build: that preserves stale rows after parser fixes.
     tables = {
@@ -753,12 +832,14 @@ def run_bronze_to_silver(
         "holdings": holdings_df,
         "account_ledger": ledger_df,
         "plan_it_instalments": plan_it_df,
+        "reconciliation_log": reconciliation_log_df,
     }
 
     build_id = publish_silver_build(
         tables=tables,
         input_ingestion_ids=input_ingestion_ids,
         excluded_ingestions=excluded_ingestions,
+        build_id=build_id,
         parser_versions=parser_versions,
         silver_dir=_SILVER_DIR,
     )
@@ -784,4 +865,5 @@ def run_bronze_to_silver(
         "holdings": holdings_df,
         "account_ledger": ledger_df,
         "plan_it_instalments": plan_it_df,
+        "reconciliation_log": reconciliation_log_df,
     }

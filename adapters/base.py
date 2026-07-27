@@ -63,6 +63,13 @@ class ReconciliationResult:
     # for adapters that emit multiple results per file via
     # self.last_reconciliations (see DataSourceAdapter.__init__ below).
     account_identifier: Optional[str] = None
+    # The statement's own printed opening/previous-balance anchor, when one
+    # exists - independent of whether this check's mechanism actually rolls
+    # forward from it (Natwest Statement/Kroo/Monzo Flex capture it purely
+    # for cross-file continuity checking, without using it in `matches`).
+    # None when the statement genuinely prints no opening anchor at all
+    # (Monzo PDF), not when one exists but wasn't looked for.
+    expected_opening_minor: Optional[int] = None
 
 
 @dataclass

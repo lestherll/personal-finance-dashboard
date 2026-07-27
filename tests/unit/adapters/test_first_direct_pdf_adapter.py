@@ -176,6 +176,7 @@ class TestFirstDirectReconciliation:
         assert adapter.last_reconciliation is not None
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.check_name == "first_direct_new_balance"
+        assert adapter.last_reconciliation.expected_opening_minor == 100000
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         mismatching_text = SAMPLE_TEXT.replace(

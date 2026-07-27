@@ -56,6 +56,17 @@ def _git_sha() -> Optional[str]:
     return None
 
 
+def generate_build_id(git_sha: Optional[str] = None) -> str:
+    """Return a new build_id: a UTC timestamp, suffixed with a short git SHA
+    when available. Exposed separately (not just inlined in
+    publish_silver_build) so callers that need the same build_id to stamp
+    other artifacts - e.g. transformers/reconciliation_log.py's per-build
+    reconciliation history - can generate it once and pass it through."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    git = git_sha if git_sha is not None else _git_sha()
+    return f"{timestamp}-{git}" if git else timestamp
+
+
 @dataclass
 class BuildManifest:
     build_id: str
@@ -83,9 +94,7 @@ def publish_silver_build(
     silver_dir = silver_dir or _DEFAULT_SILVER_DIR
     now = datetime.now(timezone.utc)
     if build_id is None:
-        timestamp = now.strftime("%Y%m%d-%H%M%S")
-        git = _git_sha()
-        build_id = f"{timestamp}-{git}" if git else timestamp
+        build_id = generate_build_id()
 
     build_dir = _builds_dir(silver_dir) / build_id
     build_dir.parent.mkdir(parents=True, exist_ok=True)

@@ -47,7 +47,10 @@ from models.datalake import DataLake
 from models.ingestion import IngestionManifest
 from transformers.account_config import register_account
 from transformers.balance import get_current_balances
+from transformers.continuity import find_balance_continuity
 from transformers.coverage import find_coverage_gaps, find_statement_periods
+from transformers.reconciliation_status import find_reconciliation_status
+from transformers.silver_reconciliation import find_silver_reconciliation_breaks
 from transformers.silver_transformer import LEDGER_SOURCE_TYPES, run_bronze_to_silver
 
 ACCOUNT_ID = "acc_natwest_test"
@@ -365,6 +368,72 @@ class TestCoverage:
         periods = find_statement_periods(datalake)
         account_periods = periods[periods["account_id"] == ACCOUNT_ID]
         assert account_periods["period_to"].max() == pd.Timestamp("2026-07-26")
+
+
+class TestContinuity:
+    """Generalizes NATWEST_TRANSACTIONS_BALANCE_DESIGN.md's own claim (see
+    module docstring: Statement 1's New Balance 1,000.00 == Statement 2's
+    own Previous Balance 1,000.00) into an automated
+    transformers/continuity.py::find_balance_continuity() assertion,
+    against the real disk-backed Bronze this fixture produces - not just
+    the derived_closing_minor arithmetic TestBronzeIngestion already checks."""
+
+    def test_statement_1_close_matches_statement_2_open(self, ingested, datalake):
+        continuity = find_balance_continuity(datalake)
+        account_rows = continuity[continuity["account_id"] == ACCOUNT_ID]
+        # Only natwest-statement carries a reconciliation anchor for this
+        # account (natwest-transactions has none - Gotcha #6) - exactly one
+        # consecutive pair among the anchored files.
+        assert len(account_rows) == 1
+        row = account_rows.iloc[0]
+        assert bool(row["matches"]) is True
+        assert bool(row["gap_related"]) is False
+        assert row["expected_closing_minor"] == 100000
+        assert row["expected_opening_minor"] == 100000
+
+
+class TestSilverReconciliation:
+    """Item 3: re-verifies Bronze's own B1 self-check still holds against
+    the real, disk-backed Silver transactions this fixture produces after
+    match_transactions() runs - not a hand-built in-memory DataFrame."""
+
+    def test_real_silver_transactions_reconcile_with_no_matching_bug(
+        self, ingested, datalake
+    ):
+        bronze_anchors = find_reconciliation_status(datalake)
+        breaks = find_silver_reconciliation_breaks(
+            bronze_anchors, ingested["transaction_sources"], ingested["transactions"]
+        )
+        account_breaks = breaks[breaks["account_id"] == ACCOUNT_ID]
+        assert len(account_breaks) == 2  # both natwest-statement files
+        assert account_breaks["matches"].all()
+
+    def test_dropped_genuine_transaction_is_caught_as_a_break(
+        self, ingested, datalake
+    ):
+        """Simulates match_transactions() incorrectly absorbing a genuine,
+        non-duplicate transaction by removing one real provenance row for
+        Statement 1's ingestion - the re-derived total must no longer
+        reconcile, proving this catches exactly the matching/dedup bug
+        class it exists for."""
+        bronze_anchors = find_reconciliation_status(datalake)
+        sources = ingested["transaction_sources"]
+
+        stmt1_ingestion_id = bronze_anchors[
+            (bronze_anchors["account_id"] == ACCOUNT_ID)
+            & (bronze_anchors["source_type"] == "natwest-statement")
+            & (bronze_anchors["expected_opening_minor"] == 80000)
+        ]["ingestion_id"].iloc[0]
+
+        stmt1_rows = sources[sources["ingestion_id"] == stmt1_ingestion_id]
+        assert len(stmt1_rows) >= 1
+        corrupted_sources = sources.drop(index=stmt1_rows.index[:1])
+
+        breaks = find_silver_reconciliation_breaks(
+            bronze_anchors, corrupted_sources, ingested["transactions"]
+        )
+        stmt1_break = breaks[breaks["ingestion_id"] == stmt1_ingestion_id].iloc[0]
+        assert bool(stmt1_break["matches"]) is False
 
 
 class TestCrossFormatDedup:

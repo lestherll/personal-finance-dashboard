@@ -419,6 +419,7 @@ class TestAmexReconciliation:
         assert adapter.last_reconciliation.matches is True
         assert adapter.last_reconciliation.expected_closing_minor == 10385
         assert adapter.last_reconciliation.derived_closing_minor == 10385
+        assert adapter.last_reconciliation.expected_opening_minor == 10000
 
     def test_sets_last_reconciliation_on_mismatch(self, adapter):
         content = _build_pdf_bytes(
