@@ -56,6 +56,12 @@ class ReconciliationResult:
     expected_closing: Optional[Decimal]
     derived_closing: Optional[Decimal]
     matches: Optional[bool]  # None = anchor not found in this file, inconclusive
+    # Hashed account_identifier this result applies to (same value stored in
+    # Bronze's account_identifier column). None means "applies to the whole
+    # file" - the implicit meaning for every single-result adapter. Only set
+    # for adapters that emit multiple results per file via
+    # self.last_reconciliations (see DataSourceAdapter.__init__ below).
+    account_identifier: Optional[str] = None
 
 
 @dataclass
@@ -81,6 +87,13 @@ class DataSourceAdapter(ABC):
         # own to check/extract.
         self.last_reconciliation: Optional[ReconciliationResult] = None
         self.last_statement_period: Optional[StatementPeriod] = None
+        # Additive multi-result channel, for a source where one file can
+        # cover multiple distinct accounts (e.g. Vanguard's ISA + Personal
+        # Pension wrappers) and therefore needs more than one
+        # ReconciliationResult per file. Adapters that only ever need one
+        # result keep using last_reconciliation and never touch this list.
+        # Same reset-to-empty-at-top discipline applies (Gotcha #14).
+        self.last_reconciliations: List[ReconciliationResult] = []
 
     @abstractmethod
     def validate(self, file_content: str) -> tuple[bool, float]:

@@ -159,7 +159,7 @@ class _FakeDatalake:
         self.write_calls = []
 
     def write_bronze(
-        self, ingestion, df, reconciliation=None, statement_period=None
+        self, ingestion, df, reconciliation=None, statement_period=None, reconciliations=None
     ):
         self.write_calls.append(
             {
@@ -167,6 +167,7 @@ class _FakeDatalake:
                 "filename": ingestion.original_filename,
                 "reconciliation": reconciliation,
                 "statement_period": statement_period,
+                "reconciliations": reconciliations or [],
             }
         )
         return f"/fake/bronze/{ingestion.source_type}/{ingestion.ingestion_id}.parquet"
@@ -244,6 +245,94 @@ class TestIngestCommand:
         assert "balance mismatch" in result.output
         assert "£678.04" in result.output
         assert "£863.04" in result.output
+
+    def test_reports_multiple_reconciliations_all_match(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A source like vanguard-pdf can produce more than one
+        reconciliation result per file (one per wrapper) via the
+        `reconciliations` list rather than the singular `reconciliation`."""
+        pdf_path = tmp_path / "statement.pdf"
+        pdf_path.write_bytes(b"%PDF-fake")
+
+        outcome = IngestResult(
+            records=[_make_record(source_type="vanguard-pdf")],
+            reconciliation=None,
+            statement_period=None,
+            reconciliations=[
+                ReconciliationResult(
+                    check_name="vanguard_account_summary_isa",
+                    expected_closing=Decimal("500.15"),
+                    derived_closing=Decimal("500.15"),
+                    matches=True,
+                    account_identifier="hash_isa",
+                ),
+                ReconciliationResult(
+                    check_name="vanguard_account_summary_pension",
+                    expected_closing=Decimal("501.00"),
+                    derived_closing=Decimal("501.00"),
+                    matches=True,
+                    account_identifier="hash_pension",
+                ),
+            ],
+        )
+        fake_datalake = _FakeDatalake()
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"statement.pdf": outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: fake_datalake)
+
+        result = runner.invoke(cli, ["ingest", str(pdf_path)])
+        assert result.exit_code == 0
+        assert "vanguard_account_summary_isa reconciles (£500.15)" in result.output
+        assert "vanguard_account_summary_pension reconciles (£501.00)" in result.output
+        assert (
+            fake_datalake.write_calls[0]["reconciliations"] == outcome.reconciliations
+        )
+
+    def test_one_of_several_reconciliations_mismatching_fails_exit_code(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """A wrong wrapper shouldn't be masked by a correct one - ANY
+        mismatch across the list fails the batch, same spirit as the
+        singular `reconciliation` gate."""
+        pdf_path = tmp_path / "statement.pdf"
+        pdf_path.write_bytes(b"%PDF-fake")
+
+        outcome = IngestResult(
+            records=[_make_record(source_type="vanguard-pdf")],
+            reconciliation=None,
+            statement_period=None,
+            reconciliations=[
+                ReconciliationResult(
+                    check_name="vanguard_account_summary_isa",
+                    expected_closing=Decimal("999.99"),
+                    derived_closing=Decimal("500.15"),
+                    matches=False,
+                    account_identifier="hash_isa",
+                ),
+                ReconciliationResult(
+                    check_name="vanguard_account_summary_pension",
+                    expected_closing=Decimal("501.00"),
+                    derived_closing=Decimal("501.00"),
+                    matches=True,
+                    account_identifier="hash_pension",
+                ),
+            ],
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "AdapterFactory",
+            lambda: _FakeFactory({"statement.pdf": outcome}),
+        )
+        monkeypatch.setattr(cli_module, "get_datalake", lambda: _FakeDatalake())
+
+        result = runner.invoke(cli, ["ingest", str(pdf_path)])
+        assert result.exit_code == 1
+        assert "vanguard_account_summary_isa mismatch" in result.output
+        assert "vanguard_account_summary_pension reconciles" in result.output
 
     def test_matches_none_does_not_fail_exit_code(self, runner, tmp_path, monkeypatch):
         """matches=None means inconclusive (no anchor found) - not a known

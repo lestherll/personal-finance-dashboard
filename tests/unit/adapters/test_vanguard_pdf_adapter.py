@@ -16,9 +16,17 @@ Client name: Test Person
 Account number: VG9999999
 Your Vanguard account summary
 Product
+Value on 01 April 2026
+Value on 01 July 2026
 ISA
+£900.00
+£500.15
 Test Pension
+£0.00
+£501.00
 Account total
+£900.00
+£1,001.15
 
 Test Person
 Account number: VG9999999
@@ -195,6 +203,81 @@ class TestVanguardStatementPeriod:
 
         adapter.parse_transactions("Vanguard\nNo activity here")
         assert adapter.last_statement_period is None
+
+
+class TestVanguardReconciliation:
+    """'Your Vanguard account summary' (page 1) prints each wrapper's
+    closing value - confirmed an exact anchor against real statement data:
+    it equals that wrapper's own holdings total (fund total_value + cash
+    total_value). Unlike every other reconciling adapter, Vanguard can
+    produce more than one result per file (one per wrapper), via the
+    additive last_reconciliations list rather than last_reconciliation."""
+
+    def test_sets_reconciliations_on_match(self, adapter):
+        records = adapter.parse_transactions(SAMPLE_TEXT)
+        assert len(adapter.last_reconciliations) == 2
+        assert all(r.matches is True for r in adapter.last_reconciliations)
+        check_names = {r.check_name for r in adapter.last_reconciliations}
+        assert check_names == {
+            "vanguard_account_summary_isa",
+            "vanguard_account_summary_test_pension",
+        }
+        # Each result's account_identifier is the hashed per-wrapper
+        # identifier, matching what's stored on that wrapper's own records.
+        isa_identifiers = {
+            r["_account_identifier_raw"]
+            for r in records
+            if r["_account_identifier_raw"] == "VG9999999_ISA"
+        }
+        assert isa_identifiers  # sanity: fixture still produces ISA records
+
+    def test_sets_reconciliation_on_mismatch(self, adapter):
+        mismatched_text = SAMPLE_TEXT.replace("£500.15", "£999.99", 1)
+        adapter.parse_transactions(mismatched_text)
+        by_name = {r.check_name: r for r in adapter.last_reconciliations}
+        assert by_name["vanguard_account_summary_isa"].matches is False
+        assert by_name["vanguard_account_summary_test_pension"].matches is True
+
+    def test_no_account_summary_leaves_reconciliations_empty(self, adapter):
+        no_summary_text = SAMPLE_TEXT.replace(
+            "Your Vanguard account summary\n"
+            "Product\n"
+            "Value on 01 April 2026\n"
+            "Value on 01 July 2026\n"
+            "ISA\n"
+            "£900.00\n"
+            "£500.15\n"
+            "Test Pension\n"
+            "£0.00\n"
+            "£501.00\n"
+            "Account total\n"
+            "£900.00\n"
+            "£1,001.15\n\n",
+            "",
+        )
+        adapter.parse_transactions(no_summary_text)
+        assert adapter.last_reconciliations == []
+
+    def test_reconciliation_resets_between_parses(self, adapter):
+        """Adapter instances are reused across files by AdapterFactory - a
+        file with an account summary must not leak its results into a
+        later file with no summary table of its own."""
+        adapter.parse_transactions(SAMPLE_TEXT)
+        assert adapter.last_reconciliations != []
+
+        adapter.parse_transactions("Vanguard\nNo activity here")
+        assert adapter.last_reconciliations == []
+
+    def test_missing_holdings_section_skips_that_wrapper(self, adapter):
+        """A wrapper listed in the account summary but with no (or
+        malformed) holdings section of its own produces no result for that
+        wrapper - "no signal", not a false mismatch."""
+        missing_pension_holdings_text = SAMPLE_TEXT[
+            : SAMPLE_TEXT.index("Your Test Pension investments")
+        ]
+        adapter.parse_transactions(missing_pension_holdings_text)
+        check_names = {r.check_name for r in adapter.last_reconciliations}
+        assert check_names == {"vanguard_account_summary_isa"}
 
 
 class TestVanguardSourceKey:

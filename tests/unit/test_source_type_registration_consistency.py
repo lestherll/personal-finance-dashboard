@@ -18,6 +18,7 @@ instead of quietly producing a wrong CLI/query result.
 
 import importlib
 import inspect
+import re
 
 import pytest
 from dateutil import parser as date_parser
@@ -33,8 +34,22 @@ from transformers.silver_transformer import (
     TRANSACTION_SOURCE_TYPES,
 )
 
-_RECONCILIATION_MARKER = "self.last_reconciliation = ReconciliationResult("
+_RECONCILIATION_MARKERS = (
+    "self.last_reconciliation = ReconciliationResult(",
+    "self.last_reconciliations.append(ReconciliationResult(",
+)
 _STATEMENT_PERIOD_MARKER = "self.last_statement_period = StatementPeriod("
+
+_WHITESPACE_RE = re.compile(r"\s+")
+_PAREN_SPACE_RE = re.compile(r"\(\s+")
+
+
+def _flatten(source: str) -> str:
+    """Collapse all whitespace to nothing around/after an opening paren, so
+    a marker survives being reformatted across multiple lines (e.g. a
+    wrapped .append(...) call) without needing an exact single-line literal
+    match."""
+    return _PAREN_SPACE_RE.sub("(", _WHITESPACE_RE.sub(" ", source))
 
 
 def _pdf_adapters():
@@ -47,17 +62,20 @@ def _adapter_ids(adapter):
 
 class TestReconciliationRegistration:
     """An adapter "implements reconciliation" iff its class source ever sets
-    self.last_reconciliation = ReconciliationResult(...) somewhere (any
-    method - Amex's lives in an overridden parse(), not parse_transactions()).
-    That must match _RECONCILIATION_SOURCE_TYPES exactly, both directions:
-    implements-but-unregistered silently hides real data (the monzo-flex
-    bug); registered-but-not-implemented would silently query a source that
-    can never produce a result."""
+    self.last_reconciliation = ReconciliationResult(...) (single-result
+    adapters) or self.last_reconciliations.append(ReconciliationResult(...))
+    (multi-result adapters, e.g. Vanguard's per-wrapper checks) somewhere
+    (any method - Amex's lives in an overridden parse(), not
+    parse_transactions()). That must match _RECONCILIATION_SOURCE_TYPES
+    exactly, both directions: implements-but-unregistered silently hides
+    real data (the monzo-flex bug); registered-but-not-implemented would
+    silently query a source that can never produce a result."""
 
     @pytest.mark.parametrize("adapter", _pdf_adapters(), ids=_adapter_ids)
     def test_registration_matches_implementation(self, adapter):
         source_type = adapter.detect_source_type()
-        implements = _RECONCILIATION_MARKER in inspect.getsource(type(adapter))
+        source = _flatten(inspect.getsource(type(adapter)))
+        implements = any(marker in source for marker in _RECONCILIATION_MARKERS)
         registered = source_type in _RECONCILIATION_SOURCE_TYPES
         assert implements == registered, (
             f"{source_type}: implements reconciliation={implements} but "

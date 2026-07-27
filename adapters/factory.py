@@ -1,7 +1,7 @@
 """Adapter factory for auto-detecting and routing to the right adapter."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Set, Union
 
 from adapters.base import (
@@ -67,6 +67,10 @@ class IngestResult:
     records: List[RawRecord]
     reconciliation: Optional[ReconciliationResult]
     statement_period: Optional[StatementPeriod]
+    # Additive multi-result channel - see DataSourceAdapter.last_reconciliations.
+    # Empty for every adapter except ones that need more than one
+    # reconciliation result per file (e.g. Vanguard's per-wrapper checks).
+    reconciliations: List[ReconciliationResult] = field(default_factory=list)
     source_type: str = ""
     adapter: str = ""
     parser_version: str = "1"
@@ -217,6 +221,7 @@ class AdapterFactory:
             records=records,
             reconciliation=getattr(adapter, "last_reconciliation", None),
             statement_period=getattr(adapter, "last_statement_period", None),
+            reconciliations=getattr(adapter, "last_reconciliations", None) or [],
             source_type=adapter.detect_source_type(),
             adapter=adapter.__class__.__name__,
             parser_version=adapter.PARSER_VERSION,

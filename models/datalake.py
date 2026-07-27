@@ -3,7 +3,7 @@
 import logging
 import os
 import tempfile
-from typing import Optional
+from typing import List, Optional
 
 import duckdb
 import pandas as pd
@@ -30,6 +30,7 @@ class DataLake:
         df: pd.DataFrame,
         reconciliation: Optional[ReconciliationResult] = None,
         statement_period: Optional[StatementPeriod] = None,
+        reconciliations: Optional[List[ReconciliationResult]] = None,
     ) -> str:
         """
         Write raw records to Bronze layer (immutable).
@@ -41,12 +42,25 @@ class DataLake:
                 adapter performed one (see adapters.base.ReconciliationResult)
             statement_period: whole-file statement coverage period, if the
                 adapter extracted one (see adapters.base.StatementPeriod)
+            reconciliations: per-account balance self-check results, for a
+                source where one file covers multiple accounts (e.g.
+                Vanguard's ISA + Personal Pension wrappers) - see
+                adapters.base.DataSourceAdapter.last_reconciliations.
+                Mutually exclusive with `reconciliation`: an adapter sets
+                exactly one of the two channels.
 
         Returns:
             Path to written Parquet file
         """
         if not ingestion.source_type:
             raise ValueError("Bronze publication requires a detected source_type")
+
+        if reconciliation is not None and reconciliations:
+            raise ValueError(
+                "write_bronze got both `reconciliation` and `reconciliations` - "
+                "an adapter should set exactly one of last_reconciliation/"
+                "last_reconciliations, never both"
+            )
 
         filepath = BRONZE_DIR / ingestion.source_type / f"{ingestion.ingestion_id}.parquet"
         filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +111,34 @@ class DataLake:
                 else None
             )
             df["reconciliation_matches"] = reconciliation.matches
+
+        if reconciliations:
+            # Per-row (not file-wide scalar) assignment: each result applies
+            # only to the rows whose account_identifier it names, so two
+            # accounts covered by one file (e.g. Vanguard's two wrappers)
+            # can carry genuinely different reconciliation verdicts.
+            df["reconciliation_check"] = None
+            df["reconciliation_expected_closing"] = None
+            df["reconciliation_derived_closing"] = None
+            df["reconciliation_matches"] = None
+            for rec in reconciliations:
+                mask = (
+                    df["account_identifier"].isna()
+                    if rec.account_identifier is None
+                    else df["account_identifier"] == rec.account_identifier
+                )
+                df.loc[mask, "reconciliation_check"] = rec.check_name
+                df.loc[mask, "reconciliation_expected_closing"] = (
+                    float(rec.expected_closing)
+                    if rec.expected_closing is not None
+                    else None
+                )
+                df.loc[mask, "reconciliation_derived_closing"] = (
+                    float(rec.derived_closing)
+                    if rec.derived_closing is not None
+                    else None
+                )
+                df.loc[mask, "reconciliation_matches"] = rec.matches
 
         if statement_period is not None:
             df["statement_period_from"] = statement_period.from_date

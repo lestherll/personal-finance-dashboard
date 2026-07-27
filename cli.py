@@ -12,7 +12,7 @@ Usage:
 import hashlib
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import click
 import pandas as pd
@@ -113,6 +113,28 @@ def _echo_reconciliation(result: Optional[ReconciliationResult]) -> None:
         )
 
 
+def _echo_reconciliations(results: List[ReconciliationResult]) -> None:
+    """Echo per-account reconciliation results (e.g. Vanguard's per-wrapper
+    checks) - a separate function from _echo_reconciliation since a file can
+    carry more than one result here, each needing its check_name to stay
+    distinguishable."""
+    for result in results:
+        if result.matches is None:
+            continue
+        if result.matches:
+            click.echo(
+                f"  ✓ {result.check_name} reconciles "
+                f"(£{result.expected_closing:.2f})"
+            )
+        else:
+            click.echo(
+                f"  ⚠ {result.check_name} mismatch: derived "
+                f"£{result.derived_closing:.2f} vs statement's printed "
+                f"£{result.expected_closing:.2f} - balance figures on this "
+                "statement may be inaccurate, check manually"
+            )
+
+
 def _echo_statement_period(period: Optional[StatementPeriod]) -> None:
     if period is None:
         return
@@ -198,6 +220,7 @@ def ingest(files):
                 df,
                 reconciliation=result.reconciliation,
                 statement_period=result.statement_period,
+                reconciliations=result.reconciliations,
             )
         except Exception as e:
             manifest.status = STATUS_BRONZE_FAILED
@@ -215,9 +238,12 @@ def ingest(files):
         click.echo(f"✓ {path.name}: {len(records)} record(s) -> {filepath}")
         click.echo(f"  archived raw file -> {manifest.raw_artifact_path}")
         _echo_reconciliation(result.reconciliation)
+        _echo_reconciliations(result.reconciliations)
         _echo_statement_period(result.statement_period)
 
         if result.reconciliation is not None and result.reconciliation.matches is False:
+            had_failure = True
+        if any(r.matches is False for r in result.reconciliations):
             had_failure = True
 
     if had_failure:
@@ -263,8 +289,8 @@ def reconciliation():
     if statuses.empty:
         click.echo(
             "No reconciliation data found yet (only amex, firstdirect, kroo, "
-            "natwest-statement, chase, monzo-flex, and monzo-pdf sources "
-            "self-check a balance anchor)."
+            "natwest-statement, chase, monzo-flex, monzo-pdf, and "
+            "vanguard-pdf sources self-check a balance anchor)."
         )
         return
 

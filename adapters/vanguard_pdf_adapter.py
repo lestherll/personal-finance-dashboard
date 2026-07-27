@@ -2,9 +2,10 @@
 
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
-from adapters.base import StatementPeriod
+from adapters.base import ReconciliationResult, StatementPeriod, hash_account_identifier
 from adapters.pdf_adapter import PdfAdapter
 
 _ACCOUNT_NUMBER_RE = re.compile(r"Account number:\s*([A-Z0-9]+)")
@@ -13,6 +14,13 @@ _HOLDING_VALUE_RE = re.compile(r"^-$|^£[\d,]+\.\d{2}$|^\d+\.\d{2}$")
 _ACTIVITY_DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 _ACTIVITY_AMOUNT_RE = re.compile(r"^[-+]?£[\d,]+\.\d{2}$")
 _HOLDINGS_HEADER_TOKENS = {"Description", "Quantity", "Price", "Value"}
+# "Your Vanguard account summary" table (page 1, before either wrapper's
+# sections) - a per-wrapper reconciliation anchor: "Value on <end date>"
+# equals that wrapper's holdings total (fund total_value + cash total_value).
+# See _parse_account_summary_block/_check_reconciliation.
+_ACCOUNT_SUMMARY_HEADER_RE = re.compile(r"^Value on (.+)$")
+_ACCOUNT_SUMMARY_VALUE_RE = re.compile(r"^£[\d,]+\.\d{2}$")
+_SLUGIFY_RE = re.compile(r"[^a-z0-9]+")
 # e.g. "Activity from 01 April 2026 to 01 July 2026 for your ISA" - repeats
 # once per product wrapper, same range every time on real statements seen so
 # far (not treated as per-wrapper periods) - first match used. Matched
@@ -112,6 +120,7 @@ class VanguardPdfAdapter(PdfAdapter):
     def parse_transactions(self, text: str) -> List[Dict[str, Any]]:
         """Extract holdings + activity across all product wrappers."""
         self.last_statement_period = None
+        self.last_reconciliations = []
         period = self._extract_statement_period(text)
         if period:
             self.last_statement_period = StatementPeriod(period[0], period[1])
@@ -122,10 +131,15 @@ class VanguardPdfAdapter(PdfAdapter):
         lines = self._strip_page_boilerplate(lines)
 
         records: List[Dict[str, Any]] = []
+        account_summary: Dict[str, Decimal] = {}
         current_wrapper: Optional[str] = None
         i = 0
         while i < len(lines):
             line = lines[i]
+
+            if line == "Your Vanguard account summary":
+                i, account_summary = self._parse_account_summary_block(lines, i + 1)
+                continue
 
             wrapper_match = _WRAPPER_INVESTMENTS_RE.match(line)
             if wrapper_match:
@@ -146,7 +160,130 @@ class VanguardPdfAdapter(PdfAdapter):
 
             i += 1
 
+        self._check_reconciliation(records, account_summary, account_number)
         return records
+
+    def _parse_account_summary_block(
+        self, lines: List[str], i: int
+    ) -> Tuple[int, Dict[str, Decimal]]:
+        """Parse 'Your Vanguard account summary' (page 1): a per-wrapper
+        table of 'Value on <date>' columns, one row per wrapper plus a
+        trailing 'Account total' row. Returns the closing (rightmost)
+        value per wrapper name - no new records, this is purely a
+        reconciliation anchor consumed by _check_reconciliation, same
+        pattern as Kroo's printed closing-balance search."""
+        summary: Dict[str, Decimal] = {}
+
+        if i < len(lines) and lines[i] == "Product":
+            i += 1
+        else:
+            return i, summary
+
+        num_value_columns = 0
+        while i < len(lines) and _ACCOUNT_SUMMARY_HEADER_RE.match(lines[i]):
+            num_value_columns += 1
+            i += 1
+
+        if num_value_columns == 0:
+            return i, summary
+
+        label_parts: List[str] = []
+        values: List[str] = []
+        while i < len(lines):
+            line = lines[i]
+
+            if line == "Account total":
+                i += 1
+                consumed = 0
+                while (
+                    i < len(lines)
+                    and consumed < num_value_columns
+                    and _ACCOUNT_SUMMARY_VALUE_RE.match(lines[i])
+                ):
+                    i += 1
+                    consumed += 1
+                break
+
+            if line.startswith("Activity from") or _WRAPPER_INVESTMENTS_RE.match(line):
+                break
+
+            if _ACCOUNT_SUMMARY_VALUE_RE.match(line):
+                values.append(line)
+            else:
+                label_parts.append(line)
+
+            if len(values) == num_value_columns:
+                wrapper_name = " ".join(label_parts).strip()
+                try:
+                    summary[wrapper_name] = Decimal(
+                        values[-1].lstrip("£").replace(",", "")
+                    )
+                except InvalidOperation:
+                    pass
+                label_parts = []
+                values = []
+
+            i += 1
+
+        return i, summary
+
+    def _check_reconciliation(
+        self,
+        records: List[Dict[str, Any]],
+        account_summary: Dict[str, Decimal],
+        account_number: Optional[str],
+    ) -> None:
+        """Compare each wrapper's 'Your Vanguard account summary' closing
+        figure against that wrapper's own holdings total (fund + cash) -
+        confirmed an exact anchor against real statement data. A wrapper
+        with no (or malformed) holdings section is skipped - "no signal",
+        not a false mismatch."""
+        for wrapper_name, expected_closing in account_summary.items():
+            derived = self._sum_wrapper_holdings_total(records, wrapper_name)
+            if derived is None:
+                continue
+
+            raw_identifier = (
+                f"{account_number}_{wrapper_name}" if account_number else None
+            )
+            self.last_reconciliations.append(
+                ReconciliationResult(
+                    check_name=f"vanguard_account_summary_{_slugify(wrapper_name)}",
+                    expected_closing=expected_closing,
+                    derived_closing=derived,
+                    matches=derived == expected_closing,
+                    account_identifier=(
+                        hash_account_identifier(raw_identifier)
+                        if raw_identifier
+                        else None
+                    ),
+                )
+            )
+
+    @staticmethod
+    def _sum_wrapper_holdings_total(
+        records: List[Dict[str, Any]], wrapper_name: str
+    ) -> Optional[Decimal]:
+        """Sum total_value across every holding row for this wrapper -
+        already includes the 'Cash account' row _parse_holdings_block
+        emits alongside fund rows, so this sum *is* "fund total + cash
+        total" with no separate split needed."""
+        total = Decimal("0")
+        found = False
+        for record in records:
+            if (
+                record.get("record_type") != "holding"
+                or record.get("wrapper") != wrapper_name
+            ):
+                continue
+            found = True
+            try:
+                total += Decimal(
+                    str(record["total_value"]).lstrip("£").replace(",", "")
+                )
+            except (InvalidOperation, KeyError):
+                return None
+        return total if found else None
 
     def _parse_holdings_block(
         self,
@@ -296,3 +433,9 @@ class VanguardPdfAdapter(PdfAdapter):
     def detect_source_type(self) -> str:
         """Return source type."""
         return "vanguard-pdf"
+
+
+def _slugify(name: str) -> str:
+    """'Vanguard Personal Pension' -> 'vanguard_personal_pension', for
+    building a distinguishable check_name per wrapper."""
+    return _SLUGIFY_RE.sub("_", name.lower()).strip("_")
