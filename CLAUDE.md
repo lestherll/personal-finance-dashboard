@@ -101,7 +101,7 @@ uv run python cli.py ingestions override <id> --allow --reason "..."  # Override
 - **Versioned builds with atomic publication:** each rebuild creates a new build directory under `data/silver/builds/<build_id>/` with all Parquet tables + `build.json` manifest. The `data/silver/current` symlink is swapped atomically (temp symlink + `os.replace`) only after all tables are written and validated. Old builds pruned (keep last 2).
 - Normalized records: `transactions`, `accounts`, `holdings`, `account_ledger`, `transaction_sources`, `plan_it_instalments`
 - **Exact-money schema:** all monetary columns are integer minor units (`amount_minor`, `balance_minor`, `total_value_minor`, `unit_price_minor` int64) + `currency` column
-- **Two-tier matching engine** (`transformers/matching.py`): same-source dedup by full content fingerprint (account, date, amount_minor, normalized description, occurrence); declared cross-source pairs (Natwest Transactions+Statement) match on loose key (account, date, amount_minor) with multiset counting, preferring the statement. Bank-provided transaction IDs (Monzo CSV) outrank both
+- **Two-tier matching engine** (`transformers/matching.py`): same-source dedup by full content fingerprint (account, date, amount_minor, normalized description, occurrence); declared cross-source pairs (Natwest Transactions+Statement) match on loose key (account, date, amount_minor) with multiset counting, preferring the statement. `silver_transaction_id` is minted as `source_type:fingerprint_occurrence` (source-scoped so two sources with identical content can't collide). There is deliberately **no** bank-transaction-id tier — the only source with a genuine bank id is the effectively-unused Monzo CSV export; see the matching.py docstring for why a synthesised id wouldn't earn top rank
 - **Transaction provenance:** `transaction_sources` table maps each canonical `silver_transaction_id` to every ingested `bronze_record_id` it subsumed, with match policy attribution
 - Unmapped-account pre-flight check raises `UnmappedAccountsError` listing all unmapped accounts at once before writing anything
 - Created by `transformers/silver_transformer.py::run_bronze_to_silver()`, exposed via `cli.py silver rebuild`
@@ -161,11 +161,14 @@ datalake.write_bronze(ingestion_manifest, df, reconciliation=..., statement_peri
 # Read all Bronze records for a source
 df = datalake.read_bronze("monzo")
 
-# Read Silver through the current/ build symlink (falls back to flat file)
+# Read Silver through the current/ build symlink. Raises StaleSilverError
+# if the build layout is broken (dangling/missing current) - never silently
+# falls back to stale data. Flat data/silver/*.parquet is legacy-only
+# (no builds/ at all) and warns.
 df = datalake.read_silver("transactions")
 
 # Query across Parquet files with DuckDB SQL
-df = datalake.query("SELECT * FROM read_parquet('data/silver/transactions.parquet') LIMIT 10")
+df = datalake.query("SELECT * FROM transactions LIMIT 10")  # named views over the current build + bronze_<source_type>
 ```
 
 Singleton pattern: `get_datalake()` returns cached connection; safe to call multiple times.
@@ -318,7 +321,7 @@ Pattern (already implemented, extend when adding adapters):
 - **Unit tests** cover adapters, models, transformers, CLI
 - **Integration tests** in `tests/integration/natwest_overlap/` exercise the disk-backed pipeline (real Bronze→Silver, cross-format dedup)
 - **E2E tests** in `tests/e2e/` run on clean `tmp_path` checkouts: ingest→Silver→net_worth, idempotent re-ingest, same-name different bytes, money round-trip
-- **403 tests pass, 88% coverage** (threshold 85%)
+- **567 tests pass, 88% coverage** (threshold 85%)
 - Dev dependencies require `uv sync --extra dev` (pytest, black, ruff not auto-installed with base `uv sync`)
 - **A fresh git worktree has no `data/account_map.json`:** it's gitignored user data. Copy from another checkout that has one — safe, it's just hashed-identifier → account_id/display_name/type mappings, no financial figures.
 
