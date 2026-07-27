@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from models.money import parse_money_minor, MoneyParseError
 
-from adapters.base import StatementPeriod
+from adapters.base import StatementPeriod, make_transaction_source_key
 from adapters.pdf_adapter import PdfAdapter
 from adapters.reconciliation import build_reconciliation_result
 
@@ -218,12 +218,13 @@ class MonzoPdfAdapter(PdfAdapter):
         account_identifier: Optional[str] = None,
     ) -> str:
         """Generate deterministic key from account + date + description + amount."""
-        date_str = txn.get("date", "").replace("/", "")
-        description = txn.get("description", "")[:10].replace(" ", "_")
-        amount = str(abs(txn.get("amount_minor", 0)))
-        account_part = f"{account_identifier}_" if account_identifier else ""
-
-        return f"monzo_pdf_txn_{account_part}{date_str}_{description}_{amount}"
+        return make_transaction_source_key(
+            "monzo_pdf_txn",
+            txn.get("date", ""),
+            txn.get("description", ""),
+            int(txn.get("amount_minor", 0)),
+            account_identifier,
+        )
 
     def detect_source_type(self) -> str:
         """Return source type."""

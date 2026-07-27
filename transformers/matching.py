@@ -3,9 +3,21 @@
 Two-tier policy: same-source dedup uses a full content fingerprint (account,
 date, amount, normalized description, occurrence); declared cross-source pairs
 match on a looser key (account, date, amount) with a stated preference for one
-source over the other. Bank-provided transaction IDs (e.g. Monzo CSV's "id")
-outrank both when available - a match on (account, bank_txn_id) is
-unambiguous.
+source over the other.
+
+There is deliberately **no** bank-transaction-id tier. An earlier version of
+this docstring claimed one ("bank-provided IDs outrank both"), but the code
+never implemented it - `_bank_txn_id` was assigned and then dropped unused.
+It has been removed rather than built out, because the only source that
+carries a genuine bank-issued id is the Monzo CSV export, which is
+effectively unused in practice; every PDF source has no such id and never
+will. Synthesising one at parse time would not restore the tier's value:
+what earns a bank id top rank is being stable across *different files*
+containing the same transaction, and any id derived from parsed content is
+just a content fingerprint - which this module already computes, more
+faithfully than an adapter-level key can (see
+adapters/base.py::make_transaction_source_key). If a real bank-issued id
+ever arrives (Open Banking), add the tier here then.
 
 Designed after the plan doc's "explicit, traceable cross-file matching
 policy" - the Natwest Transactions/Statement pair is the canonical
@@ -46,11 +58,6 @@ def _compute_fingerprint(
     return hashlib.sha256(material).hexdigest()
 
 
-def _loose_key(account_id: str, date: str, amount_minor: int) -> Tuple[str, str, int]:
-    """Cross-source match key: account + date + amount (no description)."""
-    return (account_id, date, amount_minor)
-
-
 # Declared cross-source pairs with explicit match policy.
 # Key: frozenset of source_types; Value: (match_key_columns, prefer_source)
 _CROSS_SOURCE_POLICIES = {
@@ -84,12 +91,7 @@ def match_transactions(
 
     df = transactions.copy()
 
-    # 1. Extract bank-provided transaction IDs from raw_data if present.
-    df["_bank_txn_id"] = None
-    if "bank_transaction_id" in df.columns:
-        df["_bank_txn_id"] = df["bank_transaction_id"]
-
-    # 2. Same-source fingerprint (source_type included so different banks
+    # 1. Same-source fingerprint (source_type included so different banks
     #    with the same description/amount don't collide).
     df["_fingerprint"] = [
         _compute_fingerprint(
@@ -101,7 +103,7 @@ def match_transactions(
         for row in df.itertuples()
     ]
 
-    # 3. Assign occurrence numbers within each (source_type, fingerprint)
+    # 2. Assign occurrence numbers within each (source_type, fingerprint)
     #    group. Sorting by (statement_period_to, upload_timestamp, line_number)
     #    gives a stable, sensible order in which to number occurrences.
     sort_key = df["statement_period_to"].fillna(df["upload_timestamp"])
@@ -109,7 +111,7 @@ def match_transactions(
     df = df.sort_values(["_sort_key", "line_number"]).reset_index(drop=True)
     df["_occurrence"] = df.groupby(["source_type", "_fingerprint"]).cumcount() + 1
 
-    # 4. Canonicalize: for each (source_type, fingerprint, occurrence), keep
+    # 3. Canonicalize: for each (source_type, fingerprint, occurrence), keep
     #    the row with the most complete data and record all bronze_record_ids
     #    it absorbed.
     #    Drop duplicates within the same source_type + fingerprint +
@@ -157,7 +159,7 @@ def match_transactions(
     grouped = df.groupby(group_cols, group_keys=False)
     canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(drop=True)
 
-    # 5. Cross-source dedup for declared policy pairs.
+    # 4. Cross-source dedup for declared policy pairs.
     #    A row from the non-preferred source that has a matching loose-key
     #    row in the preferred source is dropped - but only to the extent of
     #    the multiset count in the preferred source (genuine repeats
@@ -168,14 +170,14 @@ def match_transactions(
             canonical, pair_set, key_cols, prefer_source, provenance_rows
         )
 
-    # 6. Clean up internal columns.
+    # 5. Clean up internal columns.
     canonical["silver_transaction_id"] = (
         canonical["_fingerprint"].astype(str)
         + "_"
         + canonical["_occurrence"].astype(str)
     )
     canonical = canonical.drop(
-        columns=["_fingerprint", "_occurrence", "_sort_key", "_bank_txn_id"],
+        columns=["_fingerprint", "_occurrence", "_sort_key"],
         errors="ignore",
     )
 

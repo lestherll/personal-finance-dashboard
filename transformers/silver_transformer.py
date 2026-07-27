@@ -985,7 +985,7 @@ def run_bronze_to_silver(
     silver_breaks_df = find_silver_reconciliation_breaks(
         bronze_anchors, sources_df, transactions_df, plan_it_adjustments
     )
-    silver_mismatches = silver_breaks_df[silver_breaks_df["matches"] == False]  # noqa: E712
+    silver_mismatches = silver_breaks_df[silver_breaks_df["matches"].eq(False)]
     if not silver_mismatches.empty:
         logger.warning(
             "%d ingestion(s) reconcile against their own Bronze anchor but "
