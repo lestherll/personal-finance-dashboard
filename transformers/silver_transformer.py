@@ -37,7 +37,10 @@ from transformers.reconciliation_log import (
     build_reconciliation_log,
 )
 from transformers.reconciliation_status import find_reconciliation_status
-from transformers.silver_reconciliation import find_silver_reconciliation_breaks
+from transformers.silver_reconciliation import (
+    amex_plan_it_adjustment_by_ingestion,
+    find_silver_reconciliation_breaks,
+)
 from models.build import generate_build_id, publish_silver_build
 
 logger = logging.getLogger(__name__)
@@ -976,8 +979,11 @@ def run_bronze_to_silver(
     # own pre-matching check can never see (item 3 of the reconciliation
     # hardening work; see transformers/silver_reconciliation.py).
     bronze_anchors = find_reconciliation_status(datalake)
+    plan_it_adjustments = amex_plan_it_adjustment_by_ingestion(
+        bronze_frames.get("amex")
+    )
     silver_breaks_df = find_silver_reconciliation_breaks(
-        bronze_anchors, sources_df, transactions_df
+        bronze_anchors, sources_df, transactions_df, plan_it_adjustments
     )
     silver_mismatches = silver_breaks_df[silver_breaks_df["matches"] == False]  # noqa: E712
     if not silver_mismatches.empty:

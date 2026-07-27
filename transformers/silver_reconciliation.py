@@ -13,9 +13,11 @@ per-file check ever catching it, since that check only ever sees the
 adapter's raw, pre-matching parse.
 """
 
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
+
+from models.money import parse_money_minor, MoneyParseError
 
 _BREAKS_COLUMNS = [
     "account_id",
@@ -46,6 +48,7 @@ def find_silver_reconciliation_breaks(
     bronze_anchors: pd.DataFrame,
     transaction_sources: pd.DataFrame,
     transactions: pd.DataFrame,
+    plan_it_adjustments: Optional[Dict[str, int]] = None,
 ) -> pd.DataFrame:
     """Re-derive each anchored ingestion's closing balance from the
     surviving Silver transactions it contributed to, and compare against
@@ -58,6 +61,14 @@ def find_silver_reconciliation_breaks(
     of one) has no independent arithmetic to re-verify here - it was never
     rolled forward in the first place, so there's nothing for Silver's
     matching step to have broken.
+
+    `plan_it_adjustments` (ingestion_id -> minor units, see
+    `amex_plan_it_adjustment_by_ingestion` below): Amex's own Bronze-level
+    rollforward (adapters/amex_pdf_adapter.py::parse()) adds a "Plan It
+    Instalments Due" component beyond the plain transaction sum whenever a
+    Plan-It plan is active - without this, an Amex statement with an
+    active plan would show a spurious mismatch here even though Bronze's
+    own check (and the real statement) reconciles perfectly.
     """
     if bronze_anchors.empty or transaction_sources.empty or transactions.empty:
         return pd.DataFrame(columns=_BREAKS_COLUMNS)
@@ -67,6 +78,7 @@ def find_silver_reconciliation_breaks(
         return pd.DataFrame(columns=_BREAKS_COLUMNS)
 
     contributions = _contribution_by_ingestion(transaction_sources, transactions)
+    plan_it_adjustments = plan_it_adjustments or {}
 
     rows = []
     for row in anchored.itertuples():
@@ -75,6 +87,7 @@ def find_silver_reconciliation_breaks(
             continue
         contributed = contributions.get(row.ingestion_id, 0)
         derived = row.expected_opening_minor + sign * contributed
+        derived += plan_it_adjustments.get(row.ingestion_id, 0)
         rows.append(
             {
                 "account_id": row.account_id,
@@ -97,20 +110,55 @@ def _contribution_by_ingestion(
     """Net amount_minor each ingestion's Bronze rows contribute to the
     final Silver transaction set.
 
-    A cross-source-absorbed duplicate still appears in transaction_sources,
-    mapped to the *surviving* row's silver_transaction_id - so counting each
-    distinct (ingestion_id, silver_transaction_id) pair once, not once per
-    bronze_record_id, correctly attributes an absorbed duplicate's amount to
-    whichever ingestion it came from without double-counting it against the
-    surviving row's own ingestion. Two rows sharing one silver_transaction_id
-    necessarily share the same amount_minor too (it's part of the fingerprint
-    that produced that id), so which specific occurrence the join picks
-    doesn't affect the sum.
+    Joined on bronze_record_id, not silver_transaction_id: transaction_sources
+    carries one row per original Bronze record (including cross-source-
+    absorbed rows whose own bronze_record_id never made it into `transactions`
+    at all, since only the preferred source's row survives there - those
+    simply drop out of an inner join, correctly not contributing, since the
+    absorbed side is always a non-anchored source_type in the one declared
+    cross-source policy today). bronze_record_id is the one thing guaranteed
+    unique on both sides; silver_transaction_id is NOT reliably unique in
+    `transactions` - two genuinely distinct same-day/same-amount/same-
+    description transactions can share one fingerprint-derived ID (matching.py
+    doesn't fold the occurrence number into it), which would silently
+    undercount a real transaction's contribution if joined on that column
+    instead (confirmed against real data: two real, distinct -£8.90 same-day
+    charges collapsed to one via a silver_transaction_id join).
     """
     merged = transaction_sources.merge(
-        transactions[["silver_transaction_id", "amount_minor"]],
-        on="silver_transaction_id",
+        transactions[["bronze_record_id", "amount_minor"]],
+        on="bronze_record_id",
         how="inner",
     )
-    unique = merged.drop_duplicates(["ingestion_id", "silver_transaction_id"])
-    return unique.groupby("ingestion_id")["amount_minor"].sum()
+    return merged.groupby("ingestion_id")["amount_minor"].sum()
+
+
+def amex_plan_it_adjustment_by_ingestion(
+    amex_bronze: Optional[pd.DataFrame],
+) -> Dict[str, int]:
+    """Sum each ingestion's active Plan-It plans' `due_this_month_plan`
+    figure - the same adjustment adapters/amex_pdf_adapter.py::parse()
+    rolls into its own closing-balance derivation (`due_this_month_plan`
+    already nets out that plan's own instalment fee, which is separately
+    counted once via the ordinary "INSTALMENT PLAN FEE" transaction row -
+    see that method's comments).
+
+    Computed directly from Bronze's raw `plan_it_instalment` rows, not the
+    Silver `plan_it_instalments` table - deliberately independent of
+    whatever that table's own normalization does.
+    """
+    if amex_bronze is None or amex_bronze.empty or "record_type" not in amex_bronze.columns:
+        return {}
+    plan_it = amex_bronze[amex_bronze["record_type"] == "plan_it_instalment"]
+    if plan_it.empty:
+        return {}
+
+    adjustments: Dict[str, int] = {}
+    for row in plan_it.itertuples():
+        raw = row.raw_data
+        try:
+            due_plan_minor = parse_money_minor(raw.get("due_this_month_plan", ""))
+        except MoneyParseError:
+            continue
+        adjustments[row.ingestion_id] = adjustments.get(row.ingestion_id, 0) + due_plan_minor
+    return adjustments
