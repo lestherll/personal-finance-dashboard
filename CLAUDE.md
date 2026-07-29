@@ -41,6 +41,7 @@ uv run pytest --cov --cov-report=term-missing      # Full coverage checker (adap
 ```bash
 uv run black adapters/ models/ transformers/ tests/ cli.py              # Format code
 uv run ruff check adapters/ models/ transformers/ tests/ cli.py --fix   # Lint + auto-fix
+uv run mypy                                                           # Type-check adapters/, models/, transformers/, cli.py (config in [tool.mypy] of pyproject.toml)
 ```
 
 ### Running the App
