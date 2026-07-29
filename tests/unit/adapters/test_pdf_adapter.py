@@ -177,9 +177,7 @@ class TestResolveYearInPeriod:
 
     def test_empty_string_returns_none(self):
         """Empty string should not resolve."""
-        result = resolve_year_in_period(
-            "", datetime(2026, 1, 1), datetime(2026, 1, 31)
-        )
+        result = resolve_year_in_period("", datetime(2026, 1, 1), datetime(2026, 1, 31))
         assert result is None
 
 
@@ -297,9 +295,7 @@ class TestPdfAdapterErrorHandling:
         monkeypatch.setattr(
             adapter,
             "_extract_text",
-            lambda content: (_ for _ in ()).throw(
-                Exception("PDF extraction failed")
-            ),
+            lambda content: (_ for _ in ()).throw(Exception("PDF extraction failed")),
         )
         with pytest.raises(Exception):
             adapter.parse(b"corrupted pdf", "test.pdf", "hash123")
