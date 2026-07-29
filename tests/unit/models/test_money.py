@@ -1,7 +1,6 @@
 """Comprehensive tests for exact-money parsing (models/money.py)."""
 
 import pytest
-from decimal import InvalidOperation
 
 from models.money import (
     parse_money_minor,
@@ -9,7 +8,6 @@ from models.money import (
     minor_to_decimal,
     format_minor,
     MoneyParseError,
-    MINOR_UNITS,
 )
 
 
