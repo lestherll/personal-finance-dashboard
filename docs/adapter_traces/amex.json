@@ -1,0 +1,313 @@
+{
+  "_generated_by": "tests/e2e/test_adapter_trace.py::TestAmexTrace",
+  "source_type": "amex",
+  "adapter_class": "AmexPdfAdapter",
+  "parser_version": "2",
+  "input_file": {
+    "filename": "amex_2026-04-20_2026-05-19.pdf",
+    "file_hash_sha256": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+    "note": "ingestion_id and every bronze_record_id below are deterministic functions of this hash - re-running this exact fixture always reproduces the same ids."
+  },
+  "account_resolution": {
+    "mechanism": "identifier_lookup",
+    "account_id": "acc_amex_credit_test",
+    "hashed_account_identifier": "6a3df39955da",
+    "note": "Unlike Monzo Flex, every Amex statement prints a real masked card number ('xxxx-xxxxxx-99887' here, itself already fake). adapters/base.py::hash_account_identifier() SHA256-truncates it before it's ever persisted, so only this hash reaches Bronze - resolved against 'cli.py accounts register' (per-identifier lookup, not a source_type-wide fallback)."
+  },
+  "file_level_facts": {
+    "statement_period": {
+      "from_date": "2026-04-20T00:00:00",
+      "to_date": "2026-05-19T00:00:00"
+    },
+    "reconciliation": {
+      "check_name": "amex_closing_balance",
+      "expected_closing_minor": 7885,
+      "derived_closing_minor": 7885,
+      "matches": true,
+      "account_identifier": null,
+      "expected_opening_minor": 10000
+    }
+  },
+  "raw_pdf_text": "American Express\nPreferred Rewards Gold Credit Card\nMr Test Cardholder\nxxxx-xxxxxx-99887\nFrom 20 April to 19 May 2026\nAccount Summary\nPrevious Closing Balance New Credits New Debits Closing Balance\n\u00a3100.00 - \u00a325.00 + \u00a33.85 = \u00a378.85\n\n\nApr 19  Apr 19 COFFEE SHOP LONDON             3.85\nTotal new spend transactions for Test            3.85\nOTHER ACCOUNT TRANSACTIONS\nMay 1 May 1 PAYMENT RECEIVED - THANK YOU        20.00\nCR\nMay 7 May 7 DELIVEROO                     5.00\nDeliverooGoldBenefit                CR\nTotal of other account transactions             25.00\n\n\n\n\n\nAmount \u00a3\n\f\n",
+  "raw_pdf_text_note": "Unlike the Monzo Flex trace's hand-typed fixture, this is the literal output of AmexPdfAdapter._extract_text() (PyMuPDF's real sort=True extraction) run against a real, synthetically-authored PDF built with fitz.Page.insert_text() - not typed statement text. Amex's balance-anchor lookup always reopens the raw PDF bytes directly, so a plain-text fixture can't stand in for it the way it can for Monzo Flex.",
+  "transactions": [
+    {
+      "label": "debit_purchase",
+      "stage_1_parsed_transaction": {
+        "date": "19 Apr 2026",
+        "description": "COFFEE SHOP LONDON",
+        "amount_minor": -385,
+        "amount_text": "3.85",
+        "_account_identifier_raw": "xxxx-xxxxxx-99887"
+      },
+      "stage_2_raw_record": {
+        "source_key": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "source_type": "amex",
+        "raw_data": {
+          "date": "19 Apr 2026",
+          "description": "COFFEE SHOP LONDON",
+          "amount_minor": -385,
+          "amount_text": "3.85",
+          "balance_minor": 10385
+        },
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 1,
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "bronze_record_id": "b67abc0520c0206bd382244a534fa1294d30354ed4a88f9c6d91c05b4f3a3d16",
+        "source_ordinal": 1
+      },
+      "stage_3_bronze_row": {
+        "source_key": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "raw_data": {
+          "date": "19 Apr 2026",
+          "description": "COFFEE SHOP LONDON",
+          "amount_minor": -385,
+          "amount_text": "3.85",
+          "balance_minor": 10385
+        },
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "line_number": 1,
+        "bronze_record_id": "b67abc0520c0206bd382244a534fa1294d30354ed4a88f9c6d91c05b4f3a3d16",
+        "source_ordinal": 1,
+        "legacy_transaction_fingerprint": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "bronze_source_key": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "amex_closing_balance",
+        "reconciliation_expected_opening_minor": 10000,
+        "reconciliation_expected_closing_minor": 7885,
+        "reconciliation_derived_closing_minor": 7885,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-20T00:00:00",
+        "statement_period_to": "2026-05-19T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "b67abc0520c0206bd382244a534fa1294d30354ed4a88f9c6d91c05b4f3a3d16",
+        "bronze_source_key": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "account_id": "acc_amex_credit_test",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 1,
+        "transaction_date": "2026-04-19T00:00:00",
+        "description": "COFFEE SHOP LONDON",
+        "amount_minor": -385,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "amex",
+        "silver_transaction_id": "amex:8f9b3ebc8b52a2d00d8785cd0d73569874241ac36eeccbd321e519845f471591_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "b67abc0520c0206bd382244a534fa1294d30354ed4a88f9c6d91c05b4f3a3d16",
+        "bronze_source_key": "amex_txn_6a3df39955da_19Apr2026_COFFEE_SHO_-385_562d2950",
+        "account_id": "acc_amex_credit_test",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 1,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 10385,
+        "currency": "GBP",
+        "as_of_date": "2026-04-19T00:00:00"
+      }
+    },
+    {
+      "label": "credit_payment_standalone_cr",
+      "stage_1_parsed_transaction": {
+        "date": "1 May 2026",
+        "description": "PAYMENT RECEIVED - THANK YOU",
+        "amount_minor": 2000,
+        "amount_text": "20.00",
+        "_account_identifier_raw": "xxxx-xxxxxx-99887"
+      },
+      "stage_2_raw_record": {
+        "source_key": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "source_type": "amex",
+        "raw_data": {
+          "date": "1 May 2026",
+          "description": "PAYMENT RECEIVED - THANK YOU",
+          "amount_minor": 2000,
+          "amount_text": "20.00",
+          "balance_minor": 8385
+        },
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 2,
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "bronze_record_id": "685ad63bed01a7bbb572a0ff58b460e753ee41871f27947cbb67b7becb211493",
+        "source_ordinal": 2
+      },
+      "stage_3_bronze_row": {
+        "source_key": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "raw_data": {
+          "date": "1 May 2026",
+          "description": "PAYMENT RECEIVED - THANK YOU",
+          "amount_minor": 2000,
+          "amount_text": "20.00",
+          "balance_minor": 8385
+        },
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "line_number": 2,
+        "bronze_record_id": "685ad63bed01a7bbb572a0ff58b460e753ee41871f27947cbb67b7becb211493",
+        "source_ordinal": 2,
+        "legacy_transaction_fingerprint": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "bronze_source_key": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "amex_closing_balance",
+        "reconciliation_expected_opening_minor": 10000,
+        "reconciliation_expected_closing_minor": 7885,
+        "reconciliation_derived_closing_minor": 7885,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-20T00:00:00",
+        "statement_period_to": "2026-05-19T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "685ad63bed01a7bbb572a0ff58b460e753ee41871f27947cbb67b7becb211493",
+        "bronze_source_key": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "account_id": "acc_amex_credit_test",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 2,
+        "transaction_date": "2026-05-01T00:00:00",
+        "description": "PAYMENT RECEIVED - THANK YOU",
+        "amount_minor": 2000,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "amex",
+        "silver_transaction_id": "amex:2869e8bc0ccc5c782321eb4544940135d6088cf71881ab7c0a8033915c15825d_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "685ad63bed01a7bbb572a0ff58b460e753ee41871f27947cbb67b7becb211493",
+        "bronze_source_key": "amex_txn_6a3df39955da_1May2026_PAYMENT_RE_2000_c5574daa",
+        "account_id": "acc_amex_credit_test",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 2,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 8385,
+        "currency": "GBP",
+        "as_of_date": "2026-05-01T00:00:00"
+      },
+      "note": "Amex marks a credit two different ways depending on section (see AmexPdfAdapter._is_credit_marked). This is the main-table form: a standalone 'CR' line immediately after the transaction row."
+    },
+    {
+      "label": "other_account_transactions_trailing_cr_credit",
+      "stage_1_parsed_transaction": {
+        "date": "7 May 2026",
+        "description": "DELIVEROO",
+        "amount_minor": 500,
+        "amount_text": "5.00",
+        "_account_identifier_raw": "xxxx-xxxxxx-99887"
+      },
+      "stage_2_raw_record": {
+        "source_key": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "source_type": "amex",
+        "raw_data": {
+          "date": "7 May 2026",
+          "description": "DELIVEROO",
+          "amount_minor": 500,
+          "amount_text": "5.00",
+          "balance_minor": 7885
+        },
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 3,
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "bronze_record_id": "3d248acc8c7a0d4cb87fef54a09ef4014f30a86c666c66a6b748bb7aa1f81974",
+        "source_ordinal": 3
+      },
+      "stage_3_bronze_row": {
+        "source_key": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "raw_data": {
+          "date": "7 May 2026",
+          "description": "DELIVEROO",
+          "amount_minor": 500,
+          "amount_text": "5.00",
+          "balance_minor": 7885
+        },
+        "account_identifier": "6a3df39955da",
+        "record_type": "transaction",
+        "file_hash": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "line_number": 3,
+        "bronze_record_id": "3d248acc8c7a0d4cb87fef54a09ef4014f30a86c666c66a6b748bb7aa1f81974",
+        "source_ordinal": 3,
+        "legacy_transaction_fingerprint": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "bronze_source_key": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "amex_2026-04-20_2026-05-19.pdf",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "amex_closing_balance",
+        "reconciliation_expected_opening_minor": 10000,
+        "reconciliation_expected_closing_minor": 7885,
+        "reconciliation_derived_closing_minor": 7885,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-20T00:00:00",
+        "statement_period_to": "2026-05-19T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "3d248acc8c7a0d4cb87fef54a09ef4014f30a86c666c66a6b748bb7aa1f81974",
+        "bronze_source_key": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "ingestion_id": "aac114c3d2aa36ef8d7f0d9eb907ab2b2055301ff838fe4313ff83a96c250b22",
+        "account_id": "acc_amex_credit_test",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 3,
+        "transaction_date": "2026-05-07T00:00:00",
+        "description": "DELIVEROO",
+        "amount_minor": 500,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "amex",
+        "silver_transaction_id": "amex:25bf79cb0428e9324b0bd52afb865b25859072c3f6ef569d5065bac34e65ece7_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "3d248acc8c7a0d4cb87fef54a09ef4014f30a86c666c66a6b748bb7aa1f81974",
+        "bronze_source_key": "amex_txn_6a3df39955da_7May2026_DELIVEROO_500_35d84270",
+        "account_id": "acc_amex_credit_test",
+        "source_type": "amex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-05-19T00:00:00",
+        "line_number": 3,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 7885,
+        "currency": "GBP",
+        "as_of_date": "2026-05-07T00:00:00"
+      },
+      "note": "The other form: inside 'OTHER ACCOUNT TRANSACTIONS', the 'CR' marker is a trailing token on the *annotation* line that follows the transaction, not a standalone line of its own - 'DeliverooGoldBenefit ... CR'. Section membership alone isn't a reliable credit signal (that section can hold plain debits too, e.g. a membership fee) - only this CR-marker check decides the sign."
+    }
+  ]
+}
