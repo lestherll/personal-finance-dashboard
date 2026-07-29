@@ -89,7 +89,7 @@ class FirstDirectPdfAdapter(PdfAdapter):
 
         # Find transaction section
         in_transactions = False
-        current_txn_lines = []
+        current_txn_lines: list[str] = []
 
         for line in lines:
             line = line.strip()
@@ -184,22 +184,24 @@ class FirstDirectPdfAdapter(PdfAdapter):
             return
 
         derived_closing = running
-        self.last_reconciliation = build_reconciliation_result(
+        recon = build_reconciliation_result(
             check_name="first_direct_new_balance",
             expected_closing_minor=expected,
             derived_closing_minor=derived_closing,
             expected_opening_minor=opening,
         )
-        if not self.last_reconciliation.matches:
-            logger.warning(
-                "First Direct statement: derived closing balance %d "
-                "minor units does not match statement's printed New "
-                "Balance %d minor units - transaction amounts don't fully "
-                "reconcile with the Account Summary block. Balance fields "
-                "may be inaccurate.",
-                running,
-                expected,
-            )
+        if recon is not None:
+            self.last_reconciliation = recon
+            if not recon.matches:
+                logger.warning(
+                    "First Direct statement: derived closing balance %d "
+                    "minor units does not match statement's printed New "
+                    "Balance %d minor units - transaction amounts don't fully "
+                    "reconcile with the Account Summary block. Balance fields "
+                    "may be inaccurate.",
+                    running,
+                    expected,
+                )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """

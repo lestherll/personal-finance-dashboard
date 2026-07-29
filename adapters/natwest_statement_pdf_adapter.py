@@ -258,21 +258,23 @@ class NatwestStatementPdfAdapter(PdfAdapter):
             except MoneyParseError:
                 opening = None
 
-        self.last_reconciliation = build_reconciliation_result(
+        recon = build_reconciliation_result(
             check_name="natwest_statement_new_balance",
             expected_closing_minor=expected,
             derived_closing_minor=computed_final,
             expected_opening_minor=opening,
         )
-        if not self.last_reconciliation.matches:
-            logger.warning(
-                "Natwest statement: final parsed balance %d minor units "
-                "does not match statement's printed New Balance %d minor "
-                "units - the transaction table may not have parsed "
-                "completely.",
-                computed_final,
-                expected,
-            )
+        if recon is not None:
+            self.last_reconciliation = recon
+            if not recon.matches:
+                logger.warning(
+                    "Natwest statement: final parsed balance %d minor units "
+                    "does not match statement's printed New Balance %d minor "
+                    "units - the transaction table may not have parsed "
+                    "completely.",
+                    computed_final,
+                    expected,
+                )
 
     def generate_source_key(
         self,

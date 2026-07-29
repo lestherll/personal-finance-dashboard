@@ -97,7 +97,7 @@ class NatwestTransactionsPdfAdapter(PdfAdapter):
 
         # Find transaction section
         in_transactions = False
-        current_txn_lines = []
+        current_txn_lines: list[str] = []
 
         for line in lines:
             line = line.strip()
