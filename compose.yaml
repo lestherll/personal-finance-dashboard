@@ -1,0 +1,24 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.13}
+    image: personal-finance-dashboard:py${PYTHON_VERSION:-3.13}
+    volumes:
+      # Source is bind-mounted so edits are live without a rebuild. The venv
+      # sits at /opt/venv (see Dockerfile), so the host .venv is inert here.
+      - .:/app
+      # The data lake is host-owned: raw statements, Bronze/Silver parquet,
+      # ingestion manifests, account_map.json. Gitignored, never in an image.
+      - ./data:/app/data
+    environment:
+      DATA_DIR: /app/data
+      # The host uid below has no /etc/passwd entry in the image, so
+      # getpass.getuser() (used by pytest's tmp_path) would raise. These two
+      # are checked before the password database.
+      USER: ${USER:-app}
+      HOME: /tmp
+    # Keeps files written into ./data (Bronze parquet, manifests) owned by the
+    # host user instead of root.
+    user: "${UID:-1000}:${GID:-1000}"
