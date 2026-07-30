@@ -23,7 +23,7 @@ All commands use `uv` (not pip or conda). Dev dependencies require `uv sync --ex
 ### Environment & Setup
 ```bash
 uv python list                    # Check available Python versions (3.13 recommended)
-uv sync --extra dev               # Install all deps + dev tools (pytest, black, ruff)
+uv sync --extra dev               # Install all deps + dev tools (pytest, ruff)
 uv run python -m pytest tests/    # Run all tests with Python auto-selected from pyproject.toml
 ```
 
@@ -39,7 +39,7 @@ uv run pytest --cov --cov-report=term-missing      # Full coverage checker (adap
 
 ### Code Quality
 ```bash
-uv run black adapters/ models/ transformers/ tests/ cli.py              # Format code
+uv run ruff format adapters/ models/ transformers/ tests/ cli.py              # Format code
 uv run ruff check adapters/ models/ transformers/ tests/ cli.py --fix   # Lint + auto-fix
 uv run mypy                                                           # Type-check adapters/, models/, transformers/, cli.py (config in [tool.mypy] of pyproject.toml)
 ```
