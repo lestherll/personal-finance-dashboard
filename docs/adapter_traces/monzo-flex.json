@@ -1,0 +1,480 @@
+{
+  "_generated_by": "tests/e2e/test_adapter_trace.py::TestMonzoFlexTrace",
+  "source_type": "monzo-flex",
+  "adapter_class": "MonzoFlexPdfAdapter",
+  "parser_version": "2",
+  "input_file": {
+    "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+    "file_hash_sha256": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+    "note": "ingestion_id and every bronze_record_id below are deterministic functions of this hash - re-running this exact fixture always reproduces the same ids."
+  },
+  "account_resolution": {
+    "mechanism": "source_type_fallback",
+    "account_id": "acc_monzo_flex_credit",
+    "note": "Monzo Flex statements print no account identifier anywhere (no sort code, account number, or masked digits), so every transaction's account_identifier is None. Resolution falls back to a single source_type-wide mapping registered via 'cli.py accounts register-fallback monzo-flex ...', which assumes exactly one Flex account in practice."
+  },
+  "file_level_facts": {
+    "statement_period": {
+      "from_date": "2026-04-01T00:00:00",
+      "to_date": "2026-06-30T00:00:00"
+    },
+    "reconciliation": {
+      "check_name": "monzo_flex_balance_at_end",
+      "expected_closing_minor": 15000,
+      "derived_closing_minor": 15000,
+      "matches": true,
+      "account_identifier": null,
+      "expected_opening_minor": 121707
+    }
+  },
+  "raw_pdf_text": "Flex statement\nThe amounts you'll see below are for these dates\n01/04/2026 - 30/06/2026\nJane Doe\n1 Example Street\nSometown\nAB1 2CD\nUnited Kingdom\n\u00a31217.07\nBalance at start\nIncluding interest\n\u00a30.00\nInterest you paid across all\nyour plans\n\u00a3150.00\nBalance at end\nIncludes interest to 01/07/2026\n29%\nInterest rate\n\u00a32000.00\nAvailable to spend\n\u00a30.00\nMissed payments\nBased on your minimum\npayment\n\u00a350.00\nAmount you paid back\n\u00a330.00 minimum monthly\npayment*\nDate\nDescription\nDebit\nCredit\nBalance\n30/06/2026\nCorner Shop\n5.00\n0.00\n150.00\n28/06/2026\nForeign Cafe\nAmount: EUR 12.00. Conversion rate:\n0.85.\n10.20\n0.00\n145.00\n01/06/2026\nMonthly payment\n0.00\n30.00\n134.80\n15/04/2026\nOld Purchase\nAmount: EUR 5.00. Conversion rate:\n0.85.\n4.25\n0.00\n164.80\nCorner Bakery\n01/04/2026\nAmount: EUR 3.00. Conversion rate:\n0.85.\n2.55\n0.00\n160.55\n Some of the wording below is legally prescribed, which means we can't change it.\n",
+  "transactions": [
+    {
+      "label": "debit_only_purchase",
+      "stage_1_parsed_transaction": {
+        "date": "30/06/2026",
+        "description": "Corner Shop",
+        "amount_minor": -500,
+        "balance_minor": 15000
+      },
+      "stage_2_raw_record": {
+        "source_key": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "source_type": "monzo-flex",
+        "raw_data": {
+          "date": "30/06/2026",
+          "description": "Corner Shop",
+          "amount_minor": -500,
+          "balance_minor": 15000
+        },
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 1,
+        "account_identifier": null,
+        "record_type": "transaction",
+        "bronze_record_id": "b0be99c3c5d81ae6da58aba2bd92eb2f8679278193932242247420a2b1d0b0ca",
+        "source_ordinal": 1
+      },
+      "stage_3_bronze_row": {
+        "source_key": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "raw_data": {
+          "date": "30/06/2026",
+          "description": "Corner Shop",
+          "amount_minor": -500,
+          "balance_minor": 15000
+        },
+        "account_identifier": null,
+        "record_type": "transaction",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "line_number": 1,
+        "bronze_record_id": "b0be99c3c5d81ae6da58aba2bd92eb2f8679278193932242247420a2b1d0b0ca",
+        "source_ordinal": 1,
+        "legacy_transaction_fingerprint": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "bronze_source_key": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "monzo_flex_balance_at_end",
+        "reconciliation_expected_opening_minor": 121707,
+        "reconciliation_expected_closing_minor": 15000,
+        "reconciliation_derived_closing_minor": 15000,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-01T00:00:00",
+        "statement_period_to": "2026-06-30T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "b0be99c3c5d81ae6da58aba2bd92eb2f8679278193932242247420a2b1d0b0ca",
+        "bronze_source_key": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "account_id": "acc_monzo_flex_credit",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 1,
+        "transaction_date": "2026-06-30T00:00:00",
+        "description": "Corner Shop",
+        "amount_minor": -500,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "monzo-flex",
+        "silver_transaction_id": "monzo-flex:a137da647e55f84a5688face259df90bec6670aacf12cadc4f7eb45b1ef8ebfc_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "b0be99c3c5d81ae6da58aba2bd92eb2f8679278193932242247420a2b1d0b0ca",
+        "bronze_source_key": "monzo_flex_txn_30062026_Corner_Sho_-500_0b8f5f54",
+        "account_id": "acc_monzo_flex_credit",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 1,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 15000,
+        "currency": "GBP",
+        "as_of_date": "2026-06-30T00:00:00"
+      }
+    },
+    {
+      "label": "foreign_currency_multiline_description",
+      "stage_1_parsed_transaction": {
+        "date": "28/06/2026",
+        "description": "Foreign Cafe Amount: EUR 12.00. Conversion rate: 0.85.",
+        "amount_minor": -1020,
+        "balance_minor": 14500
+      },
+      "stage_2_raw_record": {
+        "source_key": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "source_type": "monzo-flex",
+        "raw_data": {
+          "date": "28/06/2026",
+          "description": "Foreign Cafe Amount: EUR 12.00. Conversion rate: 0.85.",
+          "amount_minor": -1020,
+          "balance_minor": 14500
+        },
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 2,
+        "account_identifier": null,
+        "record_type": "transaction",
+        "bronze_record_id": "ab684253494912c6a5907fb514db08f231be0d742bbf2be659cc040d1278e846",
+        "source_ordinal": 2
+      },
+      "stage_3_bronze_row": {
+        "source_key": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "raw_data": {
+          "date": "28/06/2026",
+          "description": "Foreign Cafe Amount: EUR 12.00. Conversion rate: 0.85.",
+          "amount_minor": -1020,
+          "balance_minor": 14500
+        },
+        "account_identifier": null,
+        "record_type": "transaction",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "line_number": 2,
+        "bronze_record_id": "ab684253494912c6a5907fb514db08f231be0d742bbf2be659cc040d1278e846",
+        "source_ordinal": 2,
+        "legacy_transaction_fingerprint": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "bronze_source_key": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "monzo_flex_balance_at_end",
+        "reconciliation_expected_opening_minor": 121707,
+        "reconciliation_expected_closing_minor": 15000,
+        "reconciliation_derived_closing_minor": 15000,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-01T00:00:00",
+        "statement_period_to": "2026-06-30T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "ab684253494912c6a5907fb514db08f231be0d742bbf2be659cc040d1278e846",
+        "bronze_source_key": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "account_id": "acc_monzo_flex_credit",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 2,
+        "transaction_date": "2026-06-28T00:00:00",
+        "description": "Foreign Cafe Amount: EUR 12.00. Conversion rate: 0.85.",
+        "amount_minor": -1020,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "monzo-flex",
+        "silver_transaction_id": "monzo-flex:bf63d181961bf63801c4979a8409873f74550287ca8cb32d75e9fb4001105062_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "ab684253494912c6a5907fb514db08f231be0d742bbf2be659cc040d1278e846",
+        "bronze_source_key": "monzo_flex_txn_28062026_Foreign_Ca_-1020_d0c7ca61",
+        "account_id": "acc_monzo_flex_credit",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 2,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 14500,
+        "currency": "GBP",
+        "as_of_date": "2026-06-28T00:00:00"
+      }
+    },
+    {
+      "label": "credit_only_payment",
+      "stage_1_parsed_transaction": {
+        "date": "01/06/2026",
+        "description": "Monthly payment",
+        "amount_minor": 3000,
+        "balance_minor": 13480
+      },
+      "stage_2_raw_record": {
+        "source_key": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "source_type": "monzo-flex",
+        "raw_data": {
+          "date": "01/06/2026",
+          "description": "Monthly payment",
+          "amount_minor": 3000,
+          "balance_minor": 13480
+        },
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 3,
+        "account_identifier": null,
+        "record_type": "transaction",
+        "bronze_record_id": "eb6460e757e597087fa5507cf67164c71555ce02e7fe9669140dee094e810a56",
+        "source_ordinal": 3
+      },
+      "stage_3_bronze_row": {
+        "source_key": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "raw_data": {
+          "date": "01/06/2026",
+          "description": "Monthly payment",
+          "amount_minor": 3000,
+          "balance_minor": 13480
+        },
+        "account_identifier": null,
+        "record_type": "transaction",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "line_number": 3,
+        "bronze_record_id": "eb6460e757e597087fa5507cf67164c71555ce02e7fe9669140dee094e810a56",
+        "source_ordinal": 3,
+        "legacy_transaction_fingerprint": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "bronze_source_key": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "monzo_flex_balance_at_end",
+        "reconciliation_expected_opening_minor": 121707,
+        "reconciliation_expected_closing_minor": 15000,
+        "reconciliation_derived_closing_minor": 15000,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-01T00:00:00",
+        "statement_period_to": "2026-06-30T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "eb6460e757e597087fa5507cf67164c71555ce02e7fe9669140dee094e810a56",
+        "bronze_source_key": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "account_id": "acc_monzo_flex_credit",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 3,
+        "transaction_date": "2026-06-01T00:00:00",
+        "description": "Monthly payment",
+        "amount_minor": 3000,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "monzo-flex",
+        "silver_transaction_id": "monzo-flex:c551e5ac322e8027793e4251071171a626ba8e30cc7172567097d20d7e929ca3_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "eb6460e757e597087fa5507cf67164c71555ce02e7fe9669140dee094e810a56",
+        "bronze_source_key": "monzo_flex_txn_01062026_Monthly_pa_3000_e07d2479",
+        "account_id": "acc_monzo_flex_credit",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 3,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 13480,
+        "currency": "GBP",
+        "as_of_date": "2026-06-01T00:00:00"
+      }
+    },
+    {
+      "label": "page_boundary_scramble_donor_row",
+      "stage_1_parsed_transaction": {
+        "date": "15/04/2026",
+        "description": "Old Purchase Amount: EUR 5.00. Conversion rate: 0.85. Corner Bakery",
+        "amount_minor": -425,
+        "balance_minor": 16480
+      },
+      "stage_2_raw_record": {
+        "source_key": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "source_type": "monzo-flex",
+        "raw_data": {
+          "date": "15/04/2026",
+          "description": "Old Purchase Amount: EUR 5.00. Conversion rate: 0.85. Corner Bakery",
+          "amount_minor": -425,
+          "balance_minor": 16480
+        },
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 4,
+        "account_identifier": null,
+        "record_type": "transaction",
+        "bronze_record_id": "af92adc5b4583476fd2ce18777ce81fc137af3a1aee933b0da33efb265a03ffa",
+        "source_ordinal": 4
+      },
+      "stage_3_bronze_row": {
+        "source_key": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "raw_data": {
+          "date": "15/04/2026",
+          "description": "Old Purchase Amount: EUR 5.00. Conversion rate: 0.85. Corner Bakery",
+          "amount_minor": -425,
+          "balance_minor": 16480
+        },
+        "account_identifier": null,
+        "record_type": "transaction",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "line_number": 4,
+        "bronze_record_id": "af92adc5b4583476fd2ce18777ce81fc137af3a1aee933b0da33efb265a03ffa",
+        "source_ordinal": 4,
+        "legacy_transaction_fingerprint": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "bronze_source_key": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "monzo_flex_balance_at_end",
+        "reconciliation_expected_opening_minor": 121707,
+        "reconciliation_expected_closing_minor": 15000,
+        "reconciliation_derived_closing_minor": 15000,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-01T00:00:00",
+        "statement_period_to": "2026-06-30T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "af92adc5b4583476fd2ce18777ce81fc137af3a1aee933b0da33efb265a03ffa",
+        "bronze_source_key": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "account_id": "acc_monzo_flex_credit",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 4,
+        "transaction_date": "2026-04-15T00:00:00",
+        "description": "Old Purchase Amount: EUR 5.00. Conversion rate: 0.85. Corner Bakery",
+        "amount_minor": -425,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "monzo-flex",
+        "silver_transaction_id": "monzo-flex:26447d57b3f1bd36a273693d8ee4c51c767cd6c6080da5d535de0f09892617e0_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "af92adc5b4583476fd2ce18777ce81fc137af3a1aee933b0da33efb265a03ffa",
+        "bronze_source_key": "monzo_flex_txn_15042026_Old_Purcha_-425_12fead56",
+        "account_id": "acc_monzo_flex_credit",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 4,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 16480,
+        "currency": "GBP",
+        "as_of_date": "2026-04-15T00:00:00"
+      },
+      "note": "Known, accepted limitation (see MonzoFlexPdfAdapter._parse_transaction_lines docstring): a description split across a real PDF's page boundary can land on the wrong row. This row's own description absorbed the *next* row's trailing 'Corner Bakery' merchant line. Amounts/dates/balances stay correct for both rows."
+    },
+    {
+      "label": "page_boundary_scramble_victim_row",
+      "stage_1_parsed_transaction": {
+        "date": "01/04/2026",
+        "description": "Amount: EUR 3.00. Conversion rate: 0.85.",
+        "amount_minor": -255,
+        "balance_minor": 16055
+      },
+      "stage_2_raw_record": {
+        "source_key": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "source_type": "monzo-flex",
+        "raw_data": {
+          "date": "01/04/2026",
+          "description": "Amount: EUR 3.00. Conversion rate: 0.85.",
+          "amount_minor": -255,
+          "balance_minor": 16055
+        },
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "line_number": 5,
+        "account_identifier": null,
+        "record_type": "transaction",
+        "bronze_record_id": "e29aad2e629250bce5c367a7418dbea39a8c559eefb27df993ddf71ac1885262",
+        "source_ordinal": 5
+      },
+      "stage_3_bronze_row": {
+        "source_key": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "raw_data": {
+          "date": "01/04/2026",
+          "description": "Amount: EUR 3.00. Conversion rate: 0.85.",
+          "amount_minor": -255,
+          "balance_minor": 16055
+        },
+        "account_identifier": null,
+        "record_type": "transaction",
+        "file_hash": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "line_number": 5,
+        "bronze_record_id": "e29aad2e629250bce5c367a7418dbea39a8c559eefb27df993ddf71ac1885262",
+        "source_ordinal": 5,
+        "legacy_transaction_fingerprint": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "bronze_source_key": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "filename": "monzo_flex_2026-04-01_2026-06-30.pdf",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "raw_artifact_path": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "parser_version": "2",
+        "reconciliation_check": "monzo_flex_balance_at_end",
+        "reconciliation_expected_opening_minor": 121707,
+        "reconciliation_expected_closing_minor": 15000,
+        "reconciliation_derived_closing_minor": 15000,
+        "reconciliation_matches": true,
+        "statement_period_from": "2026-04-01T00:00:00",
+        "statement_period_to": "2026-06-30T00:00:00"
+      },
+      "stage_4_silver_transaction": {
+        "bronze_record_id": "e29aad2e629250bce5c367a7418dbea39a8c559eefb27df993ddf71ac1885262",
+        "bronze_source_key": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "ingestion_id": "cb4913e2abc18f30ce3960ae92765e10058796c9264e1cd3bd5e568adeb93c42",
+        "account_id": "acc_monzo_flex_credit",
+        "ingested_at": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 5,
+        "transaction_date": "2026-04-01T00:00:00",
+        "description": "Amount: EUR 3.00. Conversion rate: 0.85.",
+        "amount_minor": -255,
+        "currency": "GBP",
+        "category": null,
+        "bank_transaction_id": null,
+        "source_type": "monzo-flex",
+        "silver_transaction_id": "monzo-flex:3ce6c7943c5a892ab2e085863a4e3f8245d0e9bc8babb54073efddcfd22b61c2_1"
+      },
+      "stage_5_silver_account_ledger_row": {
+        "bronze_record_id": "e29aad2e629250bce5c367a7418dbea39a8c559eefb27df993ddf71ac1885262",
+        "bronze_source_key": "monzo_flex_txn_01042026_Amount:_EU_-255_21b5311f",
+        "account_id": "acc_monzo_flex_credit",
+        "source_type": "monzo-flex",
+        "upload_timestamp": "<non-deterministic: differs on every real run, e.g. wall-clock time or a tmp-dir path>",
+        "statement_period_to": "2026-06-30T00:00:00",
+        "line_number": 5,
+        "reconciled": true,
+        "balance_source": "printed",
+        "balance_minor": 16055,
+        "currency": "GBP",
+        "as_of_date": "2026-04-01T00:00:00"
+      },
+      "note": "The other half of the same scramble: this row's own merchant name ('Corner Bakery') was lost upstream to page_boundary_scramble_donor_row above, leaving only its foreign-currency annotation as the description."
+    }
+  ]
+}
