@@ -109,7 +109,12 @@ def register_fallback(source_type, account_id, display_name, account_type):
 
 
 def _echo_reconciliation(result: Optional[ReconciliationResult]) -> None:
-    if result is None or result.matches is None:
+    if (
+        result is None
+        or result.matches is None
+        or result.expected_closing_minor is None
+        or result.derived_closing_minor is None
+    ):
         return
     if result.matches:
         click.echo(
@@ -130,7 +135,11 @@ def _echo_reconciliations(results: List[ReconciliationResult]) -> None:
     carry more than one result here, each needing its check_name to stay
     distinguishable."""
     for result in results:
-        if result.matches is None:
+        if (
+            result.matches is None
+            or result.expected_closing_minor is None
+            or result.derived_closing_minor is None
+        ):
             continue
         if result.matches:
             click.echo(

@@ -80,7 +80,7 @@ class KrooPdfAdapter(PdfAdapter):
 
         # Find transaction section
         in_transactions = False
-        current_txn_lines = []
+        current_txn_lines: list[str] = []
 
         for i, line in enumerate(lines):
             line = line.strip()

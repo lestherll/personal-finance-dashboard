@@ -42,6 +42,14 @@ _RECONCILIATION_MARKERS = (
     # helper now rather than the dataclass directly; see its module docstring.
     "self.last_reconciliation = build_reconciliation_result(",
     "self.last_reconciliations.append(build_reconciliation_result(",
+    # The above patterns assign the helper's return value directly, but
+    # some adapters capture it in a local first so they can None-check
+    # the Optional[int] closure before touching .matches (the helper
+    # returns None if either closing anchor is missing). The
+    # ReconciliationResult itself is still produced - just held in a local
+    # before being assigned to self.last_reconciliation. The only
+    # accepted local variable name across adapters is `recon`.
+    "recon = build_reconciliation_result(",
 )
 _STATEMENT_PERIOD_MARKER = "self.last_statement_period = StatementPeriod("
 
