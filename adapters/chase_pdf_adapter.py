@@ -177,22 +177,24 @@ class ChasePdfAdapter(PdfAdapter):
         derived_closing = roll_forward_balance(
             opening, (txn["amount_minor"] for txn in transactions), sign=1
         )
-        self.last_reconciliation = build_reconciliation_result(
+        recon = build_reconciliation_result(
             check_name="chase_closing_balance",
             expected_closing_minor=expected_closing,
             derived_closing_minor=derived_closing,
             expected_opening_minor=opening,
         )
-        if not self.last_reconciliation.matches:
-            logger.warning(
-                "Chase statement: derived closing balance %d minor units "
-                "does not match statement's printed Closing balance %d "
-                "minor units - transaction amounts don't fully reconcile "
-                "with the Opening/Closing balance block. Balance fields "
-                "may be inaccurate.",
-                derived_closing,
-                expected_closing,
-            )
+        if recon is not None:
+            self.last_reconciliation = recon
+            if not recon.matches:
+                logger.warning(
+                    "Chase statement: derived closing balance %d minor units "
+                    "does not match statement's printed Closing balance %d "
+                    "minor units - transaction amounts don't fully reconcile "
+                    "with the Opening/Closing balance block. Balance fields "
+                    "may be inaccurate.",
+                    derived_closing,
+                    expected_closing,
+                )
 
     def _parse_transaction_lines(self, lines: List[str]) -> Optional[Dict[str, Any]]:
         """Parse a transaction that spans multiple lines.

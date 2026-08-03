@@ -69,6 +69,7 @@ Both install Python 3.13 and `uv sync --extra dev`. Run the same three commands 
 ```bash
 uv run ruff format adapters/ models/ transformers/ tests/ cli.py              # Format code
 uv run ruff check adapters/ models/ transformers/ tests/ cli.py --fix   # Lint + auto-fix
+uv run mypy                                                           # Type-check adapters/, models/, transformers/, cli.py (config in [tool.mypy] of pyproject.toml)
 ```
 
 ### Running the App

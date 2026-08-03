@@ -22,6 +22,8 @@ dev = [
     "pytest-cov==4.1.0",
 
     "ruff==0.1.11",
+    "mypy>=1.11.0",
+    "types-python-dateutil>=2.9.0",
 ]
 
 [tool.pytest.ini_options]
@@ -47,6 +49,29 @@ exclude_lines = [
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
 ]
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "."
+files = ["adapters", "models", "transformers", "cli.py"]
+exclude = [
+    "tests/",
+    "data/",
+    "build/",
+    "dist/",
+]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+disallow_any_explicit = false
+disallow_any_generics = false
+disallow_subclassing_any = false
+show_error_codes = true
+pretty = true
 
 [tool.ruff.format]
 quote-style = "double"

@@ -3,7 +3,7 @@
 import csv
 from datetime import datetime
 from io import StringIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 from models.money import try_parse_money_minor
 
@@ -42,8 +42,10 @@ class MonzoAdapter(DataSourceAdapter):
         "categories",
     ]
 
-    def validate(self, file_content: str) -> tuple[bool, float]:
+    def validate(self, file_content: Union[str, bytes]) -> tuple[bool, float]:
         """Check if file contains Monzo headers (full or search format)."""
+        if isinstance(file_content, bytes):
+            return False, 0.0
         lines = file_content.split("\n")
         if not lines:
             return False, 0.0
@@ -65,18 +67,16 @@ class MonzoAdapter(DataSourceAdapter):
         return score >= 0.8, score
 
     def parse(
-        self, file_content: str, filename: str, file_hash: str
+        self, file_content: Union[str, bytes], filename: str, file_hash: str
     ) -> List[RawRecord]:
         """Convert CSV to RawRecord list (handles both full and search format)."""
-        records = []
+        records: list[RawRecord] = []
+        if isinstance(file_content, bytes):
+            return records
         reader = csv.DictReader(StringIO(file_content))
 
         if not reader or not reader.fieldnames:
             return records
-
-        # Detect format based on first row's keys
-        headers = reader.fieldnames or []
-        is_search_format = "id" in headers and "created" in headers
 
         for idx, row in enumerate(reader, start=2):
             if not row or not any(row.values()):
@@ -91,7 +91,7 @@ class MonzoAdapter(DataSourceAdapter):
                     raw_data["amount_minor"] = amount_minor
                     raw_data["amount_text"] = amount_field
 
-            source_key = self.generate_source_key(row, idx, is_search_format)
+            source_key = self.generate_source_key(row, idx)
 
             records.append(
                 RawRecord(
@@ -115,18 +115,26 @@ class MonzoAdapter(DataSourceAdapter):
         return "monzo"
 
     def generate_source_key(
-        self, row_data: Dict[str, Any], line_num: int, is_search_format: bool = False
+        self,
+        row_data: Dict[str, Any],
+        line_num: int,
+        account_identifier: Optional[str] = None,
     ) -> str:
-        """Generate deterministic source key based on format."""
-        if is_search_format:
+        """Generate deterministic source key based on format.
+
+        Monzo only ever has a single account per user, so
+        `account_identifier` is accepted to satisfy the base contract but
+        isn't folded into the key. Format (full vs. search export) is
+        detected from the row's own keys.
+        """
+        if "id" in row_data and "created" in row_data:
             # Search format: use 'id' field
             txn_id = row_data.get("id", "").strip()
             if not txn_id:
                 return f"monzo_unknown_{line_num}"
             return f"monzo_txn_{txn_id}"
-        else:
-            # Full export format: use 'Transaction ID' field
-            txn_id = row_data.get("Transaction ID", "").strip()
-            if not txn_id:
-                return f"monzo_unknown_{line_num}"
-            return f"monzo_txn_{txn_id}"
+        # Full export format: use 'Transaction ID' field
+        txn_id = row_data.get("Transaction ID", "").strip()
+        if not txn_id:
+            return f"monzo_unknown_{line_num}"
+        return f"monzo_txn_{txn_id}"

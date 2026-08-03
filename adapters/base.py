@@ -5,7 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 def hash_account_identifier(raw_identifier: str) -> str:
@@ -175,7 +175,7 @@ class DataSourceAdapter(ABC):
         self.last_reconciliations: List[ReconciliationResult] = []
 
     @abstractmethod
-    def validate(self, file_content: str) -> tuple[bool, float]:
+    def validate(self, file_content: Union[str, bytes]) -> tuple[bool, float]:
         """
         Check if file format matches this adapter.
 
@@ -183,13 +183,21 @@ class DataSourceAdapter(ABC):
             (is_valid: bool, confidence: float 0.0-1.0)
 
         Confidence allows multiple adapters to compete; highest wins.
+
+        `file_content` is `str` for CSV adapters and `bytes` for PDF
+        adapters - the factory routes by isinstance, so subclasses can
+        narrow the type via their own override.
         """
 
     @abstractmethod
     def parse(
-        self, file_content: str, filename: str, file_hash: str
+        self, file_content: Union[str, bytes], filename: str, file_hash: str
     ) -> List[RawRecord]:
-        """Parse file, return raw records (minimal transformation)."""
+        """Parse file, return raw records (minimal transformation).
+
+        `file_content` is `str` for CSV adapters and `bytes` for PDF
+        adapters.
+        """
 
     @abstractmethod
     def detect_source_type(self) -> str:
