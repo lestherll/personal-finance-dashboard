@@ -34,6 +34,7 @@ from models.ingestion import (
     write_manifest,
 )
 from transformers.account_config import (
+    build_accounts_table,
     find_unmapped_accounts,
     register_account,
     register_source_type_fallback,
@@ -493,20 +494,72 @@ def silver_builds():
         click.echo(f"  {bid}{marker}  {txn}t / {led}l / {hold}h")
 
 
+def _holding_label(display_name: str) -> str:
+    """Wrapper-level label for a non-cash holding row, e.g. 'Vanguard ISA'
+    -> 'Stocks & Shares ISA'. Individual funds within an account aren't
+    broken out - holdings can change over time, the wrapper doesn't."""
+    lowered = display_name.lower()
+    if "isa" in lowered:
+        return "Stocks & Shares ISA"
+    if "pension" in lowered:
+        return "Pension"
+    return "Holdings"
+
+
 @accounts.command("breakdown")
 def get_breakdown():
     dl = get_datalake()
     breakdown = get_net_worth_breakdown(dl)
 
-    import pandas as pd
+    if breakdown.empty:
+        click.echo("No account data yet.")
+        return
+
+    account_info = build_accounts_table()[["account_id", "display_name", "account_type"]]
+    breakdown = breakdown.merge(account_info, on="account_id", how="left")
+    breakdown["display_name"] = breakdown["display_name"].fillna(breakdown["account_id"])
+
+    is_ledger_row = breakdown["source"] == breakdown["account_id"]
+    is_cash_row = breakdown["source"] == "Cash account"
+    is_fund_row = ~is_ledger_row & ~is_cash_row
+
+    ledger_rows = breakdown[is_ledger_row].copy()
+    ledger_rows["Detail"] = ledger_rows["account_type"].str.capitalize()
+    cash_rows = breakdown[is_cash_row].assign(Detail="Cash account")
+
+    fund_rows = breakdown[is_fund_row].copy()
+    fund_rows["Detail"] = fund_rows["display_name"].map(_holding_label)
+    fund_rows = fund_rows.groupby(
+        ["account_id", "display_name", "Detail"], as_index=False
+    ).agg(
+        balance_or_value=("balance_or_value", "sum"),
+        contribution_to_net_worth=("contribution_to_net_worth", "sum"),
+        as_of_date=("as_of_date", "max"),
+    )
+
+    combined = pd.concat([ledger_rows, cash_rows, fund_rows], ignore_index=True)
+    combined = combined.sort_values(
+        ["as_of_date", "contribution_to_net_worth"], ascending=[False, False]
+    )
+
+    table = pd.DataFrame(
+        {
+            "Account": combined["display_name"],
+            "Detail": combined["Detail"],
+            "Balance/Value": combined["balance_or_value"].map(_fmt_minor),
+            "As Of": pd.to_datetime(combined["as_of_date"]).dt.strftime("%Y-%m-%d"),
+            "Contribution": combined["contribution_to_net_worth"].map(_fmt_minor),
+        }
+    )
 
     pd.set_option("display.max_rows", None)
     pd.set_option("display.max_columns", None)
+    pd.set_option("display.width", None)
 
-    click.echo(breakdown[["account_id", "as_of_date", "contribution_to_net_worth"]])
+    click.echo(table.to_string(index=False))
 
     click.echo("\nTotal contribution to net worth:")
-    click.echo(f"{breakdown[['contribution_to_net_worth']].sum().values[0]}")
+    click.echo(_fmt_minor(int(breakdown["contribution_to_net_worth"].sum())))
 
 
 @cli.group()

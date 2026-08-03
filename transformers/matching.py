@@ -1,9 +1,15 @@
 """Silver transaction matching and deduplication.
 
-Two-tier policy: same-source dedup uses a full content fingerprint (account,
-date, amount, normalized description, occurrence); declared cross-source pairs
-match on a looser key (account, date, amount) with a stated preference for one
-source over the other.
+Three-tier policy: same-source dedup uses a full content fingerprint (account,
+date, amount, normalized description, occurrence); a same-source **overlap-
+window** tier collapses that same fingerprint across two ingestions of the
+same source_type/account whose *declared* statement periods overlap (e.g. a
+partial-month statement later re-covered by a full-month statement for the
+same account) - restricted to the overlap window, matched via multiset
+counting so genuine same-day repeats are preserved (excess occurrences on
+either side are left distinct rather than force-merged); declared
+cross-source pairs match on a looser key (account, date, amount) with a
+stated preference for one source over the other.
 
 There is deliberately **no** bank-transaction-id tier. An earlier version of
 this docstring claimed one ("bank-provided IDs outrank both"), but the code
@@ -85,6 +91,144 @@ _CROSS_SOURCE_POLICIES = {
         "natwest-statement",
     ),
 }
+
+_PERIOD_COLUMNS = [
+    "ingestion_id",
+    "account_id",
+    "source_type",
+    "statement_period_from",
+    "statement_period_to",
+]
+
+
+def _find_overlapping_ingestion_periods(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per ingestion_id with a declared statement period.
+
+    Ingestions with no parsed statement_period_from/to (adapters that don't
+    capture one, or CSV sources with no period concept at all) are dropped -
+    the overlap-window tier only activates on declared periods; it never
+    falls back to fingerprint-only matching when period metadata is
+    missing.
+    """
+    if (
+        "statement_period_from" not in df.columns
+        or "statement_period_to" not in df.columns
+    ):
+        return pd.DataFrame(columns=_PERIOD_COLUMNS)
+    periods = df.dropna(subset=["statement_period_from", "statement_period_to"])
+    return periods.drop_duplicates(subset=["ingestion_id"])[_PERIOD_COLUMNS]
+
+
+def _dedupe_overlapping_ingestions(
+    canonical: pd.DataFrame,
+    periods: pd.DataFrame,
+    provenance_rows: List[Dict],
+) -> pd.DataFrame:
+    """Collapse same-source rows that two ingestions of the same
+    account/source_type both re-report because their declared statement
+    periods overlap.
+
+    Only rows whose transaction_date falls inside the overlap window are
+    considered, and matching is by full content fingerprint (not a loose
+    key) with multiset pairing - if one ingestion reports a fingerprint more
+    times than the other inside the window, the excess is left alone rather
+    than force-merged, so nothing is ever discarded that only one side
+    reported.
+    """
+    if periods.empty:
+        return canonical
+
+    for _, group in periods.groupby(["account_id", "source_type"]):
+        records = group.to_dict("records")
+        for i in range(len(records)):
+            for j in range(i + 1, len(records)):
+                a, b = records[i], records[j]
+                lo = max(a["statement_period_from"], b["statement_period_from"])
+                hi = min(a["statement_period_to"], b["statement_period_to"])
+                if lo > hi:
+                    continue
+                canonical = _collapse_ingestion_pair(
+                    canonical,
+                    a["ingestion_id"],
+                    b["ingestion_id"],
+                    lo,
+                    hi,
+                    provenance_rows,
+                )
+    return canonical
+
+
+def _collapse_ingestion_pair(
+    df: pd.DataFrame,
+    ingestion_a: str,
+    ingestion_b: str,
+    window_lo,
+    window_hi,
+    provenance_rows: List[Dict],
+) -> pd.DataFrame:
+    """Multiset-collapse matching fingerprints between two ingestions,
+    restricted to rows dated inside [window_lo, window_hi].
+
+    Which side survives as canonical is arbitrary (the match is already on
+    full content, so either row is an equally valid representative) but
+    picked deterministically - later _sort_key wins, ingestion_id breaks
+    ties - so reruns are stable.
+    """
+    txn_dates = pd.to_datetime(df["transaction_date"])
+    in_window = (txn_dates >= window_lo) & (txn_dates <= window_hi)
+    mask = in_window & df["ingestion_id"].isin([ingestion_a, ingestion_b])
+    if not mask.any():
+        return df
+
+    subset = df[mask]
+    rest = df[~mask]
+
+    a_rows = subset[subset["ingestion_id"] == ingestion_a]
+    b_rows = subset[subset["ingestion_id"] == ingestion_b]
+    if a_rows.empty or b_rows.empty:
+        return df
+
+    a_key = (a_rows["_sort_key"].max(), ingestion_a)
+    b_key = (b_rows["_sort_key"].max(), ingestion_b)
+    preferred, non_preferred = (b_rows, a_rows) if b_key > a_key else (a_rows, b_rows)
+
+    preferred_ids: Dict[str, List[str]] = {}
+    for _, row in preferred.iterrows():
+        survivor_id = _silver_id(
+            row["source_type"], row["_fingerprint"], row["_occurrence"]
+        )
+        preferred_ids.setdefault(row["_fingerprint"], []).append(survivor_id)
+
+    prov_index: Dict[str, List[Dict]] = {}
+    for prov in provenance_rows:
+        prov_index.setdefault(prov["silver_transaction_id"], []).append(prov)
+
+    drop_indices = []
+    for idx, row in non_preferred.iterrows():
+        fp = row["_fingerprint"]
+        if preferred_ids.get(fp):
+            drop_indices.append(idx)
+            survivor_id = preferred_ids[fp].pop(0)
+            absorbed_id = _silver_id(
+                row["source_type"], row["_fingerprint"], row["_occurrence"]
+            )
+            new_entry = {
+                "silver_transaction_id": survivor_id,
+                "bronze_record_id": row.get("bronze_record_id", "") or "",
+                "ingestion_id": row.get("ingestion_id", "") or "",
+                "source_type": row.get("source_type", ""),
+                "match_policy": f"overlap-window({row['source_type']})",
+            }
+            provenance_rows.append(new_entry)
+            prov_index.setdefault(survivor_id, []).append(new_entry)
+            for prov in prov_index.pop(absorbed_id, []):
+                prov["silver_transaction_id"] = survivor_id
+                prov_index.setdefault(survivor_id, []).append(prov)
+
+    deduped_non_preferred = non_preferred.drop(index=drop_indices)
+    return pd.concat(
+        [rest, preferred, deduped_non_preferred], ignore_index=False
+    ).sort_index()
 
 
 def match_transactions(
@@ -180,6 +324,17 @@ def match_transactions(
 
     grouped = df.groupby(group_cols, group_keys=False)
     canonical = grouped.apply(_pick_best_and_record_provenance).reset_index(drop=True)
+
+    # 3b. Same-source, cross-ingestion overlap-window dedup: two ingestions
+    #     of the same source_type/account whose *declared* statement periods
+    #     overlap (e.g. a partial-month statement later re-covered by a
+    #     full-month statement) re-report the same real transactions, but
+    #     step 2's occurrence numbering treats them as distinct repeats
+    #     because it counts per (source_type, fingerprint) across the whole
+    #     dataset, not per ingestion. Collapse matching fingerprints back
+    #     down, restricted to the overlap window only.
+    periods = _find_overlapping_ingestion_periods(df)
+    canonical = _dedupe_overlapping_ingestions(canonical, periods, provenance_rows)
 
     # 4. Cross-source dedup for declared policy pairs.
     #    A row from the non-preferred source that has a matching loose-key
