@@ -9,10 +9,10 @@ Personal finance dashboard using a **medallion data lake architecture**. Ingests
 - **Storage:** File-based Parquet files (not a database)
 - **Query Engine:** DuckDB (in-process, no server)
 - **Orchestration:** Celery + Redis (configured but not yet wired up)
-- **Python Version:** 3.13+ (use `uv` to manage)
+- **Python Version:** 3.13+ (use `uv` to manage). `.python-version` pins `3.14`; CI installs 3.13. `pyproject.toml` requires `>=3.13`
 - **Monetary values:** All financial data is stored as **signed integer minor units** (e.g. GBP pence) with explicit currency — never `float`. See `models/money.py`.
 
-See `ARCHITECTURE.md` for the full design philosophy and data flow.
+See `ARCHITECTURE.md` for the full design philosophy and data flow, `PRODUCT.md` for the product intent, and `TODO.md` for what's left. Two design notes cover specific open problems: `NATWEST_TRANSACTIONS_BALANCE_DESIGN.md` and `VANGUARD_ACCOUNT_SUMMARY_AND_PAYMENTS_IN_GAPS.md`.
 
 ---
 
@@ -37,6 +37,34 @@ uv run pytest --cov=adapters tests/                # Coverage report (adapters m
 uv run pytest --cov --cov-report=term-missing      # Full coverage checker (adapters/models/transformers/cli), fails if under 85% (tool.coverage.report.fail_under in pyproject.toml)
 ```
 
+**If `uv run` fails with `pyenv: version '3.14' is not installed`:** a pyenv shim on PATH is intercepting the `.python-version` pin before uv's own interpreter resolves. Call the venv interpreter directly instead — `.venv/bin/python -m pytest tests/ -q` — or `uv sync --extra dev` first, which does not go through the shim. Or skip the host interpreter entirely and use Docker (below).
+
+### Docker
+
+`Dockerfile` + `compose.yaml` give a host-independent interpreter — no pyenv shim, and the same Python 3.13 CI installs.
+
+```bash
+docker compose build                              # Build (Python 3.13 by default)
+docker compose run --rm app                       # Default CMD: pytest tests/ -q
+docker compose run --rm app pytest tests/ -q --cov --cov-report=term
+docker compose run --rm app ruff check adapters/ models/ transformers/ tests/ cli.py
+docker compose run --rm app python cli.py accounts coverage
+PYTHON_VERSION=3.14 docker compose build          # Reproduce the .python-version pin instead
+```
+
+- The venv lives at `/opt/venv`, **outside** the bind-mounted `/app` — otherwise the host's `.venv` (built against a different interpreter) would shadow it.
+- `./data` is bind-mounted, never baked into an image; `.dockerignore` excludes it. The container runs as the host uid (`user: "${UID:-1000}:${GID:-1000}"`) so parquet/manifests it writes stay host-owned.
+- `USER`/`HOME` are set in `compose.yaml` because that uid has no `/etc/passwd` entry in the image, and `getpass.getuser()` (via pytest's `tmp_path`) would otherwise raise `KeyError: getpwuid()`.
+- Dependencies install in their own layer from `pyproject.toml` + `uv.lock`, so source edits don't trigger a re-sync. Rebuild only when the lockfile changes.
+
+### CI
+
+`.github/workflows/ci.yml` runs on PRs to `main` and pushes to `main`, in two jobs (`test` needs `lint`):
+- **lint:** `ruff check` then `ruff format --check` over `adapters/ models/ transformers/ tests/ cli.py`
+- **test:** `uv run pytest tests/ -v --strict-markers --cov --cov-report=term-missing` with `DATA_DIR=/tmp/ci-data`
+
+Both install Python 3.13 and `uv sync --extra dev`. Run the same three commands locally before pushing.
+
 ### Code Quality
 ```bash
 uv run ruff format adapters/ models/ transformers/ tests/ cli.py              # Format code
@@ -60,9 +88,11 @@ uv run python cli.py accounts list-unmapped               # Bronze accounts with
 uv run python cli.py accounts register <hash> <account_id> <display_name> <current|credit|investment|savings>
 uv run python cli.py accounts register-fallback <source_type> <account_id> <display_name> <account_type>
 uv run python cli.py accounts coverage                    # Per-account statement periods ingested + flagged gaps
-uv run python cli.py accounts reconciliation              # Per-account balance-reconciliation status (B1 self-checks)
+uv run python cli.py accounts reconciliation [--fail-on-mismatch]  # Per-file balance self-check status (live Bronze)
+uv run python cli.py accounts continuity [--fail-on-mismatch]      # Cross-file continuity: does statement N's closing anchor equal N+1's opening? (live Bronze)
+uv run python cli.py accounts reconciliation-log          # Persisted, build-versioned history of all three check types (needs a Silver build)
 uv run python cli.py accounts breakdown                   # Net-worth breakdown by account/holding
-uv run python cli.py silver rebuild                       # Full rebuild of Silver from current Bronze
+uv run python cli.py silver rebuild [--strict]            # Full rebuild of Silver from current Bronze; --strict refuses to publish on any reconciliation mismatch
 uv run python cli.py silver builds                        # List published Silver builds
 uv run python cli.py ingestions list                      # List all ingestion manifests
 uv run python cli.py ingestions show <ingestion_id>       # Show a full ingestion manifest
@@ -99,11 +129,12 @@ uv run python cli.py ingestions override <id> --allow --reason "..."  # Override
 
 **Silver Layer** (`data/silver/builds/` + `data/silver/current` symlink):
 - **Versioned builds with atomic publication:** each rebuild creates a new build directory under `data/silver/builds/<build_id>/` with all Parquet tables + `build.json` manifest. The `data/silver/current` symlink is swapped atomically (temp symlink + `os.replace`) only after all tables are written and validated. Old builds pruned (keep last 2).
-- Normalized records: `transactions`, `accounts`, `holdings`, `account_ledger`, `transaction_sources`, `plan_it_instalments`
+- Normalized records: `transactions`, `accounts`, `holdings`, `account_ledger`, `transaction_sources`, `plan_it_instalments`, `reconciliation_log`
 - **Exact-money schema:** all monetary columns are integer minor units (`amount_minor`, `balance_minor`, `total_value_minor`, `unit_price_minor` int64) + `currency` column
 - **Two-tier matching engine** (`transformers/matching.py`): same-source dedup by full content fingerprint (account, date, amount_minor, normalized description, occurrence); declared cross-source pairs (Natwest Transactions+Statement) match on loose key (account, date, amount_minor) with multiset counting, preferring the statement. `silver_transaction_id` is minted as `source_type:fingerprint_occurrence` (source-scoped so two sources with identical content can't collide). There is deliberately **no** bank-transaction-id tier — the only source with a genuine bank id is the effectively-unused Monzo CSV export; see the matching.py docstring for why a synthesised id wouldn't earn top rank
 - **Transaction provenance:** `transaction_sources` table maps each canonical `silver_transaction_id` to every ingested `bronze_record_id` it subsumed, with match policy attribution
 - Unmapped-account pre-flight check raises `UnmappedAccountsError` listing all unmapped accounts at once before writing anything
+- **Reconciliation log** (`reconciliation_log` table): one unified table for all three check types, discriminated by `check_type` — see "Three reconciliation checks" below
 - Created by `transformers/silver_transformer.py::run_bronze_to_silver()`, exposed via `cli.py silver rebuild`
 
 **Gold Layer** (`data/gold/`):
@@ -111,6 +142,21 @@ uv run python cli.py ingestions override <id> --allow --reason "..."  # Override
 - Business logic applied: subscription detection (recurring patterns), transfer detection (matched debit/credit pairs), account snapshots (daily balances)
 - Ready for dashboard/analytics
 - Created by enrichment tasks (Phase 3 scope, not yet implemented)
+
+### Three reconciliation checks
+
+Reconciliation is a Bronze→Silver gate with three distinct check types, assembled into the single `reconciliation_log` Silver table by `transformers/reconciliation_log.py::build_reconciliation_log()` and stamped with the `build_id` of the build that computed them. All three use the same tri-state `matches` convention: `True` = reconciles, `False` = genuine discrepancy, `None` = inconclusive (no anchor to compare against — not a failure).
+
+| `check_type` | Subject | Module | Live CLI |
+|---|---|---|---|
+| `bronze_self_check` | one anchored Bronze file: do the adapter's parsed transactions roll forward to that file's own printed closing anchor? | `transformers/reconciliation_status.py` | `accounts reconciliation` |
+| `continuity` | the boundary between two consecutive files for one account: does file N's closing anchor equal file N+1's opening anchor? | `transformers/continuity.py` | `accounts continuity` |
+| `silver_rollforward` | one file's Silver-side contribution: do the transactions that *survived* matching/dedup still roll forward to the same anchor Bronze validated pre-dedup? | `transformers/silver_reconciliation.py` | (build-time only) |
+
+- `bronze_self_check` and `continuity` also have live CLI commands that query Bronze directly and need no Silver build; `accounts reconciliation-log` reads the persisted table and does.
+- `continuity` returns `None` with `gap_related=True` when the boundary falls inside a known coverage gap (`transformers/coverage.py`) — a missing statement, not a missing pound.
+- `silver_rollforward` only checks ingestions that captured an *opening* anchor (`ReconciliationResult.expected_opening_minor`), and mirrors each source's sign convention via `_ROLLFORWARD_SIGN` (liability accounts `-1`, asset/cash `+1`).
+- **Default is non-blocking:** mismatches are recorded in the log and the build still publishes. `bronze_self_check` mismatches are separately quarantined out of the transaction set regardless (see Bronze quality gate above). `run_bronze_to_silver(strict_reconciliation=True)` / `silver rebuild --strict` opts into hard failure: any `matches == False` of any check type raises `ReconciliationMismatchError` (collecting every offending row at once, like `UnmappedAccountsError`) *before* publication, so `data/silver/current` stays on the last good build. See Gotcha #19.
 
 ### Adapter Pattern (CSV & PDF)
 
@@ -125,7 +171,9 @@ Located in `adapters/`:
 
 `RawRecord` carries `bronze_record_id` (immutable identity), `source_ordinal`, `account_identifier` (hashed), and `record_type` ("transaction" | "holding" | "plan_it_instalment").
 
-**Adapter contract for amounts:** `raw_data` dict must carry `amount_minor` (int) — never `amount` (float). Reconciliation accumulators use integer minor arithmetic. `ReconciliationResult` uses `expected_closing_minor`/`derived_closing_minor` (int). See `models/money.py::parse_money_minor` / `try_parse_money_minor`.
+**Adapter contract for amounts:** `raw_data` dict must carry `amount_minor` (int) — never `amount` (float). Reconciliation accumulators use integer minor arithmetic. `ReconciliationResult` uses `expected_closing_minor`/`derived_closing_minor` (int), plus `expected_opening_minor` — the statement's own printed opening/previous-balance anchor, captured whether or not this adapter's check rolls forward from it (Natwest Statement/Kroo/Monzo Flex capture it purely so the cross-file continuity check has both ends). See `models/money.py::parse_money_minor` / `try_parse_money_minor`.
+
+**Shared reconciliation tail** (`adapters/reconciliation.py`): `build_reconciliation_result()` replaces the null-check-both-anchors + compute-`matches` + build-the-dataclass boilerplate every anchored adapter used to hand-roll; it returns `None` when either anchor is missing. `roll_forward_balance(opening_minor, amounts_minor, sign)` is deliberately *only* for adapters whose derived total has no per-record side effect (Chase) — AmEx and First Direct write a per-record `balance_minor` as they walk, and AmEx folds in a Plan-It term, so they keep their own loops.
 
 **CSV Adapters:** Monzo (`*_adapter.py`)
 - Parse string content (CSV text)
@@ -169,6 +217,8 @@ df = datalake.read_silver("transactions")
 
 # Query across Parquet files with DuckDB SQL
 df = datalake.query("SELECT * FROM transactions LIMIT 10")  # named views over the current build + bronze_<source_type>
+# Views are derived from whatever Parquet files the current build contains,
+# so every Silver table (incl. reconciliation_log) is queryable by name.
 ```
 
 Singleton pattern: `get_datalake()` returns cached connection; safe to call multiple times.
@@ -240,7 +290,8 @@ Singleton pattern: `get_datalake()` returns cached connection; safe to call mult
 ### Reaching "proper Bronze" for a new PDF adapter
 
 See the full guide at Gotcha #14 and in the relevant adapter files. Key contract points:
-- Reconciliation: if the statement prints a balance anchor, compute a `ReconciliationResult(check_name, expected_closing_minor, derived_closing_minor, matches)`, set it on `self.last_reconciliation` (or `self.last_reconciliations` for multi-account files like Vanguard), and **reset to None/[] at the top** of the method
+- Reconciliation: if the statement prints a balance anchor, build the result via `adapters/reconciliation.py::build_reconciliation_result()` rather than constructing `ReconciliationResult` inline, set it on `self.last_reconciliation` (or `self.last_reconciliations` for multi-account files like Vanguard), and **reset to None/[] at the top** of the method
+- Capture `expected_opening_minor` whenever the statement prints an opening/previous balance, even if your check doesn't roll forward from it — that's what feeds the cross-file continuity check. To have the file also participate in the `silver_rollforward` check, add the source_type to `transformers/silver_reconciliation.py::_ROLLFORWARD_SIGN`
 - Statement period: extract from text, set `self.last_statement_period`, same reset discipline
 - Multi-account files: use `self.last_reconciliations: List[ReconciliationResult]` with per-result `account_identifier` — see `VanguardPdfAdapter._check_reconciliation`
 - All monetary values in `ReconciliationResult` are integer minor units
@@ -263,6 +314,7 @@ Pattern (already implemented, extend when adding adapters):
 | `adapters/factory.py` | `AdapterFactory.detect_adapter()` + `ingest()` — main entry point; `IngestResult` carries records + reconciliation + period |
 | `adapters/*_adapter.py` | Concrete adapters for each bank/format (10 total) |
 | `adapters/pdf_adapter.py` | Shared PDF base class (PyMuPDF text extraction, `resolve_year_in_period()`) |
+| `adapters/reconciliation.py` | Shared reconciliation tail: `build_reconciliation_result()`, `roll_forward_balance()` |
 | `adapters/natwest_transactions_pdf_adapter.py` | Natwest on-demand online "Transactions" export — covers the gap since the last quarterly Statement; see Gotcha #10 |
 | `adapters/natwest_statement_pdf_adapter.py` | Natwest quarterly Statement PDF — distinct from the Transactions export; see Gotcha #10 |
 | `adapters/vanguard_pdf_adapter.py` | Vanguard PDF — multi-wrapper (ISA+Pension), per-wrapper reconciliation via `last_reconciliations` |
@@ -273,27 +325,36 @@ Pattern (already implemented, extend when adding adapters):
 | `models/build.py` | Versioned Silver builds with atomic symlink swap: `publish_silver_build`, `list_builds`, `current_build_id` |
 | `config.py` | Paths, logging level, Celery/Redis config (read-only at runtime) |
 | `logging_config.py` | Structured logging setup (dictConfig-based) |
-| `cli.py` | `ingest`, `accounts *`, `silver rebuild/builds`, `ingestions *` — full CLI surface |
+| `cli.py` | `ingest`, `accounts *` (incl. `continuity`, `reconciliation-log`), `silver rebuild/builds`, `ingestions *` — full CLI surface |
 | `transformers/silver_transformer.py` | `SilverTransformer` + `run_bronze_to_silver()` — Bronze→Silver normalization with quality-gate quarantining |
 | `transformers/matching.py` | Two-tier transaction dedup (fingerprint + cross-source policies) + `transaction_sources` provenance |
 | `transformers/account_config.py` | Account mapping via `data/account_map.json` (user data, not code) |
 | `transformers/coverage.py` | `find_statement_periods()`/`find_coverage_gaps()` — per-account statement period coverage |
 | `transformers/balance.py` | `get_current_balances()`/`get_net_worth()`/`get_net_worth_breakdown()` — exact int minor arithmetic |
-| `transformers/reconciliation_status.py` | `find_reconciliation_status()` — queryable per-file reconciliation status |
+| `transformers/reconciliation_status.py` | `find_reconciliation_status()` — per-file Bronze self-check (`bronze_self_check`) |
+| `transformers/continuity.py` | `find_balance_continuity()` — cross-file closing→opening anchor check, gap-aware (`continuity`) |
+| `transformers/silver_reconciliation.py` | `find_silver_reconciliation_breaks()` — post-dedup rollforward re-check (`silver_rollforward`), `_ROLLFORWARD_SIGN` |
+| `transformers/reconciliation_log.py` | `build_reconciliation_log()` + `ReconciliationMismatchError` — unified `reconciliation_log` Silver table |
 | `tests/conftest.py` | Shared pytest fixtures |
-| `tests/unit/adapters/` | Unit tests for all 10 adapters + base adapter |
-| `tests/unit/transformers/` | Unit tests for Silver transformer, balance, coverage, reconciliation, matching |
-| `tests/unit/models/` | Unit tests for ingestion, datalake |
+| `tests/unit/adapters/` | Unit tests for all 10 adapters + PDF base, factory, reconciliation helpers, source-key identity |
+| `tests/unit/transformers/` | Unit tests for Silver transformer, matching, balance, derived balance, coverage, account config, and all three reconciliation checks + the log |
+| `tests/unit/models/` | Unit tests for ingestion, datalake, money, Silver read path/DuckDB views |
 | `tests/integration/natwest_overlap/` | Disk-backed full-pipeline integration test for Natwest cross-format dedup |
 | `tests/e2e/` | Hermetic clean-checkout end-to-end tests (ingest→Bronze→Silver→net_worth, idempotency, money round-trip) |
 | `tasks/` | (Empty, Phase 3) Celery task definitions go here |
+| `.github/workflows/ci.yml` | CI: ruff lint + format check, then pytest with coverage |
+| `Dockerfile` / `compose.yaml` | Containerized Python 3.13 dev environment (host-independent interpreter) |
 | `ARCHITECTURE.md` | Design philosophy, data flow diagrams, Phase roadmap |
+| `PRODUCT.md` | Product intent (who it's for, why it exists) |
+| `TODO.md` | Remaining work, ordered by dependency/risk |
+| `NATWEST_TRANSACTIONS_BALANCE_DESIGN.md` | Design note: deriving balances for the balance-free Natwest Transactions export (source of the continuity check) |
+| `VANGUARD_ACCOUNT_SUMMARY_AND_PAYMENTS_IN_GAPS.md` | Design note: Vanguard account-summary reconciliation and payments falling in coverage gaps |
 
 ---
 
 ## Current Status
 
-**Critical Hardening (Milestones 1–3 + Items 4–6) ✅ DONE** — see `CRITICAL_HARDENING_PLAN.md` and `CRITICAL_HARDENING_HANDOFF.md`:
+**Critical Hardening (Milestones 1–3 + Items 4–6) ✅ DONE** (the plan/handoff docs that tracked this work were deleted in `a18474f` once shipped — this section is now the record):
 - M1: Immutable content-addressed Bronze ingestion with per-file manifest lifecycle
 - M2: Stable source-record identity (`bronze_record_id`), two-tier Silver matching interface with provenance, versioned atomic Silver builds
 - M3: Exact-money schema (all monetary values are integer minor units, all adapters bumped to `PARSER_VERSION="2"`)
@@ -310,6 +371,10 @@ Pattern (already implemented, extend when adding adapters):
 
 **Silver Hardening (S1-S3) ✅ DONE:** same-day ordering, current balance/net worth, queryable reconciliation. S4 (merchant normalization) deferred.
 
+**Reconciliation as a formal gate ✅ DONE:** three check types (`bronze_self_check`, `continuity`, `silver_rollforward`) unified into the persisted `reconciliation_log` Silver table, `accounts continuity` / `accounts reconciliation-log` CLI, `--fail-on-mismatch` for scripting, and an opt-in `silver rebuild --strict` hard gate. Non-blocking by default — see Gotcha #19.
+
+**CI ✅ DONE:** GitHub Actions on PRs and pushes to `main` — ruff lint + format check, then pytest with the 85% coverage gate. `black` was dropped in favour of ruff (`33f06fb`).
+
 **Phase 3 (Next): Celery Orchestration** (configured but not wired up)
 
 **Phase 4: Testing** — ✅ Unit + integration + E2E tests exist
@@ -321,8 +386,8 @@ Pattern (already implemented, extend when adding adapters):
 - **Unit tests** cover adapters, models, transformers, CLI
 - **Integration tests** in `tests/integration/natwest_overlap/` exercise the disk-backed pipeline (real Bronze→Silver, cross-format dedup)
 - **E2E tests** in `tests/e2e/` run on clean `tmp_path` checkouts: ingest→Silver→net_worth, idempotent re-ingest, same-name different bytes, money round-trip
-- **567 tests pass, 88% coverage** (threshold 85%)
-- Dev dependencies require `uv sync --extra dev` (pytest, black, ruff not auto-installed with base `uv sync`)
+- **651 tests pass, 89% coverage** (threshold 85%, enforced in CI)
+- Dev dependencies require `uv sync --extra dev` (pytest, pytest-cov, ruff — not auto-installed with base `uv sync`). All three are version-pinned in `pyproject.toml`
 - **A fresh git worktree has no `data/account_map.json`:** it's gitignored user data. Copy from another checkout that has one — safe, it's just hashed-identifier → account_id/display_name/type mappings, no financial figures.
 
 ---
@@ -360,7 +425,7 @@ Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`, `
    - `natwest-transactions` (online "Transactions" export): the document has **no balance data anywhere** — not even an opening balance. Nothing to capture; this isn't fixable without a different export format.
    - `vanguard-pdf`: per-line `cash_balance` is uninvested cash in a wrapper, not the wrapper's total value. Deliberately kept separate. Vanguard's reconciliation is per-wrapper (ISA + Pension), checking the "Your Vanguard account summary" table's "Value on <end date>" against each wrapper's holdings total (fund + cash).
 
-   Kroo, Vanguard, Monzo PDF, and Chase's balance capture is a direct read of a printed column. AmEx and First Direct don't print per-transaction balances — only a printed anchor in an Account Summary block — so their `balance_minor` is derived by rolling a minoe-unit accumulator through transactions from the anchor. Both log a non-blocking warning if the derived balance doesn't reconcile.
+   Kroo, Vanguard, Monzo PDF, and Chase's balance capture is a direct read of a printed column. AmEx and First Direct don't print per-transaction balances — only a printed anchor in an Account Summary block — so their `balance_minor` is derived by rolling a minor-unit accumulator through transactions from the anchor. Both log a non-blocking warning if the derived balance doesn't reconcile.
 
    Watch for this class of bug: `_ledger_from_amex` / `_ledger_from_natwest_statement` use a dual-path date check (4-digit year already present → parse directly; otherwise infer) because the adapter may have already stamped a real year via `resolve_year_in_period()`.
 
@@ -390,4 +455,12 @@ Overridable via env vars: `DATA_DIR`, `DUCKDB_PATH`, `LOG_LEVEL`, `REDIS_URL`, `
 
 17. **Reconciliation mismatches are gated at both build time and query time:** Silver's `account_ledger` carries a `reconciled` flag per row. `run_bronze_to_silver` quarantines ingestions with `reconciliation_matches=False` unless overridden (build-time gate). `get_current_balances()` additionally filters `reconciled != False` at query time (defense-in-depth). A mismatched file's balance is never used for net worth.
 
-18. **All monetary values are integer minor units:** Everything in `raw_data`, Bronze columns, Silver schema, and `ReconciliationResult` uses signed integer minor units (e.g. GBP pence). `models/money.py::parse_money_minor()` raises `MoneyParseError` on unparseable input — never silently returns zero. `format_minor()` converts at the CLI/SQL display boundary only. There is no `float` in any financial path. See `CRITICAL_HARDENING_PLAN.md` Milestone 3.
+18. **All monetary values are integer minor units:** Everything in `raw_data`, Bronze columns, Silver schema, and `ReconciliationResult` uses signed integer minor units (e.g. GBP pence). `models/money.py::parse_money_minor()` raises `MoneyParseError` on unparseable input — never silently returns zero. `format_minor()` converts at the CLI/SQL display boundary only. There is no `float` in any financial path.
+
+19. **A reconciliation mismatch does not fail the build by default — and that's deliberate:** the project explicitly decided against hard-failing on any mismatch, because the real historical AmEx parsing bug would have made the tool unable to ingest AmEx data *at all* for the period the bug existed. So mismatches are recorded in `reconciliation_log` and the build still publishes. Two things still protect balances: `bronze_self_check` mismatches are quarantined out of the transaction set by `_eligible_ingestion_ids` (independent of any flag), and `get_current_balances()` filters `reconciled != False` at query time (Gotcha #17). Opt into hard failure with `silver rebuild --strict`.
+
+    Note what `--strict` gates on: every rebuild recomputes `bronze_self_check` rows from the **entire** current Bronze set, not just newly-ingested files. So one old unresolved mismatch blocks the very first strict run until it's fixed or excluded — `--strict` is not "did this ingest go cleanly?".
+
+20. **Don't confuse the live reconciliation CLI with the logged one:** `accounts reconciliation` and `accounts continuity` query live Bronze and work before any Silver build exists. `accounts reconciliation-log` reads the persisted table from the *current published build*, so it's stale until you rebuild. `--fail-on-mismatch` on the two live commands is for scripting/CI and is independent of the `--strict` build gate.
+
+21. **Docstrings may cite plan docs that no longer exist:** `a18474f` deleted nine shipped plan/handoff docs (`CRITICAL_HARDENING_PLAN.md`, `RECONCILIATION_MISMATCH_CONTEXT.md`, `AMEX_BUG_HANDOFF.md`, …). Some source docstrings still reference them — e.g. `run_bronze_to_silver`'s. Recover the context with `git show a18474f^:<FILE>` rather than assuming the reference is wrong.

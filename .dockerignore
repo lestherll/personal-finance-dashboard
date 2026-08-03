@@ -1,0 +1,14 @@
+# Personal financial data - must never enter an image layer.
+data/
+
+.venv/
+.git/
+.github/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.md
