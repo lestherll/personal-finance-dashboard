@@ -112,6 +112,7 @@ def _assert_single_currency(balances: pd.DataFrame, holdings: pd.DataFrame) -> N
 
 def get_latest_holdings_snapshot(
     datalake: Optional[DataLake] = None,
+    as_of: Optional[pd.Timestamp] = None,
 ) -> pd.DataFrame:
     """Return only the latest complete holdings snapshot per account_id.
 
@@ -119,17 +120,29 @@ def get_latest_holdings_snapshot(
     across all as_of_dates would double-count. This returns only the rows
     belonging to each account's most recent as_of_date, so get_net_worth
     uses exactly one complete snapshot per investment account.
+
+    `as_of`, when given, restricts to snapshots dated on or before it first -
+    so "latest" means "latest known as of that date", enabling historical
+    net worth (see get_net_worth's `as_of` param).
     """
     datalake = datalake or get_datalake()
     holdings = datalake.read_silver("holdings")
     if holdings is None or holdings.empty:
         return pd.DataFrame()
 
+    if as_of is not None:
+        holdings = holdings[pd.to_datetime(holdings["as_of_date"]) <= as_of]
+        if holdings.empty:
+            return pd.DataFrame()
+
     latest_dates = holdings.groupby("account_id")["as_of_date"].max().reset_index()
     return holdings.merge(latest_dates, on=["account_id", "as_of_date"])
 
 
-def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
+def get_current_balances(
+    datalake: Optional[DataLake] = None,
+    as_of: Optional[pd.Timestamp] = None,
+) -> pd.DataFrame:
     """One row per account_id: its balance as of the most recent
     (as_of_date, statement_period_to-or-upload_timestamp, line_number).
 
@@ -153,11 +166,21 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
     surviving row is flagged `balance_may_be_stale=True` when a newer,
     excluded statement exists for that account - i.e. the shown balance is
     real but not as current as what's actually on file.
+
+    `as_of`, when given, restricts to rows dated on or before it before any
+    other selection happens - "current" then means "as it stood on that
+    date", giving a historical balance instead of today's. Used by
+    get_net_worth's `as_of` param for month-over-month comparisons.
     """
     datalake = datalake or get_datalake()
     ledger = datalake.read_silver("account_ledger")
     if ledger is None or ledger.empty:
         return pd.DataFrame(columns=_BALANCES_COLUMNS)
+
+    if as_of is not None:
+        ledger = ledger[pd.to_datetime(ledger["as_of_date"]) <= as_of]
+        if ledger.empty:
+            return pd.DataFrame(columns=_BALANCES_COLUMNS)
 
     full_ledger = ledger
     if "reconciled" in ledger.columns:
@@ -211,7 +234,9 @@ def get_current_balances(datalake: Optional[DataLake] = None) -> pd.DataFrame:
 
 
 def get_net_worth(
-    datalake: Optional[DataLake] = None, path: Optional[PathLike] = None
+    datalake: Optional[DataLake] = None,
+    path: Optional[PathLike] = None,
+    as_of: Optional[pd.Timestamp] = None,
 ) -> int:
     """Sum of current balances across accounts, sign-adjusted for
     account_type: credit accounts are a liability (subtracted), everything
@@ -222,13 +247,17 @@ def get_net_worth(
     Per CLAUDE.md Gotcha #6, a credit account's `balance` is already stored
     as a positive "amount owed" figure, not a negative one.
 
+    `as_of`, when given, computes net worth as it stood on that date instead
+    of today (see get_current_balances/get_latest_holdings_snapshot's `as_of`
+    param) - e.g. for a month-over-month change indicator.
+
     Raises MixedCurrencyError if ledger balances/holdings span more than one
     currency - this function refuses to sum across currencies rather than
     silently returning a meaningless total.
     """
     datalake = datalake or get_datalake()
-    balances = get_current_balances(datalake)
-    latest_holdings = get_latest_holdings_snapshot(datalake)
+    balances = get_current_balances(datalake, as_of=as_of)
+    latest_holdings = get_latest_holdings_snapshot(datalake, as_of=as_of)
     _assert_single_currency(balances, latest_holdings)
 
     total_minor = 0

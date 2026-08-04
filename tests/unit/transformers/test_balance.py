@@ -325,6 +325,49 @@ class TestGetCurrentBalances:
         result = get_current_balances(datalake)
         assert result.empty
 
+    def test_as_of_restricts_to_rows_on_or_before_cutoff(self):
+        """as_of gives a historical balance: the latest row dated on or
+        before the cutoff wins, ignoring anything newer."""
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_kroo",
+                    20000,
+                    pd.Timestamp("2026-07-01"),
+                    pd.Timestamp("2026-07-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake, as_of=pd.Timestamp("2026-06-30"))
+
+        assert len(result) == 1
+        assert result.iloc[0]["balance_minor"] == 10000
+
+    def test_as_of_before_any_row_returns_empty(self):
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        result = get_current_balances(datalake, as_of=pd.Timestamp("2026-01-01"))
+
+        assert result.empty
+
     def test_missing_ledger_returns_empty(self):
         datalake = _FakeDatalakeForBalance({})
         result = get_current_balances(datalake)
@@ -547,6 +590,43 @@ class TestGetNetWorth:
         datalake = _FakeDatalakeForBalance({})
 
         assert get_net_worth(datalake, path=path) == 0
+
+    def test_as_of_computes_historical_net_worth(self, tmp_path):
+        """as_of restricts to balances known as of that date, giving net
+        worth as it stood then rather than today."""
+        path = _account_map_path(
+            tmp_path,
+            {
+                "hash_kroo": {
+                    "account_id": "acc_kroo",
+                    "display_name": "Kroo",
+                    "account_type": "current",
+                },
+            },
+        )
+        ledger = pd.DataFrame(
+            [
+                _ledger_row(
+                    "acc_kroo",
+                    10000,
+                    pd.Timestamp("2026-06-01"),
+                    pd.Timestamp("2026-06-01"),
+                ),
+                _ledger_row(
+                    "acc_kroo",
+                    25000,
+                    pd.Timestamp("2026-07-01"),
+                    pd.Timestamp("2026-07-01"),
+                ),
+            ]
+        )
+        datalake = _FakeDatalakeForBalance({"account_ledger": ledger})
+
+        assert get_net_worth(datalake, path=path) == 25000
+        assert (
+            get_net_worth(datalake, path=path, as_of=pd.Timestamp("2026-06-30"))
+            == 10000
+        )
 
     def test_holdings_are_included_in_net_worth(self, tmp_path):
         """Holdings from the holdings table (investment accounts) are always
