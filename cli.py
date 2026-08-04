@@ -524,9 +524,13 @@ def get_breakdown():
         click.echo("No account data yet.")
         return
 
-    account_info = build_accounts_table()[["account_id", "display_name", "account_type"]]
+    account_info = build_accounts_table()[
+        ["account_id", "display_name", "account_type"]
+    ]
     breakdown = breakdown.merge(account_info, on="account_id", how="left")
-    breakdown["display_name"] = breakdown["display_name"].fillna(breakdown["account_id"])
+    breakdown["display_name"] = breakdown["display_name"].fillna(
+        breakdown["account_id"]
+    )
 
     is_ledger_row = breakdown["source"] == breakdown["account_id"]
     is_cash_row = breakdown["source"] == "Cash account"
