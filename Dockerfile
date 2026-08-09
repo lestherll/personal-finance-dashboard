@@ -11,8 +11,13 @@
 # Override the interpreter to reproduce the host pin (tagged separately, so
 # the 3.13 image is not clobbered):
 #   PYTHON_VERSION=3.14 docker compose build
+#
+# Two targets share the dependency-layer base below: `test` (default, what
+# compose.yaml/CI build) and `dashboard` (the deploy/ manifests' image,
+# built explicitly with --target dashboard). `test` stays last so the
+# implicit default target is unchanged.
 ARG PYTHON_VERSION=3.13
-FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS base
 
 # The venv lives outside /app so a bind-mounted source tree can't shadow it
 # with the host's own .venv (which is built against a different interpreter).
@@ -27,8 +32,20 @@ WORKDIR /app
 
 # Dependency layer: only busts when the lockfile changes, not on every edit.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --extra dev --frozen --no-install-project
 
+FROM base AS dashboard
+RUN uv sync --extra dashboard --frozen --no-install-project
+COPY . .
+
+# data/ is personal financial data - hostPath/bind-mounted at runtime, never
+# baked in.
+ENV DATA_DIR=/app/data
+
+EXPOSE 8501
+CMD ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0", "--server.port=8501"]
+
+FROM base AS test
+RUN uv sync --extra dev --frozen --no-install-project
 COPY . .
 
 # data/ is personal financial data - bind-mounted at runtime, never baked in.

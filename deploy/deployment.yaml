@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: personal-finance-dashboard
+  namespace: personal-finance-dashboard
+spec:
+  # Single replica: DATA_DIR is a hostPath onto the real data lake
+  # (DuckDB file + parquet), and concurrent Streamlit processes writing to
+  # the same DuckDB file would race. hostPath also implicitly pins this
+  # workload to whichever node has the data — fine on today's single-node
+  # cluster, but would need a nodeSelector/affinity if a second node is
+  # ever added.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: personal-finance-dashboard
+  template:
+    metadata:
+      labels:
+        app: personal-finance-dashboard
+    spec:
+      securityContext:
+        # Matches the host user (lestherll, uid/gid 1000) so files written
+        # by uploads through the app stay owned the same way compose.yaml's
+        # `user: "${UID:-1000}:${GID:-1000}"` keeps them for local dev.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: personal-finance-dashboard
+          # :latest — no image-automation reconciler yet (unbuilt C3/D2),
+          # same "test server" pattern as fastapi-echo: re-pull on rollout,
+          # not auto-updated on new pushes.
+          image: ghcr.io/lestherll/personal-finance-dashboard:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8501
+          env:
+            - name: DATA_DIR
+              value: /app/data
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet: { path: /_stcore/health, port: 8501 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /_stcore/health, port: 8501 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 1000m, memory: 1Gi }
+      volumes:
+        - name: data
+          # The real, host-owned data lake (raw statements, Bronze/Silver
+          # parquet, DuckDB file, account_map.json) — mounted directly
+          # rather than copied into a PVC, so uploads made through the app
+          # and edits made through the host-side CLI (cli.py /
+          # ingestion_service.py) hit the exact same files. Node-local disk
+          # either way (this cluster's only StorageClass, local-path-
+          # provisioner, is also node-local) — the actual mitigation for
+          # "what if this host is lost" is an off-host backup of this path,
+          # not the choice of hostPath vs. PVC.
+          hostPath:
+            path: /home/lestherll/projects/personal-finance-dashboard/data
+            type: Directory

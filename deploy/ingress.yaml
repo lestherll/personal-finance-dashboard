@@ -1,0 +1,21 @@
+# Same pattern as homelab's grafana-ingress.yaml and fastapi-echo's
+# ingress.yaml: hostname comes from spec.tls[].hosts, not metadata.name.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: personal-finance-dashboard
+  namespace: personal-finance-dashboard
+spec:
+  ingressClassName: tailscale
+  tls:
+    - hosts: ["personal-finance-dashboard"]
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: personal-finance-dashboard
+                port:
+                  number: 80
