@@ -430,6 +430,7 @@ _TRANSACTIONS_COLUMNS = [
     "bank_transaction_id",
     "ingested_at",
     "upload_timestamp",
+    "statement_period_from",
     "statement_period_to",
     "line_number",
 ]
@@ -530,6 +531,9 @@ class SilverTransformer:
                         "account_id": account_id,
                         "ingested_at": pd.Timestamp.now(),
                         "upload_timestamp": bronze_row.get("upload_timestamp"),
+                        "statement_period_from": bronze_row.get(
+                            "statement_period_from"
+                        ),
                         "statement_period_to": bronze_row.get("statement_period_to"),
                         "line_number": bronze_row.get("line_number"),
                         **normalized,

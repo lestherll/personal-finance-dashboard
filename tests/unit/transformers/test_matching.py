@@ -14,6 +14,7 @@ def _txn(
     bronze_record_id=None,
     ingestion_id=None,
     upload_timestamp=None,
+    statement_period_from=None,
     statement_period_to=None,
     line_number=1,
     bank_transaction_id=None,
@@ -30,6 +31,7 @@ def _txn(
         "bronze_source_key": f"key_{line_number}",
         "ingestion_id": ingestion_id or "abc123",
         "upload_timestamp": upload_timestamp or pd.Timestamp("2026-01-20"),
+        "statement_period_from": statement_period_from,
         "statement_period_to": statement_period_to,
         "line_number": line_number,
         "bank_transaction_id": bank_transaction_id,
@@ -296,6 +298,172 @@ class TestSilverIdIsScopedBySourceType:
         assert any(i.startswith("monzo:") for i in ids)
         assert any(i.startswith("monzo-pdf:") for i in ids)
         assert set(sources["silver_transaction_id"]) == ids
+
+
+class TestOverlapWindowDedup:
+    """A partial-month statement (e.g. day 1-15) later re-covered by a
+    full-month statement for the same account/source_type re-reports the
+    same real transactions. Without this tier, step 2's occurrence
+    numbering treats the second file's copies as distinct repeats (see
+    TestSameFingerprintUniqueSilverId) and every aggregate double-counts
+    the overlapping days."""
+
+    def test_matching_transaction_in_overlap_window_collapses(self):
+        partial = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_partial_coffee",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-15"),
+            line_number=1,
+        )
+        full_coffee = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_full_coffee",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-31"),
+            line_number=1,
+        )
+        # Present only in the full statement, dated after the partial
+        # statement's coverage ended - must survive untouched.
+        full_only_grocery = _txn(
+            description="GROCERY STORE",
+            amount_minor=-2000,
+            transaction_date="2026-01-20",
+            bronze_record_id="br_full_grocery",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-31"),
+            line_number=2,
+        )
+
+        canonical, sources = match_transactions(
+            _make_frame([partial, full_coffee, full_only_grocery])
+        )
+
+        assert len(canonical) == 2
+        assert sorted(canonical["description"].tolist()) == [
+            "COFFEE SHOP",
+            "GROCERY STORE",
+        ]
+
+        overlap_prov = sources[sources["match_policy"].str.startswith("overlap-window")]
+        assert len(overlap_prov) == 1
+        assert overlap_prov.iloc[0]["bronze_record_id"] in {
+            "br_partial_coffee",
+            "br_full_coffee",
+        }
+        # Both bronze rows are still traceable via provenance, even though
+        # only one canonical row remains.
+        assert set(sources["bronze_record_id"]) >= {
+            "br_partial_coffee",
+            "br_full_coffee",
+        }
+
+    def test_asymmetric_occurrence_counts_keep_the_excess(self):
+        """The full statement reports the coffee shop twice in one day, the
+        partial statement only once (e.g. its cutoff missed the second
+        purchase's line, or it's a genuine second purchase). Multiset
+        pairing must collapse only one pair and leave the excess distinct -
+        max(1, 2) = 2 canonical rows, never 3 (sum) or 1 (over-collapse)."""
+        partial = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_partial_1",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-15"),
+            line_number=1,
+        )
+        full_1 = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_full_1",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-31"),
+            line_number=1,
+        )
+        full_2 = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_full_2",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-31"),
+            line_number=2,
+        )
+
+        canonical, sources = match_transactions(_make_frame([partial, full_1, full_2]))
+
+        assert len(canonical) == 2
+        # Every bronze row is still accounted for in provenance.
+        assert set(sources["bronze_record_id"]) == {
+            "br_partial_1",
+            "br_full_1",
+            "br_full_2",
+        }
+
+    def test_non_overlapping_periods_do_not_collapse(self):
+        """Two ingestions whose declared periods don't overlap at all are
+        never compared, even if a stray row coincidentally shares a full
+        fingerprint - the period gate short-circuits before any date/content
+        comparison."""
+        jan = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_jan",
+            ingestion_id="ingest_jan",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-15"),
+            line_number=1,
+        )
+        feb = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-10",
+            bronze_record_id="br_feb",
+            ingestion_id="ingest_feb",
+            statement_period_from=pd.Timestamp("2026-02-01"),
+            statement_period_to=pd.Timestamp("2026-02-28"),
+            line_number=1,
+        )
+
+        canonical, sources = match_transactions(_make_frame([jan, feb]))
+
+        assert len(canonical) == 2
+        assert not sources["match_policy"].str.startswith("overlap-window").any()
+
+    def test_matching_row_outside_the_overlap_window_is_not_collapsed(self):
+        """A fingerprint shared by both ingestions but dated outside the
+        overlap *intersection* (even though it's inside one file's own
+        declared period) must not be collapsed - the window is the
+        intersection of the two periods, not either one alone."""
+        partial = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-20",
+            bronze_record_id="br_partial_late",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-15"),
+            line_number=1,
+        )
+        full = _txn(
+            description="COFFEE SHOP",
+            transaction_date="2026-01-20",
+            bronze_record_id="br_full_late",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-01-01"),
+            statement_period_to=pd.Timestamp("2026-01-31"),
+            line_number=1,
+        )
+
+        canonical, sources = match_transactions(_make_frame([partial, full]))
+
+        assert len(canonical) == 2
+        assert not sources["match_policy"].str.startswith("overlap-window").any()
 
 
 class TestMatchTransactionsEmpty:
