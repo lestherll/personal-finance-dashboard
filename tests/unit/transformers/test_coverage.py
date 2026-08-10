@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 
-from transformers.coverage import find_coverage_gaps, find_statement_periods
+from transformers.coverage import (
+    build_coverage_calendar,
+    find_coverage_gaps,
+    find_statement_periods,
+)
 
 
 class _FakeDatalakeForCoverage:
@@ -285,3 +289,144 @@ class TestFindCoverageGaps:
         )
         gaps = find_coverage_gaps(periods)
         assert gaps.empty
+
+
+def _period_row(account_id, filename, period_from, period_to, source_type="amex"):
+    return {
+        "account_id": account_id,
+        "source_type": source_type,
+        "filename": filename,
+        "period_from": period_from,
+        "period_to": period_to,
+    }
+
+
+class TestBuildCoverageCalendar:
+    def test_empty_periods_returns_empty_frame(self):
+        periods = pd.DataFrame(columns=["account_id", "period_from", "period_to"])
+        accounts = pd.DataFrame(columns=["account_id", "display_name"])
+        calendar = build_coverage_calendar(periods, accounts)
+        assert calendar.empty
+        assert list(calendar.columns) == [
+            "account_id",
+            "display_name",
+            "month",
+            "status",
+        ]
+
+    def test_single_account_all_covered_no_gaps(self):
+        periods = pd.DataFrame(
+            [
+                _period_row(
+                    "acc_amex",
+                    "jan.pdf",
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-31"),
+                ),
+                _period_row(
+                    "acc_amex",
+                    "feb.pdf",
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-02-28"),
+                ),
+            ]
+        )
+        accounts = pd.DataFrame([{"account_id": "acc_amex", "display_name": "Amex"}])
+
+        calendar = build_coverage_calendar(periods, accounts)
+
+        assert len(calendar) == 2
+        assert set(calendar["status"]) == {"covered"}
+        assert set(calendar["display_name"]) == {"Amex"}
+
+    def test_missing_month_between_periods_is_a_gap(self):
+        periods = pd.DataFrame(
+            [
+                _period_row(
+                    "acc_amex",
+                    "jan.pdf",
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-31"),
+                ),
+                _period_row(
+                    "acc_amex",
+                    "mar.pdf",
+                    pd.Timestamp("2026-03-01"),
+                    pd.Timestamp("2026-03-31"),
+                ),
+            ]
+        )
+        accounts = pd.DataFrame([{"account_id": "acc_amex", "display_name": "Amex"}])
+
+        calendar = build_coverage_calendar(periods, accounts)
+        by_month = calendar.set_index(calendar["month"].dt.strftime("%Y-%m"))["status"]
+
+        assert by_month["2026-01"] == "covered"
+        assert by_month["2026-02"] == "gap"
+        assert by_month["2026-03"] == "covered"
+
+    def test_shorter_account_gets_no_data_outside_its_own_range(self):
+        """Two accounts sharing the same month columns: the account with a
+        narrower observed range shows 'no_data' (not 'gap') for months
+        before its first period or after its last - nothing was expected
+        there yet, so it isn't a coverage problem."""
+        periods = pd.DataFrame(
+            [
+                _period_row(
+                    "acc_amex",
+                    "jan.pdf",
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-31"),
+                ),
+                _period_row(
+                    "acc_amex",
+                    "feb.pdf",
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-02-28"),
+                ),
+                _period_row(
+                    "acc_amex",
+                    "mar.pdf",
+                    pd.Timestamp("2026-03-01"),
+                    pd.Timestamp("2026-03-31"),
+                ),
+                _period_row(
+                    "acc_kroo",
+                    "feb.pdf",
+                    pd.Timestamp("2026-02-01"),
+                    pd.Timestamp("2026-02-28"),
+                    source_type="kroo",
+                ),
+            ]
+        )
+        accounts = pd.DataFrame(
+            [
+                {"account_id": "acc_amex", "display_name": "Amex"},
+                {"account_id": "acc_kroo", "display_name": "Kroo"},
+            ]
+        )
+
+        calendar = build_coverage_calendar(periods, accounts)
+        kroo_rows = calendar[calendar["account_id"] == "acc_kroo"]
+        kroo = kroo_rows.set_index(kroo_rows["month"].dt.strftime("%Y-%m"))["status"]
+
+        assert kroo["2026-01"] == "no_data"
+        assert kroo["2026-02"] == "covered"
+        assert kroo["2026-03"] == "no_data"
+
+    def test_missing_display_name_falls_back_to_account_id(self):
+        periods = pd.DataFrame(
+            [
+                _period_row(
+                    "acc_unmapped",
+                    "jan.pdf",
+                    pd.Timestamp("2026-01-01"),
+                    pd.Timestamp("2026-01-31"),
+                )
+            ]
+        )
+        accounts = pd.DataFrame(columns=["account_id", "display_name"])
+
+        calendar = build_coverage_calendar(periods, accounts)
+
+        assert calendar.iloc[0]["display_name"] == "acc_unmapped"

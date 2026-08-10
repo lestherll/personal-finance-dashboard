@@ -1,0 +1,6 @@
+apiVersion: platform.homelab/v1alpha1
+kind: ObjectStorage
+metadata:
+  name: pfd-bucket
+  namespace: personal-finance-dashboard
+spec: {}

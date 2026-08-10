@@ -68,6 +68,28 @@ def _compute_fingerprint(
     return hashlib.sha256(material).hexdigest()
 
 
+def _loose_fingerprint(account_id: str, amount_minor: int, description: str) -> str:
+    """Same as _compute_fingerprint but without the date - used only by the
+    overlap-window tier's date-drift fallback (see _DATE_DRIFT_TOLERANCE)."""
+    normalized = _normalize_description(description)
+    material = f"{account_id}|{amount_minor}|{normalized}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
+# Same-source overlap-window rows that share everything but the date can
+# still be one real transaction reported under two different dates across
+# two download sessions - observed with natwest-transactions, whose online
+# "Transactions" export isn't stable about pending-vs-cleared dates between
+# downloads (e.g. a KROO transfer reported as 25 Jul in one download and 27
+# Jul in a later, overlapping one). Since natwest-transactions has no
+# balance anchor of its own (see NATWEST_TRANSACTIONS_BALANCE_DESIGN.md),
+# nothing else catches the resulting double-count. Kept deliberately small -
+# wide enough for the observed drift, narrow enough that two genuinely
+# separate same-amount/description transactions are unlikely to fall inside
+# it by coincidence.
+_DATE_DRIFT_TOLERANCE = pd.Timedelta(days=3)
+
+
 def _silver_id(source_type: str, fingerprint: str, occurrence) -> str:
     """Canonical silver_transaction_id, scoped by source_type.
 
@@ -167,7 +189,9 @@ def _collapse_ingestion_pair(
     provenance_rows: List[Dict],
 ) -> pd.DataFrame:
     """Multiset-collapse matching fingerprints between two ingestions,
-    restricted to rows dated inside [window_lo, window_hi].
+    restricted to rows dated inside [window_lo, window_hi] (buffered by
+    _DATE_DRIFT_TOLERANCE on each side, so a date-shifted duplicate just
+    past the declared-period intersection is still a reachable candidate).
 
     Which side survives as canonical is arbitrary (the match is already on
     full content, so either row is an equally valid representative) but
@@ -175,7 +199,9 @@ def _collapse_ingestion_pair(
     ties - so reruns are stable.
     """
     txn_dates = pd.to_datetime(df["transaction_date"])
-    in_window = (txn_dates >= window_lo) & (txn_dates <= window_hi)
+    in_window = (txn_dates >= window_lo - _DATE_DRIFT_TOLERANCE) & (
+        txn_dates <= window_hi + _DATE_DRIFT_TOLERANCE
+    )
     mask = in_window & df["ingestion_id"].isin([ingestion_a, ingestion_b])
     if not mask.any():
         return df
@@ -192,38 +218,93 @@ def _collapse_ingestion_pair(
     b_key = (b_rows["_sort_key"].max(), ingestion_b)
     preferred, non_preferred = (b_rows, a_rows) if b_key > a_key else (a_rows, b_rows)
 
+    def _survivor_id(row) -> str:
+        return _silver_id(row["source_type"], row["_fingerprint"], row["_occurrence"])
+
     preferred_ids: Dict[str, List[str]] = {}
     for _, row in preferred.iterrows():
-        survivor_id = _silver_id(
-            row["source_type"], row["_fingerprint"], row["_occurrence"]
-        )
-        preferred_ids.setdefault(row["_fingerprint"], []).append(survivor_id)
+        preferred_ids.setdefault(row["_fingerprint"], []).append(_survivor_id(row))
 
     prov_index: Dict[str, List[Dict]] = {}
     for prov in provenance_rows:
         prov_index.setdefault(prov["silver_transaction_id"], []).append(prov)
 
+    def _absorb(non_preferred_row, survivor_id: str, match_policy: str) -> None:
+        absorbed_id = _survivor_id(non_preferred_row)
+        new_entry = {
+            "silver_transaction_id": survivor_id,
+            "bronze_record_id": non_preferred_row.get("bronze_record_id", "") or "",
+            "ingestion_id": non_preferred_row.get("ingestion_id", "") or "",
+            "source_type": non_preferred_row.get("source_type", ""),
+            "match_policy": match_policy,
+        }
+        provenance_rows.append(new_entry)
+        prov_index.setdefault(survivor_id, []).append(new_entry)
+        for prov in prov_index.pop(absorbed_id, []):
+            prov["silver_transaction_id"] = survivor_id
+            prov_index.setdefault(survivor_id, []).append(prov)
+
     drop_indices = []
+    consumed_preferred_ids: Set[str] = set()
     for idx, row in non_preferred.iterrows():
         fp = row["_fingerprint"]
         if preferred_ids.get(fp):
             drop_indices.append(idx)
             survivor_id = preferred_ids[fp].pop(0)
-            absorbed_id = _silver_id(
-                row["source_type"], row["_fingerprint"], row["_occurrence"]
+            consumed_preferred_ids.add(survivor_id)
+            _absorb(row, survivor_id, f"overlap-window({row['source_type']})")
+
+    # Fallback pass: rows that didn't share an exact (date-inclusive)
+    # fingerprint may still be the same real transaction under a
+    # slightly-shifted date - see _DATE_DRIFT_TOLERANCE. Only collapsed when
+    # unambiguous: exactly one leftover candidate on each side sharing
+    # (account, amount, description); any ambiguity is left alone rather
+    # than guessed at.
+    leftover_non_preferred = non_preferred.drop(index=drop_indices)
+    leftover_preferred = [
+        (idx, row)
+        for idx, row in preferred.iterrows()
+        if _survivor_id(row) not in consumed_preferred_ids
+    ]
+
+    if not leftover_non_preferred.empty and leftover_preferred:
+        preferred_by_loose: Dict[str, List[Tuple]] = {}
+        for idx, row in leftover_preferred:
+            loose_fp = _loose_fingerprint(
+                row["account_id"], row["amount_minor"], row["description"]
             )
-            new_entry = {
-                "silver_transaction_id": survivor_id,
-                "bronze_record_id": row.get("bronze_record_id", "") or "",
-                "ingestion_id": row.get("ingestion_id", "") or "",
-                "source_type": row.get("source_type", ""),
-                "match_policy": f"overlap-window({row['source_type']})",
-            }
-            provenance_rows.append(new_entry)
-            prov_index.setdefault(survivor_id, []).append(new_entry)
-            for prov in prov_index.pop(absorbed_id, []):
-                prov["silver_transaction_id"] = survivor_id
-                prov_index.setdefault(survivor_id, []).append(prov)
+            preferred_by_loose.setdefault(loose_fp, []).append((idx, row))
+
+        non_preferred_by_loose: Dict[str, List[Tuple]] = {}
+        for idx, row in leftover_non_preferred.iterrows():
+            loose_fp = _loose_fingerprint(
+                row["account_id"], row["amount_minor"], row["description"]
+            )
+            non_preferred_by_loose.setdefault(loose_fp, []).append((idx, row))
+
+        for loose_fp, non_pref_candidates in non_preferred_by_loose.items():
+            pref_candidates = preferred_by_loose.get(loose_fp)
+            if (
+                not pref_candidates
+                or len(pref_candidates) != 1
+                or len(non_pref_candidates) != 1
+            ):
+                continue
+            _, pref_row = pref_candidates[0]
+            np_idx, np_row = non_pref_candidates[0]
+            date_gap = abs(
+                pd.Timestamp(np_row["transaction_date"])
+                - pd.Timestamp(pref_row["transaction_date"])
+            )
+            if date_gap > _DATE_DRIFT_TOLERANCE:
+                continue
+            drop_indices.append(np_idx)
+            survivor_id = _survivor_id(pref_row)
+            _absorb(
+                np_row,
+                survivor_id,
+                f"overlap-window-date-shifted({np_row['source_type']})",
+            )
 
     deduped_non_preferred = non_preferred.drop(index=drop_indices)
     return pd.concat(

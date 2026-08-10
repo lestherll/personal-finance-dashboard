@@ -13,7 +13,6 @@ Usage:
     uv run python cli.py silver builds
 """
 
-import hashlib
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -22,18 +21,22 @@ import click
 import pandas as pd
 
 from adapters.base import ReconciliationResult, StatementPeriod
-from adapters.factory import AdapterDetectionError, AdapterFactory
+from adapters.factory import AdapterFactory
+from ingestion_service import (
+    STAGE_ALREADY_INGESTED,
+    STAGE_BRONZE_FAILED,
+    STAGE_COMPLETE,
+    STAGE_DETECTION_FAILED,
+    STAGE_PARSE_FAILED,
+    STAGE_ZERO_RECORDS,
+    IngestOutcome,
+    ingest_file,
+)
 from models.datalake import get_datalake
 from models.money import format_minor
-from models.ingestion import (
-    STATUS_BRONZE_FAILED,
-    STATUS_COMPLETE,
-    STATUS_PARSE_FAILED,
-    load_manifest,
-    start_ingestion,
-    write_manifest,
-)
+from models.ingestion import load_manifest, start_ingestion, write_manifest
 from transformers.account_config import (
+    ACCOUNT_TYPE_CHOICES as _ACCOUNT_TYPE_CHOICES,
     build_accounts_table,
     find_unmapped_accounts,
     register_account,
@@ -47,7 +50,7 @@ from transformers.reconciliation_status import find_reconciliation_status
 from transformers.silver_transformer import run_bronze_to_silver
 from models.build import list_builds, current_build_id
 
-ACCOUNT_TYPE_CHOICES = click.Choice(["current", "credit", "investment", "savings"])
+ACCOUNT_TYPE_CHOICES = click.Choice(_ACCOUNT_TYPE_CHOICES)
 
 
 @click.group()
@@ -163,6 +166,30 @@ def _echo_statement_period(period: Optional[StatementPeriod]) -> None:
     )
 
 
+def _echo_ingest_outcome(path: Path, outcome: IngestOutcome) -> None:
+    if outcome.stage == STAGE_ALREADY_INGESTED:
+        click.echo(f"✓ {path.name}: already ingested ({outcome.file_hash})")
+    elif outcome.stage == STAGE_DETECTION_FAILED:
+        click.echo(f"✗ {path.name}: {outcome.error}")
+    elif outcome.stage == STAGE_PARSE_FAILED:
+        click.echo(
+            f"✗ {path.name}: recognized the format but failed to parse "
+            f"this file ({outcome.error})"
+        )
+    elif outcome.stage == STAGE_ZERO_RECORDS:
+        click.echo(f"⚠ {path.name}: parsed 0 records")
+    elif outcome.stage == STAGE_BRONZE_FAILED:
+        click.echo(f"✗ {path.name}: failed to publish Bronze ({outcome.error})")
+    elif outcome.stage == STAGE_COMPLETE:
+        click.echo(
+            f"✓ {path.name}: {outcome.record_count} record(s) -> {outcome.bronze_path}"
+        )
+        click.echo(f"  archived raw file -> {outcome.manifest.raw_artifact_path}")
+        _echo_reconciliation(outcome.reconciliation)
+        _echo_reconciliations(outcome.reconciliations)
+        _echo_statement_period(outcome.statement_period)
+
+
 @cli.command("ingest")
 @click.argument(
     "files", nargs=-1, required=True, type=click.Path(exists=True, dir_okay=False)
@@ -175,116 +202,15 @@ def ingest(files):
 
     for file_arg in files:
         path = Path(file_arg)
-        raw_bytes = path.read_bytes()
-        file_hash = hashlib.sha256(raw_bytes).hexdigest()
-        manifest = start_ingestion(path, file_hash)
-        if manifest.status == STATUS_COMPLETE:
-            click.echo(f"✓ {path.name}: already ingested ({file_hash})")
-            continue
-        content = (
-            raw_bytes.decode("utf-8-sig")
-            if path.suffix.lower() == ".csv"
-            else raw_bytes
+        outcome = ingest_file(
+            path,
+            datalake,
+            factory,
+            start_ingestion_fn=start_ingestion,
+            write_manifest_fn=write_manifest,
         )
-
-        try:
-            result = factory.ingest(content, path.name, file_hash)
-        except AdapterDetectionError as e:
-            manifest.status = STATUS_PARSE_FAILED
-            manifest.error = str(e)
-            write_manifest(manifest)
-            click.echo(f"✗ {path.name}: {e}")
-            had_failure = True
-            continue
-        except ValueError as e:
-            manifest.status = STATUS_PARSE_FAILED
-            manifest.error = str(e)
-            write_manifest(manifest)
-            click.echo(
-                f"✗ {path.name}: recognized the format but failed to parse "
-                f"this file ({e})"
-            )
-            had_failure = True
-            continue
-
-        records = result.records
-        manifest.source_type = result.source_type or records[0].source_type
-        manifest.adapter = result.adapter or "test/legacy-adapter"
-        manifest.parser_version = result.parser_version
-        if not records:
-            manifest.status = STATUS_PARSE_FAILED
-            manifest.error = "Adapter parsed zero records"
-            write_manifest(manifest)
-            click.echo(f"⚠ {path.name}: parsed 0 records")
-            had_failure = True
-            continue
-
-        df = pd.DataFrame(
-            [
-                {
-                    "source_key": r.source_key,
-                    "raw_data": r.raw_data,
-                    "account_identifier": r.account_identifier,
-                    "record_type": r.record_type,
-                    "file_hash": r.file_hash,
-                    "line_number": r.line_number,
-                    "bronze_record_id": r.bronze_record_id,
-                    "source_ordinal": r.source_ordinal,
-                }
-                for r in records
-            ]
-        )
-        try:
-            filepath = datalake.write_bronze(
-                manifest,
-                df,
-                reconciliation=result.reconciliation,
-                statement_period=result.statement_period,
-                reconciliations=result.reconciliations,
-            )
-        except Exception as e:
-            manifest.status = STATUS_BRONZE_FAILED
-            manifest.error = str(e)
-            write_manifest(manifest)
-            click.echo(f"✗ {path.name}: failed to publish Bronze ({e})")
-            had_failure = True
-            continue
-
-        if result.reconciliation is not None:
-            manifest.reconciliation_check_name = result.reconciliation.check_name
-            manifest.reconciliation_expected_minor = (
-                result.reconciliation.expected_closing_minor
-            )
-            manifest.reconciliation_derived_minor = (
-                result.reconciliation.derived_closing_minor
-            )
-            manifest.reconciliation_matches = result.reconciliation.matches
-        if result.reconciliations:
-            manifest.reconciliations = [
-                {
-                    "check_name": r.check_name,
-                    "expected_closing_minor": r.expected_closing_minor,
-                    "derived_closing_minor": r.derived_closing_minor,
-                    "matches": r.matches,
-                    "account_identifier": r.account_identifier,
-                }
-                for r in result.reconciliations
-            ]
-
-        manifest.status = STATUS_COMPLETE
-        manifest.record_count = len(records)
-        manifest.bronze_path = filepath
-        manifest.error = None
-        write_manifest(manifest)
-        click.echo(f"✓ {path.name}: {len(records)} record(s) -> {filepath}")
-        click.echo(f"  archived raw file -> {manifest.raw_artifact_path}")
-        _echo_reconciliation(result.reconciliation)
-        _echo_reconciliations(result.reconciliations)
-        _echo_statement_period(result.statement_period)
-
-        if result.reconciliation is not None and result.reconciliation.matches is False:
-            had_failure = True
-        if any(r.matches is False for r in result.reconciliations):
+        _echo_ingest_outcome(path, outcome)
+        if outcome.is_failure():
             had_failure = True
 
     if had_failure:

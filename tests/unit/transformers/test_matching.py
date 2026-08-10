@@ -466,6 +466,152 @@ class TestOverlapWindowDedup:
         assert not sources["match_policy"].str.startswith("overlap-window").any()
 
 
+class TestOverlapWindowDateDrift:
+    """Real-world bug: two natwest-transactions "on-demand" downloads whose
+    declared statement periods overlap can report the *same* real transaction
+    under two different dates (a pending-vs-cleared date shift in the online
+    export between download sessions) - e.g. one download shows a KROO
+    transfer on 2026-07-25, a later download of an overlapping window shows
+    the same transfer on 2026-07-27. Because the exact-date fingerprint used
+    by the plain overlap-window tier treats these as two distinct
+    transactions, both survive and get double-counted downstream (e.g. in
+    the derived account_ledger rollforward for a source with no balance
+    anchor of its own - see NATWEST_TRANSACTIONS_BALANCE_DESIGN.md)."""
+
+    def test_date_shifted_duplicate_within_tolerance_collapses(self):
+        partial = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-25",
+            source_type="natwest-transactions",
+            bronze_record_id="br_partial_kroo",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-04-26"),
+            statement_period_to=pd.Timestamp("2026-07-26"),
+            line_number=1,
+        )
+        full = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-27",
+            source_type="natwest-transactions",
+            bronze_record_id="br_full_kroo",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-05-04"),
+            statement_period_to=pd.Timestamp("2026-08-04"),
+            line_number=1,
+        )
+
+        canonical, sources = match_transactions(_make_frame([partial, full]))
+
+        assert len(canonical) == 1
+        drift_prov = sources[
+            sources["match_policy"].str.startswith("overlap-window-date-shifted")
+        ]
+        assert len(drift_prov) == 1
+        assert drift_prov.iloc[0]["bronze_record_id"] in {
+            "br_partial_kroo",
+            "br_full_kroo",
+        }
+        assert set(sources["bronze_record_id"]) == {"br_partial_kroo", "br_full_kroo"}
+
+    def test_date_gap_beyond_tolerance_does_not_collapse(self):
+        """A gap wider than the tolerance is left as two distinct
+        transactions - erring on the side of not merging rather than
+        guessing across too wide a gap."""
+        partial = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-20",
+            source_type="natwest-transactions",
+            bronze_record_id="br_partial_far",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-04-26"),
+            statement_period_to=pd.Timestamp("2026-07-26"),
+            line_number=1,
+        )
+        full = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-27",
+            source_type="natwest-transactions",
+            bronze_record_id="br_full_far",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-05-04"),
+            statement_period_to=pd.Timestamp("2026-08-04"),
+            line_number=1,
+        )
+
+        canonical, sources = match_transactions(_make_frame([partial, full]))
+
+        assert len(canonical) == 2
+        assert not sources["match_policy"].str.startswith("overlap-window").any()
+
+    def test_ambiguous_multiple_candidates_are_not_collapsed(self):
+        """Two same-amount/description rows on each side within the window
+        is ambiguous (which pairs with which?) - left alone rather than
+        guessed at, even though each side's count matches."""
+        partial_1 = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-24",
+            source_type="natwest-transactions",
+            bronze_record_id="br_partial_1",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-04-26"),
+            statement_period_to=pd.Timestamp("2026-07-26"),
+            line_number=1,
+        )
+        partial_2 = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-25",
+            source_type="natwest-transactions",
+            bronze_record_id="br_partial_2",
+            ingestion_id="ingest_partial",
+            statement_period_from=pd.Timestamp("2026-04-26"),
+            statement_period_to=pd.Timestamp("2026-07-26"),
+            line_number=2,
+        )
+        full_1 = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-26",
+            source_type="natwest-transactions",
+            bronze_record_id="br_full_1",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-05-04"),
+            statement_period_to=pd.Timestamp("2026-08-04"),
+            line_number=1,
+        )
+        full_2 = _txn(
+            account_id="acc_natwest_current",
+            description="KROO ACCOUNT Mobile/Online Transaction",
+            amount_minor=-274575,
+            transaction_date="2026-07-27",
+            source_type="natwest-transactions",
+            bronze_record_id="br_full_2",
+            ingestion_id="ingest_full",
+            statement_period_from=pd.Timestamp("2026-05-04"),
+            statement_period_to=pd.Timestamp("2026-08-04"),
+            line_number=2,
+        )
+
+        canonical, sources = match_transactions(
+            _make_frame([partial_1, partial_2, full_1, full_2])
+        )
+
+        assert len(canonical) == 4
+        assert not sources["match_policy"].str.startswith("overlap-window").any()
+
+
 class TestMatchTransactionsEmpty:
     def test_empty_input_returns_schema(self):
         canonical, sources = match_transactions(pd.DataFrame())
