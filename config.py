@@ -30,6 +30,21 @@ ACCOUNT_MAP_PATH = Path(
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# Object storage (SeaweedFS via the platform's ObjectStorage/Application
+# attachment, alias "data" - see homelab's docs/platform-api-usage.md).
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY are deliberately NOT read here:
+# those are boto3's own default credential-chain env var names, and the
+# platform suffixes every attachment's vars with its alias so a second
+# bucket attachment never collides with the first - so they must be passed
+# to the client explicitly rather than picked up automatically. None of
+# these are required at import time; a dev machine or an app with no
+# ObjectStorage attachment simply gets None for all four and
+# check_s3_connectivity() reports "not configured".
+S3_ENDPOINT = os.getenv("S3_ENDPOINT_DATA")
+S3_BUCKET = os.getenv("S3_BUCKET_DATA")
+S3_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID_DATA")
+S3_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY_DATA")
+
 # Redis (Celery broker for task orchestration)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 

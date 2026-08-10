@@ -1,0 +1,29 @@
+
+apiVersion: platform.homelab/v1alpha1
+kind: Application
+metadata:
+  name: personal-finance-dashboard
+  namespace: personal-finance-dashboard
+spec:
+  # :latest — no image-automation reconciler yet (unbuilt C3/D2). The platform
+  # sets imagePullPolicy: Always, so a rollout re-pulls.
+  image: ghcr.io/lestherll/personal-finance-dashboard:latest
+  port: 8501
+  # Tailscale hostname without the tailnet suffix; the operator resolves the
+  # full FQDN and the platform reads it back into status.url.
+  host: personal-finance-dashboard
+  probePath: /_stcore/health
+  size: medium
+
+  objectStorage:
+    - ref: pfd-bucket              # metadata.name of an ObjectStorage in this namespace
+      as: data   
+
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    
+  persistence:
+    hostPath: /home/lestherll/projects/personal-finance-dashboard/data
+    mountPath: /app/data

@@ -14,6 +14,7 @@ dependencies = [
     "python-dateutil>=2.8.2",
     "click>=8.1.7",
     "PyMuPDF>=1.24.0",
+    "boto3>=1.34.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +43,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["adapters", "models", "transformers", "cli"]
+source = ["adapters", "models", "transformers", "cli", "ingestion_service"]
 omit = ["*/tests/*"]
 
 [tool.coverage.report]
@@ -57,7 +58,7 @@ exclude_lines = [
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "."
-files = ["adapters", "models", "transformers", "cli.py"]
+files = ["adapters", "models", "transformers", "cli.py", "ingestion_service.py"]
 exclude = [
     "tests/",
     "data/",

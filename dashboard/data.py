@@ -21,6 +21,11 @@ from transformers.balance import (
     get_net_worth,
     get_net_worth_breakdown,
 )
+from transformers.coverage import (
+    build_coverage_calendar,
+    find_coverage_gaps,
+    find_statement_periods,
+)
 
 AVAILABLE_MONTHS_SQL = """
     SELECT DISTINCT date_trunc('month', transaction_date) AS month
@@ -194,3 +199,33 @@ def get_max_monthly_spend() -> Tuple[int, Optional[str]]:
         return int(max_spend) if pd.notna(max_spend) else 0, None
     except (StaleSilverError, duckdb.Error) as e:
         return 0, str(e)
+
+
+@st.cache_data(ttl=300)
+def get_coverage_calendar() -> Tuple[pd.DataFrame, Optional[str]]:
+    """Long-form (account, month, status) grid for the coverage calendar -
+    reads Bronze directly (statement periods are a Bronze-level fact), so
+    this works even before any Silver build exists."""
+    try:
+        datalake = get_datalake()
+        periods = find_statement_periods(datalake)
+        accounts = build_accounts_table()[["account_id", "display_name"]]
+        return build_coverage_calendar(periods, accounts), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+@st.cache_data(ttl=300)
+def get_coverage_gaps() -> Tuple[pd.DataFrame, Optional[str]]:
+    """Exact day-precision coverage gaps (finer-grained than the calendar's
+    month buckets), with display_name merged in for display."""
+    try:
+        datalake = get_datalake()
+        periods = find_statement_periods(datalake)
+        gaps = find_coverage_gaps(periods)
+        if gaps.empty:
+            return gaps, None
+        accounts = build_accounts_table()[["account_id", "display_name"]]
+        return gaps.merge(accounts, on="account_id", how="left"), None
+    except Exception as e:
+        return pd.DataFrame(), str(e)

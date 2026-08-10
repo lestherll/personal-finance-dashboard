@@ -42,6 +42,7 @@ _PERIOD_SOURCE_TYPES: Set[str] = {
 
 _PERIODS_COLUMNS = ["account_id", "source_type", "filename", "period_from", "period_to"]
 _GAPS_COLUMNS = ["account_id", "gap_start", "gap_end", "days"]
+_CALENDAR_COLUMNS = ["account_id", "display_name", "month", "status"]
 
 
 def find_statement_periods(
@@ -127,3 +128,58 @@ def find_coverage_gaps(
             prev_to = row.period_to if prev_to is None else max(prev_to, row.period_to)
 
     return pd.DataFrame(gap_rows, columns=_GAPS_COLUMNS)
+
+
+def build_coverage_calendar(
+    periods: pd.DataFrame, accounts: pd.DataFrame
+) -> pd.DataFrame:
+    """One row per (account, calendar month), for every tracked account,
+    spanning the full range across *all* accounts combined - a dashboard
+    calendar-heatmap renders as a clean rectangle rather than a ragged one
+    per account.
+
+    status is one of:
+      - "covered": at least one statement period overlaps this month.
+      - "gap": no period overlaps, but the month falls between this
+        account's own first and last known period - a real missing month.
+      - "no_data": before the account's first period or after its last -
+        nothing expected here yet, not a coverage problem.
+    """
+    if periods.empty:
+        return pd.DataFrame(columns=_CALENDAR_COLUMNS)
+
+    display_names = (
+        accounts.set_index("account_id")["display_name"].to_dict()
+        if not accounts.empty
+        else {}
+    )
+
+    global_first = periods["period_from"].min().to_period("M").to_timestamp()
+    global_last = periods["period_to"].max().to_period("M").to_timestamp()
+    months = pd.date_range(global_first, global_last, freq="MS")
+
+    rows = []
+    for account_id, group in periods.groupby("account_id"):
+        display_name = display_names.get(account_id, account_id)
+        intervals = list(zip(group["period_from"], group["period_to"]))
+        acct_first_month = group["period_from"].min().to_period("M").to_timestamp()
+        acct_last_month = group["period_to"].max().to_period("M").to_timestamp()
+
+        for month in months:
+            month_end = month + pd.offsets.MonthEnd(0)
+            if any(f <= month_end and t >= month for f, t in intervals):
+                status = "covered"
+            elif acct_first_month <= month <= acct_last_month:
+                status = "gap"
+            else:
+                status = "no_data"
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "display_name": display_name,
+                    "month": month,
+                    "status": status,
+                }
+            )
+
+    return pd.DataFrame(rows, columns=_CALENDAR_COLUMNS)

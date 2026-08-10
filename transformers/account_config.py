@@ -47,6 +47,8 @@ _UNMAPPED_COLUMNS = [
     "record_count",
 ]
 
+ACCOUNT_TYPE_CHOICES = ("current", "credit", "investment", "savings")
+
 
 _CACHE: Dict[Path, Dict[str, Dict[str, Dict[str, str]]]] = {}
 
