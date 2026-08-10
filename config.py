@@ -44,6 +44,12 @@ S3_ENDPOINT = os.getenv("S3_ENDPOINT_DATA")
 S3_BUCKET = os.getenv("S3_BUCKET_DATA")
 S3_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID_DATA")
 S3_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY_DATA")
+# The exact key prefix our credentials are scoped to (the platform's
+# isolation policy denies everything outside it, including a bare
+# HeadBucket/ListBucket with no prefix - confirmed live, that's the
+# isolation working as designed). check_s3_connectivity() needs this to
+# probe a call our own credentials actually cover.
+S3_PREFIX = os.getenv("S3_PREFIX_DATA")
 
 # Redis (Celery broker for task orchestration)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
