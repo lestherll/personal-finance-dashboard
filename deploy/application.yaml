@@ -24,6 +24,24 @@ spec:
     runAsGroup: 1000
     fsGroup: 1000
     
+  # A claim on a storage tier, not a directory on somebody's laptop.
+  #
+  # This used to be `hostPath: /home/lestherll/projects/personal-finance-dashboard/data`,
+  # a bind mount of a real host directory — which is why the same data could be
+  # read from a host shell by the CLI. That stopped being possible when the
+  # cluster moved onto a Talos VM: Talos has no home directories and no shell to
+  # create one, so the mount could never be satisfied and this Application
+  # stopped reconciling entirely.
+  #
+  # `size` is now what asks for a volume — the platform deliberately has no
+  # default, since it cannot guess how much disk an app needs. 2Gi against ~8MB
+  # of current data is not a sizing estimate so much as headroom: the tier has
+  # no enforced quota, so this number is documentation.
+  #
+  # `fast` because the working set here is a DuckDB file — random reads and
+  # write-ahead logging, which is the case the low-latency tier exists for.
+  # `bulk` is for large files read end to end, which this is not.
   persistence:
-    hostPath: /home/lestherll/projects/personal-finance-dashboard/data
+    size: 2Gi
+    tier: fast
     mountPath: /app/data
