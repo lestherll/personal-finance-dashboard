@@ -1,0 +1,126 @@
+# Registers this repo with the homelab platform: creates the Flux GitRepository
+# + Kustomization pair that points the cluster at this repo's deploy/ directory.
+#
+# Those two objects used to be a hand-written commit in the homelab repo, one
+# per app forever. They are created from here instead so that onboarding an app
+# touches nothing but the app's own repo. Nothing below is specific to this
+# repo — every reference is through the `github.*` context — so this file is
+# copied verbatim into a new app repo.
+#
+# There is no stored cluster credential. GitHub signs a fresh OIDC token per
+# run, the apiserver validates it against GitHub's public keys, and a
+# ValidatingAdmissionPolicy in the cluster reads the repository out of that
+# token's own `sub` claim and refuses any object not named after it. Full
+# design: docs/zero-touch-app-registration.md in lestherll/homelab.
+name: Register with the platform
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'register (re-assert the pointers) or teardown (remove the app from the cluster)'
+        type: choice
+        options: [register, teardown]
+        default: register
+
+permissions:
+  contents: read
+  # Required to mint OIDC tokens. Without it both the Tailscale join and the
+  # cluster call fail — and the Tailscale one fails first, so the error names
+  # the wrong system.
+  id-token: write
+
+# Two runs racing each other would fight over the same two objects. Teardown
+# racing a register is the case that actually matters.
+concurrency:
+  group: platform-registration
+  cancel-in-progress: false
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    # kubectl and jq are both preinstalled on the ubuntu-latest runner image.
+    steps:
+      # The apiserver is on a libvirt network reachable only from the homelab
+      # host; this is the only route to it. tag:ci is shared by every app repo
+      # on purpose — per-repo isolation is enforced in the cluster by the
+      # admission policy, not by tailnet identity, which is what keeps this
+      # file copyable.
+      - name: Join the tailnet
+        uses: tailscale/github-action@306e68a486fd2350f2bfc3b19fcd143891a4a2d8 # v4.1.3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      - name: Mint a cluster token
+        id: k8s
+        run: |
+          set -euo pipefail
+          token=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=homelab-k8s" | jq -r .value)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      # --server-side because it needs only `patch`, which keeps the cluster
+      # Role's verb list honest about what CI actually does.
+      #
+      # --force-conflicts is about adoption, not override. An object inherited
+      # from a hand-written homelab manifest still lists kustomize-controller
+      # in its managedFields, and server-side apply refuses to change a field
+      # another manager owns; without this, an inherited object silently stops
+      # tracking edits made here. Inert once the object is CI-owned.
+      - name: Register
+        if: inputs.action != 'teardown'
+        env:
+          SERVER: https://${{ secrets.HOMELAB_APISERVER }}
+          TOKEN: ${{ steps.k8s.outputs.token }}
+          APP: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          kubectl --server="$SERVER" --token="$TOKEN" \
+            apply --server-side --force-conflicts -f - <<YAML
+          apiVersion: source.toolkit.fluxcd.io/v1
+          kind: GitRepository
+          metadata:
+            name: $APP
+            namespace: flux-system
+          spec:
+            interval: 5m
+            url: ${{ github.server_url }}/${{ github.repository }}
+            ref:
+              branch: main
+          ---
+          apiVersion: kustomize.toolkit.fluxcd.io/v1
+          kind: Kustomization
+          metadata:
+            name: $APP
+            namespace: flux-system
+          spec:
+            interval: 5m
+            path: ./deploy
+            prune: true
+            sourceRef:
+              kind: GitRepository
+              name: $APP
+          YAML
+
+      # The Kustomization goes first and we wait for it: it carries
+      # prune: true, so deleting it is what removes the app's workloads.
+      # Dropping the GitRepository first would leave Flux unable to resolve
+      # the source it needs to work out what to prune.
+      - name: Teardown
+        if: inputs.action == 'teardown'
+        env:
+          SERVER: https://${{ secrets.HOMELAB_APISERVER }}
+          TOKEN: ${{ steps.k8s.outputs.token }}
+          APP: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          kubectl --server="$SERVER" --token="$TOKEN" -n flux-system \
+            delete kustomization "$APP" --ignore-not-found --wait --timeout=5m
+          kubectl --server="$SERVER" --token="$TOKEN" -n flux-system \
+            delete gitrepository "$APP" --ignore-not-found
