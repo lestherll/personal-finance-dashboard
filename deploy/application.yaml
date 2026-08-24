@@ -5,8 +5,8 @@ metadata:
   name: personal-finance-dashboard
   namespace: personal-finance-dashboard
 spec:
-  # :latest — no image-automation reconciler yet (unbuilt C3/D2). The platform
-  # sets imagePullPolicy: Always, so a rollout re-pulls.
+  # Digest-pinned by build.yml on every push to main (homelab CONCEPT.md D19)
+  # — do not hand-edit, the next build overwrites this.
   image: ghcr.io/lestherll/personal-finance-dashboard:latest
   port: 8501
   # Tailscale hostname without the tailnet suffix; the operator resolves the
