@@ -3,15 +3,19 @@ name: Build and push dashboard image
 on:
   push:
     branches: [main]
-    # The digest-pin commit below touches only deploy/, so excluding that path
-    # is what stops this workflow from rebuilding (and re-pushing a new,
-    # different digest for) the commit it just made itself.
+    # Belt-and-braces against rebuilding this workflow's own digest-pin commit.
+    # Redundant today — that commit is pushed with GITHUB_TOKEN, which GitHub
+    # already refuses to let trigger a push event — but it becomes the only
+    # guard if the push credential ever changes, and it correctly skips a
+    # rebuild when a human edits deploy/ without touching code.
     paths-ignore: [deploy/**]
 
 permissions:
   # Needed to push the digest-pin commit back to this repo — see below.
   contents: write
   packages: write
+  # Needed to dispatch register.yml — see the last step.
+  actions: write
 
 jobs:
   build-push:
@@ -44,11 +48,8 @@ jobs:
       # reach it. A repo-scoped write the build runner already effectively has
       # (it executes this repo's own code) costs less than that new credential.
       #
-      # register.yml is what actually gets Flux to pick this up quickly — it
-      # already runs on every push to main and force-reconciles its
-      # GitRepository/Kustomization immediately, so this step only needs to get
-      # the commit onto main, not to poke Flux itself.
       - name: Pin the deploy manifest to this build's digest
+        id: pin
         env:
           IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
         run: |
@@ -59,8 +60,30 @@ jobs:
           git add deploy/application.yaml
           if git diff --cached --quiet; then
             echo "No digest change, nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git commit -m "deploy: pin image to $IMAGE"
           git pull --rebase origin main
           git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      # Ask register.yml to reconcile the commit just pushed, instead of
+      # leaving it to Flux's 5-minute poll.
+      #
+      # This dispatch exists because that push cannot trigger register.yml on
+      # its own: GitHub suppresses workflow runs from events raised with the
+      # default GITHUB_TOKEN, to prevent recursion. workflow_dispatch is an
+      # explicit, documented exception to that rule (2022-09-08), so an
+      # intentional call still works where the implicit push event does not.
+      #
+      # Dispatching rather than reconciling inline keeps every piece of
+      # cluster access — tailnet join, OIDC token, kubectl — in register.yml,
+      # the one file the platform docs call copyable-verbatim. This workflow
+      # stays a build: it knows about the registry and this repo, and nothing
+      # about Flux or the cluster.
+      - name: Ask the platform to reconcile
+        if: steps.pin.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run register.yml --ref main -f action=register
