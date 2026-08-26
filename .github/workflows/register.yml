@@ -108,6 +108,30 @@ jobs:
               name: $APP
           YAML
 
+      # Flux's own poll interval on these two objects is 5m — fine for the
+      # registration pointers themselves, but too slow for a deploy: without
+      # this, a build.yml digest-pin commit sits unreconciled for up to 5
+      # minutes. This annotation is Flux's standard "reconcile now" signal
+      # (https://fluxcd.io/flux/components/source/gitrepositories/#triggering-a-reconcile),
+      # and this step is what makes image delivery event-driven rather than
+      # poll-based: every push to main — including a digest-pin commit —
+      # forces an immediate re-fetch and re-apply instead of waiting on the
+      # interval. No new credential or RBAC needed: it reuses the token minted
+      # above, which already has `patch` on both kinds (annotate uses patch).
+      - name: Trigger immediate reconcile
+        if: inputs.action != 'teardown'
+        env:
+          SERVER: https://${{ secrets.HOMELAB_APISERVER }}
+          TOKEN: ${{ steps.k8s.outputs.token }}
+          APP: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          kubectl --server="$SERVER" --token="$TOKEN" -n flux-system \
+            annotate gitrepository "$APP" reconcile.fluxcd.io/requestedAt="$now" --overwrite
+          kubectl --server="$SERVER" --token="$TOKEN" -n flux-system \
+            annotate kustomization "$APP" reconcile.fluxcd.io/requestedAt="$now" --overwrite
+
       # The Kustomization goes first and we wait for it: it carries
       # prune: true, so deleting it is what removes the app's workloads.
       # Dropping the GitRepository first would leave Flux unable to resolve

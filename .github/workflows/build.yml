@@ -3,9 +3,14 @@ name: Build and push dashboard image
 on:
   push:
     branches: [main]
+    # The digest-pin commit below touches only deploy/, so excluding that path
+    # is what stops this workflow from rebuilding (and re-pushing a new,
+    # different digest for) the commit it just made itself.
+    paths-ignore: [deploy/**]
 
 permissions:
-  contents: read
+  # Needed to push the digest-pin commit back to this repo — see below.
+  contents: write
   packages: write
 
 jobs:
@@ -21,6 +26,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           target: dashboard
@@ -28,3 +34,33 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ github.sha }}
+
+      # Pins the deployment to this exact build by digest, not by the floating
+      # :latest tag — see homelab CONCEPT.md D19. The tag-bump commit is written
+      # here, by the build runner itself, rather than by a separate reconciler:
+      # D19 rejected Flux image-automation for this because zero-touch
+      # registration (D16) already moved this manifest into this repo, and
+      # image-automation would need a new cross-repo git-write credential to
+      # reach it. A repo-scoped write the build runner already effectively has
+      # (it executes this repo's own code) costs less than that new credential.
+      #
+      # register.yml is what actually gets Flux to pick this up quickly — it
+      # already runs on every push to main and force-reconciles its
+      # GitRepository/Kustomization immediately, so this step only needs to get
+      # the commit onto main, not to poke Flux itself.
+      - name: Pin the deploy manifest to this build's digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          sed -i "s|^\(\s*image:\s*\).*|\1$IMAGE|" deploy/application.yaml
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deploy/application.yaml
+          if git diff --cached --quiet; then
+            echo "No digest change, nothing to commit."
+            exit 0
+          fi
+          git commit -m "deploy: pin image to $IMAGE"
+          git pull --rebase origin main
+          git push origin HEAD:main
