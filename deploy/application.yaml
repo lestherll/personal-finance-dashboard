@@ -7,7 +7,7 @@ metadata:
 spec:
   # Digest-pinned by build.yml on every push to main (homelab CONCEPT.md D19)
   # — do not hand-edit, the next build overwrites this.
-  image: ghcr.io/lestherll/personal-finance-dashboard@sha256:ccdc5ee82b040bece89f4eaec5b0bc6b0b0294496a03bd3e23d60e0f39a6d130
+  image: ghcr.io/lestherll/personal-finance-dashboard@sha256:968ba18bf8fdfbf18daa75860a60e5adae92ecb925d306888c6c6f8ac8e2a756
   port: 8501
   # Tailscale hostname without the tailnet suffix; the operator resolves the
   # full FQDN and the platform reads it back into status.url.
