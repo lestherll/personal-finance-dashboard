@@ -54,6 +54,15 @@ jobs:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
+      
+      - name: DEBUG tailnet path
+        env:
+          SERVER: ${{ secrets.HOMELAB_APISERVER }}
+        run: |
+          tailscale status || true
+          getent hosts "$SERVER" || true
+          tailscale ping --timeout=5s -c 3 "$SERVER" || true
+          curl -vk --max-time 20 "https://$SERVER/healthz" || true
 
       - name: Mint a cluster token
         id: k8s
