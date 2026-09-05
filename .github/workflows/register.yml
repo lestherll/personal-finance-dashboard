@@ -43,8 +43,24 @@ jobs:
     runs-on: ubuntu-latest
     # kubectl and jq are both preinstalled on the ubuntu-latest runner image.
     steps:
-      # The apiserver is on a libvirt network reachable only from the homelab
-      # host; this is the only route to it. tag:ci is shared by every app repo
+      # MagicDNS returns both an A and an AAAA for the apiserver service, and a
+      # GitHub runner picks the AAAA. TCP connects, the ClientHello goes out,
+      # and nothing ever comes back — so it surfaces as a 20s hang and
+      # `net/http: TLS handshake timeout`, which reads like a broken apiserver
+      # rather than a broken address family. The IPv4 VIP works from the same
+      # runner, and both families work from an ordinary tailnet device, so
+      # there is nothing to fix on the cluster side.
+      #
+      # Disabling IPv6 in the kernel is what stops getaddrinfo ever offering
+      # the AAAA. It has to run BEFORE the join, or tailscaled brings the
+      # tailnet ULA up first and the sysctl no longer changes what resolves.
+      - name: Prefer IPv4 to the tailnet
+        run: |
+          sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+          sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+
+      # The apiserver is on the LAN, which GitHub's runners cannot reach; this
+      # is the only route to it. tag:ci is shared by every app repo
       # on purpose — per-repo isolation is enforced in the cluster by the
       # admission policy, not by tailnet identity, which is what keeps this
       # file copyable.
@@ -55,14 +71,21 @@ jobs:
           audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
       
+      # TEMPORARY — remove once the IPv4 fix above is confirmed. Probes each
+      # address family separately so a failure says which leg is broken
+      # instead of just hanging. A reachable apiserver answers 401 here: the
+      # proxy forwards unauthenticated, and /healthz still requires a token.
       - name: DEBUG tailnet path
         env:
           SERVER: ${{ secrets.HOMELAB_APISERVER }}
         run: |
           tailscale status || true
           getent hosts "$SERVER" || true
-          tailscale ping --timeout=5s -c 3 "$SERVER" || true
-          curl -vk --max-time 20 "https://$SERVER/healthz" || true
+          for f in -4 -6 ""; do
+            curl $f -sS -o /dev/null -m 15 \
+              -w "family=${f:-default} http=%{http_code} ip=%{remote_ip} tls=%{time_appconnect}s\n" \
+              -k "https://$SERVER/healthz" || echo "family=${f:-default} FAILED"
+          done
 
       - name: Mint a cluster token
         id: k8s
