@@ -55,33 +55,6 @@ jobs:
           audience: ${{ secrets.TS_AUDIENCE }}
           tags: tag:ci
 
-      # TEMPORARY — delete once registration is green again.
-      #
-      # Separates the last two possibilities for why this runner cannot reach
-      # the apiserver service while an ordinary tailnet device can, using
-      # grants that differ only in their src:
-      #
-      #   1. the node is not actually wearing tag:ci, so it matches no grant
-      #   2. it is, and the grant is not being honoured
-      #
-      # `tailscale ping --tsmp` is the discriminator. Plain ping uses disco
-      # packets, which are NOT ACL-filtered — that is why earlier pongs looked
-      # like proof of access and were not. TSMP goes through the packet filter,
-      # so it answers only if the ACL actually permits this node.
-      - name: Probe CI identity
-        env:
-          SERVER: ${{ secrets.HOMELAB_APISERVER }}
-        run: |
-          echo "--- who am I ---"
-          tailscale status --json | jq -c '{tags: .Self.Tags, id: .Self.ID, name: .Self.HostName}'
-          echo "--- service resolves to ---"
-          vip=$(getent ahostsv4 "$SERVER" | awk '{print $1; exit}')
-          echo "vip=$vip"
-          echo "--- disco ping (NOT acl-filtered) ---"
-          tailscale ping --timeout=5s -c 2 "$vip" || echo "disco FAILED"
-          echo "--- tsmp ping (acl-filtered) ---"
-          tailscale ping --tsmp --timeout=5s -c 2 "$vip" || echo "tsmp FAILED"
-
       - name: Mint a cluster token
         id: k8s
         run: |
